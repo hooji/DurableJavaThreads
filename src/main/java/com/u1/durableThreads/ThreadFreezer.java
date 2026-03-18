@@ -1,6 +1,7 @@
 package com.u1.durableThreads;
 
 import com.sun.jdi.*;
+import com.u1.durableThreads.exception.NonEmptyStackException;
 import com.u1.durableThreads.exception.ThreadFrozenError;
 import com.u1.durableThreads.internal.*;
 import com.u1.durableThreads.snapshot.*;
@@ -137,6 +138,15 @@ final class ThreadFreezer {
                 byte[] hash = classBytecode != null
                         ? BytecodeHasher.hash(classBytecode, methodName, methodSig)
                         : new byte[0];
+
+                // Validate operand stack is empty at this call site
+                if (classBytecode != null) {
+                    String stackError = OperandStackChecker.checkStackAtInvoke(
+                            classBytecode, methodName, methodSig, bcp);
+                    if (stackError != null) {
+                        throw new NonEmptyStackException(stackError);
+                    }
+                }
 
                 // Capture local variables
                 List<com.u1.durableThreads.snapshot.LocalVariable> locals = captureLocals(jdiFrame, heapWalker);
