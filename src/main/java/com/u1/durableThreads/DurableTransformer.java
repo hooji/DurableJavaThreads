@@ -39,13 +39,18 @@ public final class DurableTransformer implements ClassFileTransformer {
             // Parse the original class
             ClassReader cr = new ClassReader(classfileBuffer);
 
-            // Use COMPUTE_FRAMES so ASM recalculates stack map frames
-            // (necessary because we're inserting the prologue)
-            ClassWriter cw = new ClassWriter(cr, ClassWriter.COMPUTE_FRAMES);
+            // Use COMPUTE_FRAMES so ASM recalculates stack map frames.
+            // Use the context classloader for getCommonSuperClass resolution.
+            ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_FRAMES) {
+                @Override
+                protected ClassLoader getClassLoader() {
+                    return loader != null ? loader : ClassLoader.getSystemClassLoader();
+                }
+            };
 
-            // Inject prologues
+            // Inject prologues (SKIP_FRAMES since COMPUTE_FRAMES recomputes all)
             PrologueInjector injector = new PrologueInjector(cw);
-            cr.accept(injector, ClassReader.EXPAND_FRAMES);
+            cr.accept(injector, ClassReader.SKIP_FRAMES);
 
             byte[] instrumented = cw.toByteArray();
 
