@@ -114,23 +114,21 @@ public final class HeapRestorer {
                 for (int i = 0; i + 1 < elements.length; i += 2) {
                     Object key = resolve(elements[i]);
                     Object value = resolve(elements[i + 1]);
-                    try {
-                        map.put(key, value);
-                    } catch (Exception e) {
-                        // Skip entries that can't be added (e.g., null keys in TreeMap)
-                    }
+                    map.put(key, value);
                 }
+            } else {
+                throw new RuntimeException("Expected Map instance for " + className
+                        + " but got " + obj.getClass().getName());
             }
         } else {
             // List, Set, Deque: elements are sequential
             if (obj instanceof java.util.Collection coll) {
                 for (ObjectRef element : elements) {
-                    try {
-                        coll.add(resolve(element));
-                    } catch (Exception e) {
-                        // Skip elements that can't be added
-                    }
+                    coll.add(resolve(element));
                 }
+            } else {
+                throw new RuntimeException("Expected Collection instance for " + className
+                        + " but got " + obj.getClass().getName());
             }
         }
     }
@@ -190,9 +188,16 @@ public final class HeapRestorer {
                 field.setAccessible(true);
                 Object value = resolve(entry.getValue());
                 field.set(obj, value);
-            } catch (ClassNotFoundException | NoSuchFieldException | IllegalAccessException
-                     | InaccessibleObjectException e) {
-                // Skip fields that can't be restored (e.g., JDK module-protected fields)
+            } catch (ClassNotFoundException e) {
+                throw new RuntimeException("Cannot restore field '" + fieldKey
+                        + "': declaring class not found", e);
+            } catch (NoSuchFieldException e) {
+                throw new RuntimeException("Cannot restore field '" + fieldKey
+                        + "': field no longer exists (class structure changed?)", e);
+            } catch (IllegalAccessException | InaccessibleObjectException e) {
+                throw new RuntimeException("Cannot restore field '" + fieldKey
+                        + "': field is inaccessible. Add appropriate --add-opens "
+                        + "JVM flags if this is a module-protected field.", e);
             }
         }
     }

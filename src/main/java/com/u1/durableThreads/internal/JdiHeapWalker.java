@@ -92,21 +92,15 @@ public final class JdiHeapWalker {
         ReferenceType refType = objRef.referenceType();
         String className = refType.name();
 
-        try {
-            if (objRef instanceof StringReference sr) {
-                captureString(snapId, sr);
-            } else if (objRef instanceof ArrayReference arrRef) {
-                // Convert JDI display name ("int[]", "java.lang.String[][]") to
-                // JVM internal name ("[I", "[[Ljava.lang.String;") for Class.forName()
-                String jvmArrayName = toJvmArrayName(className);
-                captureArray(snapId, arrRef, jvmArrayName);
-            } else {
-                captureRegularObject(snapId, objRef, refType, className);
-            }
-        } catch (Exception e) {
-            // If capture fails, store an empty snapshot so the ID is valid
-            snapshots.add(new ObjectSnapshot(snapId, className, ObjectKind.REGULAR,
-                    Map.of(), null, null));
+        if (objRef instanceof StringReference sr) {
+            captureString(snapId, sr);
+        } else if (objRef instanceof ArrayReference arrRef) {
+            // Convert JDI display name ("int[]", "java.lang.String[][]") to
+            // JVM internal name ("[I", "[[Ljava.lang.String;") for Class.forName()
+            String jvmArrayName = toJvmArrayName(className);
+            captureArray(snapId, arrRef, jvmArrayName);
+        } else {
+            captureRegularObject(snapId, objRef, refType, className);
         }
 
         return new HeapRef(snapId);
@@ -183,22 +177,18 @@ public final class JdiHeapWalker {
             if (typeName.equals("java.lang.Object") || visitedTypes.contains(typeName)) break;
             visitedTypes.add(typeName);
 
-            try {
-                List<Field> jdiFields = current.fields();
-                // Get all field values in one call (more efficient than per-field)
-                Map<Field, Value> fieldValues = objRef.getValues(jdiFields);
+            List<Field> jdiFields = current.fields();
+            // Get all field values in one call (more efficient than per-field)
+            Map<Field, Value> fieldValues = objRef.getValues(jdiFields);
 
-                for (Field jdiField : jdiFields) {
-                    if (jdiField.isStatic()) continue;
-                    // Skip transient fields
-                    if (isTransient(jdiField)) continue;
+            for (Field jdiField : jdiFields) {
+                if (jdiField.isStatic()) continue;
+                // Skip transient fields
+                if (isTransient(jdiField)) continue;
 
-                    String fieldKey = typeName + "." + jdiField.name();
-                    Value value = fieldValues.get(jdiField);
-                    fields.put(fieldKey, capture(value));
-                }
-            } catch (Exception e) {
-                // Skip fields we can't read
+                String fieldKey = typeName + "." + jdiField.name();
+                Value value = fieldValues.get(jdiField);
+                fields.put(fieldKey, capture(value));
             }
 
             // Walk to superclass
@@ -224,16 +214,10 @@ public final class JdiHeapWalker {
      */
     private void captureCollection(long snapId, ObjectReference objRef,
                                     ReferenceType refType, String className) {
-        try {
-            if (className.contains("Map")) {
-                captureMap(snapId, objRef, refType, className);
-            } else {
-                captureListOrSet(snapId, objRef, refType, className);
-            }
-        } catch (Exception e) {
-            // Fallback: store as opaque
-            snapshots.add(new ObjectSnapshot(snapId, className,
-                    ObjectKind.REGULAR, Map.of(), null, null));
+        if (className.contains("Map")) {
+            captureMap(snapId, objRef, refType, className);
+        } else {
+            captureListOrSet(snapId, objRef, refType, className);
         }
     }
 
@@ -316,8 +300,10 @@ public final class JdiHeapWalker {
                     }
                 }
             }
+        } catch (RuntimeException e) {
+            throw e;
         } catch (Exception e) {
-            // Best effort
+            throw new RuntimeException("Failed to extract map entries via JDI", e);
         }
         return pairs;
     }

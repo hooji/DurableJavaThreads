@@ -122,8 +122,8 @@ class ReplayStateTest {
     }
 
     @Test
-    void dummyInstanceReturnsNullForBadClass() {
-        Object obj = ReplayState.dummyInstance("com.nonexistent.FakeClass");
-        assertNull(obj);
+    void dummyInstanceThrowsForBadClass() {
+        assertThrows(RuntimeException.class, () ->
+                ReplayState.dummyInstance("com.nonexistent.FakeClass"));
     }
 }

@@ -193,9 +193,9 @@ final class ThreadRestorer {
             try {
                 int port = JdiHelper.detectJdwpPort();
                 if (port < 0) {
-                    System.err.println("[DurableThreads] JDWP not available for restore");
-                    ReplayState.releaseResumePoint(); // unblock so thread doesn't hang
-                    return;
+                    throw new RuntimeException(
+                            "JDWP not available for restore. "
+                            + "Start with: -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005");
                 }
 
                 VirtualMachine vm = JdiHelper.connect(port);
@@ -204,9 +204,10 @@ final class ThreadRestorer {
                     // We poll the thread state until it's WAITING (blocked on CountDownLatch.await).
                     ThreadReference tr = waitForThreadWaiting(vm, threadName, 30_000);
                     if (tr == null) {
-                        System.err.println("[DurableThreads] Timeout waiting for replay thread to reach resumePoint()");
-                        ReplayState.releaseResumePoint();
-                        return;
+                        throw new RuntimeException(
+                                "Timeout waiting for replay thread '" + threadName
+                                + "' to reach resumePoint(). The thread may have failed "
+                                + "during replay prologue execution.");
                     }
 
                     // Suspend the thread so we can safely modify its locals
@@ -234,7 +235,11 @@ final class ThreadRestorer {
             } catch (Exception e) {
                 System.err.println("[DurableThreads] JDI restore failed: " + e.getMessage());
                 e.printStackTrace(System.err);
-                ReplayState.releaseResumePoint(); // ensure thread doesn't hang on failure
+                // Signal the error so the replay thread throws instead of
+                // continuing with incorrect state. Must be set BEFORE releasing.
+                ReplayState.signalRestoreError(
+                        "JDI restore worker failed: " + e.getMessage());
+                ReplayState.releaseResumePoint();
             }
         }, "durable-restore-jdi-worker");
         jdiWorker.setDaemon(true);
@@ -369,48 +374,46 @@ final class ThreadRestorer {
                                        StackFrame jdiFrame, FrameSnapshot snapFrame,
                                        Map<Long, Object> restoredHeap,
                                        HeapRestorer heapRestorer) {
+        Method method = jdiFrame.location().method();
+
+        List<com.sun.jdi.LocalVariable> jdiLocals;
         try {
-            Method method = jdiFrame.location().method();
+            jdiLocals = method.variables();
+        } catch (AbsentInformationException e) {
+            throw new RuntimeException(
+                    "No debug info for method " + method.declaringType().name() + "."
+                    + method.name() + ". Classes must be compiled with debug info (-g) "
+                    + "for thread restore to set local variables.", e);
+        }
 
-            List<com.sun.jdi.LocalVariable> jdiLocals;
+        // Build a map of JDI locals by name for quick lookup
+        Map<String, com.sun.jdi.LocalVariable> jdiLocalsByName = new HashMap<>();
+        for (com.sun.jdi.LocalVariable jdiLocal : jdiLocals) {
+            // Use the first variable with each name (shadowed variables are rare)
+            jdiLocalsByName.putIfAbsent(jdiLocal.name(), jdiLocal);
+        }
+
+        for (com.u1.durableThreads.snapshot.LocalVariable snapLocal : snapFrame.locals()) {
+            com.sun.jdi.LocalVariable jdiLocal = jdiLocalsByName.get(snapLocal.name());
+            if (jdiLocal == null) continue;
+
             try {
-                jdiLocals = method.variables();
-            } catch (AbsentInformationException e) {
-                // No debug info — can't set locals
-                return;
-            }
-
-            // Build a map of JDI locals by name for quick lookup
-            Map<String, com.sun.jdi.LocalVariable> jdiLocalsByName = new HashMap<>();
-            for (com.sun.jdi.LocalVariable jdiLocal : jdiLocals) {
-                // Use the first variable with each name (shadowed variables are rare)
-                jdiLocalsByName.putIfAbsent(jdiLocal.name(), jdiLocal);
-            }
-
-            for (com.u1.durableThreads.snapshot.LocalVariable snapLocal : snapFrame.locals()) {
-                com.sun.jdi.LocalVariable jdiLocal = jdiLocalsByName.get(snapLocal.name());
-                if (jdiLocal == null) continue;
-
-                try {
-                    // Check if the local is visible at the current location
-                    // During replay, the frame is in the resume stub, not the original code.
-                    // The local may not be "visible" at the resume stub's BCP.
-                    // We try anyway — JDI implementations often allow setting any variable
-                    // that's in the method's local variable table.
-                    Value jdiValue = convertToJdiValue(vm, snapLocal.value(),
-                            restoredHeap, heapRestorer);
-                    if (jdiValue != null || snapLocal.value() instanceof NullRef) {
-                        jdiFrame.setValue(jdiLocal, jdiValue);
-                    }
-                } catch (InvalidTypeException | ClassNotLoadedException e) {
-                    // Type mismatch — skip this local
-                } catch (Exception e) {
-                    // Some locals can't be set (e.g., in certain frame states)
-                    // Continue with best effort
+                Value jdiValue = convertToJdiValue(vm, snapLocal.value(),
+                        restoredHeap, heapRestorer);
+                if (jdiValue != null || snapLocal.value() instanceof NullRef) {
+                    jdiFrame.setValue(jdiLocal, jdiValue);
                 }
+            } catch (InvalidTypeException | ClassNotLoadedException e) {
+                throw new RuntimeException(
+                        "Type mismatch setting local '" + snapLocal.name() + "' in "
+                        + method.declaringType().name() + "." + method.name()
+                        + ": " + e.getMessage(), e);
+            } catch (Exception e) {
+                throw new RuntimeException(
+                        "Failed to set local '" + snapLocal.name() + "' in "
+                        + method.declaringType().name() + "." + method.name()
+                        + ": " + e.getMessage(), e);
             }
-        } catch (Exception e) {
-            // Best effort — continue with other frames
         }
     }
 
@@ -441,95 +444,98 @@ final class ThreadRestorer {
             // Find the HeapObjectBridge class in JDI
             List<ReferenceType> bridgeTypes = vm.classesByName(
                     "com.u1.durableThreads.internal.HeapObjectBridge");
-            if (bridgeTypes.isEmpty()) return null;
+            if (bridgeTypes.isEmpty()) {
+                throw new RuntimeException("HeapObjectBridge class not found in JDI. "
+                        + "Cannot resolve heap reference " + snapshotId);
+            }
 
             ReferenceType bridgeType = bridgeTypes.get(0);
 
             // Find the static 'objects' field (ConcurrentHashMap<String, Object>)
             com.sun.jdi.Field objectsField = bridgeType.fieldByName("objects");
-            if (objectsField == null) return null;
+            if (objectsField == null) {
+                throw new RuntimeException("HeapObjectBridge.objects field not found. "
+                        + "Cannot resolve heap reference " + snapshotId);
+            }
 
             ObjectReference mapRef = (ObjectReference) bridgeType.getValue(objectsField);
-            if (mapRef == null) return null;
+            if (mapRef == null) {
+                throw new RuntimeException("HeapObjectBridge.objects map is null. "
+                        + "Cannot resolve heap reference " + snapshotId);
+            }
 
-            // Call map.get(key) via JDI to get the ObjectReference
-            StringReference keyRef = vm.mirrorOf(String.valueOf(snapshotId));
-            ReferenceType mapType = mapRef.referenceType();
-            Method getMethod = mapType.methodsByName("get", "(Ljava/lang/Object;)Ljava/lang/Object;").get(0);
-
-            // We need an event-suspended thread to invoke methods.
-            // Since we're calling from the JDI worker and the replay thread is suspended,
-            // we use a helper approach: read the value directly from the Map's internal state.
-            // However, ConcurrentHashMap doesn't expose values via fields easily.
-            // Instead, we use the simpler approach of looking up objects via the entrySet.
-            //
-            // Alternative: since both JVMs share the same address space, use a static
-            // array indexed by snapshot ID for O(1) JDI field access.
-            return getObjectFromBridgeArray(vm, bridgeType, snapshotId);
+            Value result = getObjectFromBridgeArray(vm, bridgeType, snapshotId);
+            if (result == null) {
+                throw new RuntimeException("Heap object with snapshot ID " + snapshotId
+                        + " not found in HeapObjectBridge. The restored heap may be incomplete.");
+            }
+            return result;
+        } catch (RuntimeException e) {
+            throw e;
         } catch (Exception e) {
-            // Best effort — return null if we can't resolve
-            return null;
+            throw new RuntimeException("Failed to resolve heap reference " + snapshotId
+                    + " via JDI", e);
         }
     }
 
     /**
-     * Get a restored object from the bridge using a static array approach.
-     * Falls back to null if the object can't be retrieved via JDI.
+     * Get a restored object from the bridge by walking ConcurrentHashMap internals via JDI.
+     * Returns null only if the key genuinely doesn't exist in the map.
      */
     private static Value getObjectFromBridgeArray(VirtualMachine vm,
                                                    ReferenceType bridgeType,
                                                    long snapshotId) {
-        try {
-            // Read the static 'objects' map field
-            com.sun.jdi.Field objectsField = bridgeType.fieldByName("objects");
-            if (objectsField == null) return null;
+        // Read the static 'objects' map field
+        com.sun.jdi.Field objectsField = bridgeType.fieldByName("objects");
+        if (objectsField == null) {
+            throw new RuntimeException("HeapObjectBridge.objects field not found via JDI");
+        }
 
-            ObjectReference mapRef = (ObjectReference) bridgeType.getValue(objectsField);
-            if (mapRef == null) return null;
+        ObjectReference mapRef = (ObjectReference) bridgeType.getValue(objectsField);
+        if (mapRef == null) {
+            throw new RuntimeException("HeapObjectBridge.objects map is null via JDI");
+        }
 
-            // Use the values() method to get a Collection, then convert to array
-            // This avoids needing to invoke methods on a suspended thread
-            ReferenceType mapType = mapRef.referenceType();
+        ReferenceType mapType = mapRef.referenceType();
 
-            // Try to find the entry by iterating internal Node array
-            // ConcurrentHashMap stores entries in a Node[] table
-            com.sun.jdi.Field tableField = findField(mapType, "table");
-            if (tableField == null) return null;
+        com.sun.jdi.Field tableField = findField(mapType, "table");
+        if (tableField == null) {
+            throw new RuntimeException(
+                    "Cannot find 'table' field in ConcurrentHashMap via JDI. "
+                    + "Cannot resolve heap reference " + snapshotId);
+        }
 
-            ArrayReference table = (ArrayReference) mapRef.getValue(tableField);
-            if (table == null) return null;
+        ArrayReference table = (ArrayReference) mapRef.getValue(tableField);
+        if (table == null) return null; // empty map — key genuinely missing
 
-            String targetKey = String.valueOf(snapshotId);
+        String targetKey = String.valueOf(snapshotId);
 
-            // Walk the hash table buckets
-            for (int i = 0; i < table.length(); i++) {
-                ObjectReference node = (ObjectReference) table.getValue(i);
-                while (node != null) {
-                    // Read key and val fields from the Node
-                    com.sun.jdi.Field keyField = findField(node.referenceType(), "key");
-                    com.sun.jdi.Field valField = findField(node.referenceType(), "val");
-                    com.sun.jdi.Field nextField = findField(node.referenceType(), "next");
+        // Walk the hash table buckets
+        for (int i = 0; i < table.length(); i++) {
+            ObjectReference node = (ObjectReference) table.getValue(i);
+            while (node != null) {
+                // Read key and val fields from the Node
+                com.sun.jdi.Field keyField = findField(node.referenceType(), "key");
+                com.sun.jdi.Field valField = findField(node.referenceType(), "val");
+                com.sun.jdi.Field nextField = findField(node.referenceType(), "next");
 
-                    if (keyField == null || valField == null) break;
+                if (keyField == null || valField == null) break;
 
-                    Value keyVal = node.getValue(keyField);
-                    if (keyVal instanceof StringReference sr && sr.value().equals(targetKey)) {
-                        return node.getValue(valField);
-                    }
+                Value keyVal = node.getValue(keyField);
+                if (keyVal instanceof StringReference sr && sr.value().equals(targetKey)) {
+                    return node.getValue(valField);
+                }
 
-                    // Follow the chain
-                    if (nextField != null) {
-                        Value nextVal = node.getValue(nextField);
-                        node = (nextVal instanceof ObjectReference or) ? or : null;
-                    } else {
-                        break;
-                    }
+                // Follow the chain
+                if (nextField != null) {
+                    Value nextVal = node.getValue(nextField);
+                    node = (nextVal instanceof ObjectReference or) ? or : null;
+                } else {
+                    break;
                 }
             }
-        } catch (Exception e) {
-            // Best effort
         }
-        return null;
+        return null; // key not found in map
     }
 
     /**
@@ -663,14 +669,16 @@ final class ThreadRestorer {
             if (local.slot() == 0 && local.name().equals("this")) {
                 Object resolved = heapRestorer.resolve(local.value());
                 if (resolved != null) return resolved;
+                throw new RuntimeException(
+                        "Receiver ('this') for instance method in " + clazz.getName()
+                        + " was captured but could not be resolved from the restored heap. "
+                        + "This indicates a corrupt or incomplete snapshot.");
             }
         }
 
-        try {
-            org.objenesis.ObjenesisStd objenesis = new org.objenesis.ObjenesisStd(true);
-            return objenesis.newInstance(clazz);
-        } catch (Exception e) {
-            throw new RuntimeException("Cannot create instance of " + clazz.getName(), e);
-        }
+        throw new RuntimeException(
+                "Instance method in " + clazz.getName() + " has no 'this' reference "
+                + "in captured locals (slot 0). The snapshot is missing the receiver object. "
+                + "This usually means local variable capture failed during freeze.");
     }
 }

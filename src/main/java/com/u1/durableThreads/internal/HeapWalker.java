@@ -104,7 +104,10 @@ public final class HeapWalker {
                         fields.put(fieldKey, capture(value));
                     }
                 } catch (IllegalAccessException e) {
-                    // Skip inaccessible fields
+                    throw new RuntimeException("Cannot capture field '"
+                            + current.getName() + "." + field.getName()
+                            + "': field is inaccessible. Add appropriate --add-opens "
+                            + "JVM flags if this is a module-protected field.", e);
                 }
             }
             current = current.getSuperclass();

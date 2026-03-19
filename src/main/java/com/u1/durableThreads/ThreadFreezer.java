@@ -302,43 +302,37 @@ final class ThreadFreezer {
 
     private static List<com.u1.durableThreads.snapshot.LocalVariable> captureLocals(StackFrame frame, JdiHeapWalker heapWalker) {
         List<com.u1.durableThreads.snapshot.LocalVariable> result = new ArrayList<>();
+        Location location = frame.location();
+        Method method = location.method();
+
+        List<com.sun.jdi.LocalVariable> jdiLocals;
         try {
-            Location location = frame.location();
-            Method method = location.method();
+            jdiLocals = method.variables();
+        } catch (AbsentInformationException e) {
+            throw new RuntimeException(
+                    "No debug info for method " + method.declaringType().name() + "."
+                    + method.name() + ". Classes must be compiled with debug info (-g) "
+                    + "for thread freeze to capture local variables.", e);
+        }
 
-            List<com.sun.jdi.LocalVariable> jdiLocals;
+        for (com.sun.jdi.LocalVariable jdiLocal : jdiLocals) {
+            if (!jdiLocal.isVisible(frame)) continue;
+
+            Value value = frame.getValue(jdiLocal);
+            ObjectRef ref = heapWalker.capture(value);
+            // JDI LocalVariable doesn't expose slot index directly;
+            // use hashCode as a proxy, or get it from the variable table
+            int slot = 0;
             try {
-                jdiLocals = method.variables();
-            } catch (AbsentInformationException e) {
-                // No debug info available — can't capture local variables
-                return result;
-            }
-
-            for (com.sun.jdi.LocalVariable jdiLocal : jdiLocals) {
-                try {
-                    if (!jdiLocal.isVisible(frame)) continue;
-
-                    Value value = frame.getValue(jdiLocal);
-                    ObjectRef ref = heapWalker.capture(value);
-                    // JDI LocalVariable doesn't expose slot index directly;
-                    // use hashCode as a proxy, or get it from the variable table
-                    int slot = 0;
-                    try {
-                        // Attempt to get the slot via reflection on JDI impl
-                        var slotMethod = jdiLocal.getClass().getMethod("slot");
-                        slot = (int) slotMethod.invoke(jdiLocal);
-                    } catch (Exception ignored) {}
-                    result.add(new com.u1.durableThreads.snapshot.LocalVariable(
-                            slot,
-                            jdiLocal.name(),
-                            jdiLocal.signature(),
-                            ref));
-                } catch (Exception e) {
-                    // Skip locals that can't be captured
-                }
-            }
-        } catch (Exception e) {
-            // Return what we have so far
+                // Attempt to get the slot via reflection on JDI impl
+                var slotMethod = jdiLocal.getClass().getMethod("slot");
+                slot = (int) slotMethod.invoke(jdiLocal);
+            } catch (Exception ignored) {}
+            result.add(new com.u1.durableThreads.snapshot.LocalVariable(
+                    slot,
+                    jdiLocal.name(),
+                    jdiLocal.signature(),
+                    ref));
         }
         return result;
     }

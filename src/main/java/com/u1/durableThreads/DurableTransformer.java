@@ -90,20 +90,13 @@ public final class DurableTransformer implements ClassFileTransformer {
             InvokeRegistry.storeInstrumentedBytecode(className, instrumented);
 
             // Post-process: analyze the instrumented bytecode to build invoke offset maps.
-            // This must not fail — if it does, we still return the instrumented bytes.
-            try {
-                buildInvokeOffsetMaps(className, instrumented, injector);
-            } catch (Exception mapEx) {
-                System.err.println("[DurableThreads] Warning: failed to build invoke maps for " +
-                        className.replace('/', '.') + ": " + mapEx.getMessage());
-            }
+            buildInvokeOffsetMaps(className, instrumented, injector);
 
             return instrumented;
         } catch (Exception e) {
-            // If instrumentation fails for any class, skip it silently.
-            System.err.println("[DurableThreads] Warning: failed to instrument " +
-                    className.replace('/', '.') + ": " + e.getMessage());
-            return null;
+            throw new RuntimeException(
+                    "[DurableThreads] Failed to instrument class "
+                    + className.replace('/', '.') + ": " + e.getMessage(), e);
         }
     }
 

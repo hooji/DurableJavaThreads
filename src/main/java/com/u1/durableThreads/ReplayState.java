@@ -19,6 +19,13 @@ public final class ReplayState {
      */
     private static volatile CountDownLatch resumeLatch;
 
+    /**
+     * If the JDI worker encounters a fatal error, it stores the message here
+     * before releasing the latch. The replay thread checks this after waking
+     * and throws instead of continuing with incorrect state.
+     */
+    private static volatile String restoreError;
+
     /** Data held per-thread during replay. */
     static final class ReplayData {
         /** Resume invoke-index for each frame, bottom to top. */
@@ -96,6 +103,12 @@ public final class ReplayState {
                 Thread.currentThread().interrupt();
             }
         }
+        // Check if the JDI worker signalled a restore failure
+        String error = restoreError;
+        if (error != null) {
+            restoreError = null;
+            throw new RuntimeException("Thread restore failed: " + error);
+        }
     }
 
     /**
@@ -129,8 +142,18 @@ public final class ReplayState {
      * @param resumeIndices invoke-index for each frame, bottom (0) to top
      */
     public static void activateWithLatch(int[] resumeIndices) {
+        restoreError = null;
         resumeLatch = new CountDownLatch(1);
         REPLAY.set(new ReplayData(resumeIndices));
+    }
+
+    /**
+     * Signal a restore failure. The replay thread will throw after waking
+     * from {@link #resumePoint()} instead of continuing with incorrect state.
+     * Must be called BEFORE {@link #releaseResumePoint()}.
+     */
+    public static void signalRestoreError(String message) {
+        restoreError = message;
     }
 
     /**
@@ -148,7 +171,8 @@ public final class ReplayState {
      * will immediately dispatch to replay logic.
      *
      * @param className fully qualified class name (dot-separated)
-     * @return an uninitialized instance, or null if allocation fails
+     * @return an uninitialized instance
+     * @throws RuntimeException if the class cannot be found or instantiated
      */
     public static Object dummyInstance(String className) {
         try {
@@ -158,7 +182,10 @@ public final class ReplayState {
             var unsafe = (sun.misc.Unsafe) unsafeField.get(null);
             return unsafe.allocateInstance(clazz);
         } catch (Exception e) {
-            return null;
+            throw new RuntimeException(
+                    "Failed to create dummy receiver instance for replay of class '"
+                    + className + "'. This class must be available on the classpath "
+                    + "for thread restoration to proceed.", e);
         }
     }
 }
