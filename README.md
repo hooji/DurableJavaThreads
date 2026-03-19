@@ -134,6 +134,9 @@ mvn package -DskipTests && mvn failsafe:integration-test failsafe:verify
 
 # Everything
 mvn clean verify
+
+# Stress tests (each E2E scenario repeated 20x to detect intermittent failures)
+mvn package -DskipTests && mvn failsafe:integration-test failsafe:verify -Pstress
 ```
 
 ## How It Compares

@@ -167,6 +167,7 @@
             </plugin>
 
             <!-- E2E integration tests: run with 'mvn verify' or 'mvn failsafe:integration-test' -->
+            <!-- Stress tests excluded by default — run with 'mvn verify -Pstress' -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-failsafe-plugin</artifactId>
@@ -176,6 +177,9 @@
                     <includes>
                         <include>**/*IT.java</include>
                     </includes>
+                    <excludes>
+                        <exclude>**/*StressIT.java</exclude>
+                    </excludes>
                 </configuration>
                 <executions>
                     <execution>
@@ -188,4 +192,28 @@
             </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <!-- Stress testing: run E2E tests 20x each to detect intermittent failures.
+             Usage: mvn verify -Pstress
+             Requires: mvn package -DskipTests first -->
+        <profile>
+            <id>stress</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-failsafe-plugin</artifactId>
+                        <configuration>
+                            <groups>e2e</groups>
+                            <includes>
+                                <include>**/*StressIT.java</include>
+                            </includes>
+                            <excludes combine.self="override" />
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 </project>

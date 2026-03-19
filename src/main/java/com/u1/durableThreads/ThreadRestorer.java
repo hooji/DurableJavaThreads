@@ -234,7 +234,12 @@ final class ThreadRestorer {
     }
 
     /**
-     * Poll JDI until the named thread enters WAITING state (blocked on the latch).
+     * Poll JDI until the named thread is WAITING inside {@code resumePoint()}.
+     *
+     * <p>Simply checking for WAITING status is racy — the thread could be
+     * WAITING in some other location (e.g., class loading, lock acquisition)
+     * before reaching resumePoint(). We verify the thread is actually blocked
+     * inside ReplayState.resumePoint() by inspecting its top stack frames.</p>
      */
     private static ThreadReference waitForThreadWaiting(VirtualMachine vm, String threadName,
                                                          long timeoutMs) {
@@ -245,7 +250,10 @@ final class ThreadRestorer {
                     int status = tr.status();
                     if (status == ThreadReference.THREAD_STATUS_WAIT
                             || status == ThreadReference.THREAD_STATUS_SLEEPING) {
-                        return tr;
+                        // Verify the thread is actually inside resumePoint()
+                        if (isAtResumePoint(tr)) {
+                            return tr;
+                        }
                     }
                 }
             }
@@ -257,6 +265,39 @@ final class ThreadRestorer {
             }
         }
         return null;
+    }
+
+    /**
+     * Check if a thread is blocked inside ReplayState.resumePoint() by
+     * inspecting its stack frames. We look for "resumePoint" in the top
+     * few frames to confirm the thread has reached the latch.
+     */
+    private static boolean isAtResumePoint(ThreadReference tr) {
+        try {
+            // Temporarily suspend to read frames safely
+            tr.suspend();
+            try {
+                List<StackFrame> frames = tr.frames(0, Math.min(5, tr.frameCount()));
+                for (StackFrame frame : frames) {
+                    String methodName = frame.location().method().name();
+                    String className = frame.location().declaringType().name();
+                    if (methodName.equals("resumePoint")
+                            && className.contains("ReplayState")) {
+                        return true;
+                    }
+                    // CountDownLatch.await is called from within resumePoint
+                    if (methodName.equals("await")
+                            && className.contains("CountDownLatch")) {
+                        return true;
+                    }
+                }
+            } finally {
+                tr.resume();
+            }
+        } catch (IncompatibleThreadStateException e) {
+            // Can't read frames — not yet in proper state
+        }
+        return false;
     }
 
     /**
