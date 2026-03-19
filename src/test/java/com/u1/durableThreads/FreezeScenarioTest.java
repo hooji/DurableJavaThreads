@@ -351,6 +351,10 @@ class FreezeScenarioTest {
                         @Override
                         public void visitMethodInsn(int opcode, String owner, String name,
                                                     String descriptor, boolean isInterface) {
+                            // Skip invokespecial <init> — matches PrologueInjector behavior
+                            if (opcode == Opcodes.INVOKESPECIAL && "<init>".equals(name)) {
+                                return;
+                            }
                             if (owner.equals(targetOwner) && name.equals(targetName)) {
                                 result[0] = counter[0];
                             }

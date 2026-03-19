@@ -108,6 +108,16 @@ public final class PrologueInjector extends ClassVisitor {
         @Override
         public void visitMethodInsn(int opcode, String owner, String name, String desc,
                                     boolean isInterface) {
+            // Skip-check can't wrap invokespecial <init> — the verifier tracks
+            // uninitialized objects from NEW and requires <init> to be called on
+            // all paths. A skip-check branch would leave the object uninitialized.
+            boolean isConstructorCall = (opcode == Opcodes.INVOKESPECIAL && "<init>".equals(name));
+            if (isConstructorCall) {
+                // Emit directly, no skip-check, no invoke index
+                bufferedOps.add(() -> target.visitMethodInsn(opcode, owner, name, desc, isInterface));
+                return;
+            }
+
             int idx = invokeCounter++;
             invokeInfos.add(new InvokeInfo(idx, opcode, owner, name, desc, isInterface));
             bufferedOps.add(new InvokeMarker(idx, opcode, owner, name, desc, isInterface));
