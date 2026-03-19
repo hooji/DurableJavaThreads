@@ -44,77 +44,138 @@ mvn clean package -DskipTests
 
 This produces `target/durable-threads-0.3.0-SNAPSHOT.jar` — a shaded jar that bundles ASM and Objenesis.
 
-### Usage
+### Hello World
 
-#### 1. Freeze a thread
+Here's the simplest possible example. A thread counts to 3, freezes itself to a file, and is later restored in a new JVM where it picks up right where it left off.
+
+**FreezeDemo.java** — run this first:
 
 ```java
 import com.u1.durableThreads.Durable;
 
-public class MyWorkflow {
+public class FreezeDemo {
     public static void main(String[] args) throws Exception {
-        Thread worker = new Thread(() -> {
-            int progress = 0;
-            for (int i = 0; i < 1000; i++) {
-                progress += doExpensiveWork(i);
-
-                if (shouldCheckpoint(i)) {
-                    Durable.freeze(snapshot -> {
-                        // Save the snapshot however you like
-                        byte[] bytes = serialize(snapshot);
-                        Files.write(Path.of("checkpoint.bin"), bytes);
-                    });
-                    // This line only runs in RESTORED threads
-                }
-            }
-            System.out.println("Done! Result: " + progress);
-        });
+        Thread worker = new Thread(() -> doWork());
         worker.start();
         worker.join();
     }
-}
-```
 
-Run with the agent and JDWP:
+    static void doWork() {
+        int counter = 0;
 
-```bash
-java -javaagent:durable-threads-0.3.0-SNAPSHOT.jar \
-     -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=127.0.0.1:0 \
-     --add-modules jdk.jdi \
-     -cp your-app.jar:durable-threads-0.3.0-SNAPSHOT.jar \
-     MyWorkflow
-```
+        counter++;
+        System.out.println("counter = " + counter);  // prints 1
 
-#### 2. Restore in a new JVM
+        counter++;
+        System.out.println("counter = " + counter);  // prints 2
 
-```java
-import com.u1.durableThreads.Durable;
-import com.u1.durableThreads.snapshot.ThreadSnapshot;
+        counter++;
+        System.out.println("counter = " + counter);  // prints 3
 
-public class RestoreWorkflow {
-    public static void main(String[] args) throws Exception {
-        byte[] bytes = Files.readAllBytes(Path.of("checkpoint.bin"));
-        ThreadSnapshot snapshot = deserialize(bytes);
+        // Freeze the thread — serialize its entire state to a file.
+        // The original thread is terminated here. Everything after
+        // this line ONLY executes in a restored thread.
+        Durable.freeze("./MyFrozenThread.dat");
 
-        Thread restored = Durable.restore(snapshot);
-        restored.start();
-        restored.join();
-        // Thread resumes from after freeze() and continues the loop
+        // --- This code only runs after restore in a new JVM ---
+
+        counter++;
+        System.out.println("counter = " + counter);  // prints 4
+
+        counter++;
+        System.out.println("counter = " + counter);  // prints 5
+
+        System.out.println("Done!");
     }
 }
 ```
 
-Run the restore JVM with the same agent flags.
+**RestoreDemo.java** — run this in a new JVM to resume:
+
+```java
+import com.u1.durableThreads.Durable;
+
+public class RestoreDemo {
+    public static void main(String[] args) throws Exception {
+        // Deserialize the snapshot and rebuild the thread.
+        // The returned thread has the full call stack and all local
+        // variables (including counter == 3) restored from the file.
+        Thread restored = Durable.restore("./MyFrozenThread.dat");
+        restored.start();
+        restored.join();
+        // prints 4, 5, Done!
+    }
+}
+```
+
+Both JVMs must be started with the agent and JDWP enabled:
+
+```bash
+# Compile
+javac -cp durable-threads-0.3.0-SNAPSHOT.jar FreezeDemo.java RestoreDemo.java
+
+# Freeze — prints 1, 2, 3 then writes ./MyFrozenThread.dat
+java -javaagent:durable-threads-0.3.0-SNAPSHOT.jar \
+     -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=127.0.0.1:0 \
+     --add-modules jdk.jdi \
+     -cp .:durable-threads-0.3.0-SNAPSHOT.jar \
+     FreezeDemo
+
+# Restore — prints 4, 5, Done!
+java -javaagent:durable-threads-0.3.0-SNAPSHOT.jar \
+     -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=127.0.0.1:0 \
+     --add-modules jdk.jdi \
+     -cp .:durable-threads-0.3.0-SNAPSHOT.jar \
+     RestoreDemo
+```
+
+That's it. The `counter` local variable was at 3 when the thread froze. The restored thread picks up with `counter == 3` and continues from the line after `freeze()`.
+
+### What happened under the hood
+
+1. `Durable.freeze("./MyFrozenThread.dat")` connected to the JVM's debug interface (JDWP), walked the thread's call stack, captured every local variable (`counter`, `this`, etc.) and every heap object reachable from those variables, and serialized everything into `./MyFrozenThread.dat`. The original thread was then terminated.
+
+2. `Durable.restore("./MyFrozenThread.dat")` deserialized the snapshot, rebuilt all the heap objects first (so object references are available), then re-entered every method on the original call stack using injected replay prologues, set all local variables via JDI, and handed back a `Thread` ready to resume from exactly where `freeze()` was called.
+
+### More control
+
+For full control over serialization, use the `Consumer<ThreadSnapshot>` form:
+
+```java
+Durable.freeze(snapshot -> {
+    // snapshot is a plain Serializable object.
+    // Write it to a file, a database, S3 — anywhere.
+    myDatabase.save("workflow-123", serialize(snapshot));
+});
+```
+
+Or use the built-in `SnapshotFileWriter`:
+
+```java
+Durable.freeze(new SnapshotFileWriter("checkpoint.dat"));
+```
 
 ## API
 
+### `Durable.freeze(String filePath)` / `Durable.freeze(Path path)`
+
+Freezes the calling thread, serializing the snapshot to the given file. The original thread is terminated after the snapshot is written. Code after `freeze()` only executes in restored threads.
+
 ### `Durable.freeze(Consumer<ThreadSnapshot> handler)`
 
-Freezes the calling thread. The handler receives the snapshot for persistence. The original thread is terminated after the handler returns. Code after `freeze()` only executes in restored threads.
+Freezes the calling thread. The handler receives the snapshot for custom persistence. The original thread is terminated after the handler returns. Code after `freeze()` only executes in restored threads.
+
+### `Durable.restore(String filePath)` / `Durable.restore(Path path)`
+
+Deserializes a `ThreadSnapshot` from the given file and returns a `Thread` (not yet started) that will replay the call stack and resume from the freeze point when started.
 
 ### `Durable.restore(ThreadSnapshot snapshot)`
 
 Returns a `Thread` (not yet started) that will replay the call stack and resume from the freeze point when started.
+
+### `SnapshotFileWriter`
+
+A `Consumer<ThreadSnapshot>` that serializes the snapshot to a file. Accepts either a `String` or `Path` in its constructor.
 
 ### `ThreadSnapshot`
 
@@ -159,6 +220,7 @@ src/main/java/com/u1/durableThreads/
 ├── Durable.java              # Public API
 ├── DurableAgent.java          # Java agent (premain)
 ├── DurableTransformer.java    # ClassFileTransformer
+├── SnapshotFileWriter.java    # Consumer that serializes snapshots to a file
 ├── PrologueInjector.java      # ASM ClassVisitor — injects replay prologues
 ├── ReplayState.java           # Thread-local replay coordination
 ├── ThreadFreezer.java         # Freeze implementation (JDI stack walk)
