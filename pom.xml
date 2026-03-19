@@ -19,13 +19,17 @@
             <url>https://www.apache.org/licenses/LICENSE-2.0</url>
             <distribution>repo</distribution>
         </license>
+        <license>
+            <name>MIT License</name>
+            <url>https://opensource.org/licenses/MIT</url>
+            <distribution>repo</distribution>
+        </license>
     </licenses>
 
     <properties>
         <maven.compiler.source>21</maven.compiler.source>
         <maven.compiler.target>21</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <!-- Latest stable: ASM 9.9.1, Objenesis 3.5, JUnit 5.14.2 -->
         <asm.version>9.7.1</asm.version>
         <objenesis.version>3.4</objenesis.version>
         <junit.version>5.11.3</junit.version>

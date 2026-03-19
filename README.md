@@ -185,4 +185,4 @@ src/main/java/com/u1/durableThreads/
 
 ## License
 
-Apache License 2.0 — see [LICENSE](LICENSE) for details.
+Dual-licensed under [Apache 2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT), at your option. See [NOTICE](NOTICE) for third-party attributions.
