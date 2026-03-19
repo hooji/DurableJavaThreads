@@ -33,6 +33,7 @@ public class FreezeDemo {
             System.out.println("i=" + i);
 
             if (i == 5) {
+                System.out.println("About to freeze!");
                 Durable.freeze("./snapshot.dat");
                 // Everything below only runs after restore
                 System.out.println("Resumed!");
@@ -74,6 +75,7 @@ i=2
 i=3
 i=4
 i=5
+About to freeze!
 
 % java -javaagent:durable-threads-0.4.0.jar \
        -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=127.0.0.1:0 \
