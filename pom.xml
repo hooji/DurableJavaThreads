@@ -6,16 +6,26 @@
 
     <groupId>com.u1</groupId>
     <artifactId>durable-threads</artifactId>
-    <version>0.1.0-SNAPSHOT</version>
+    <version>0.2.0-SNAPSHOT</version>
     <packaging>jar</packaging>
 
     <name>Durable Threads</name>
     <description>Durable, persistent threads for stock JVMs — freeze, serialize, and resume thread execution across JVM restarts.</description>
+    <url>https://github.com/hooji/DurableJavaThreads</url>
+
+    <licenses>
+        <license>
+            <name>Apache License, Version 2.0</name>
+            <url>https://www.apache.org/licenses/LICENSE-2.0</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
 
     <properties>
         <maven.compiler.source>21</maven.compiler.source>
         <maven.compiler.target>21</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <!-- Latest stable: ASM 9.9.1, Objenesis 3.5, JUnit 5.14.2 -->
         <asm.version>9.7.1</asm.version>
         <objenesis.version>3.4</objenesis.version>
         <junit.version>5.11.3</junit.version>
@@ -140,6 +150,19 @@
                 <configuration>
                     <!-- Exclude E2E tests from normal 'mvn test' — they need the agent jar -->
                     <excludedGroups>e2e</excludedGroups>
+                </configuration>
+            </plugin>
+
+            <!-- Javadoc generation: run with 'mvn javadoc:javadoc' or 'mvn javadoc:jar' -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-javadoc-plugin</artifactId>
+                <version>3.6.3</version>
+                <configuration>
+                    <source>21</source>
+                    <additionalOptions>--add-modules jdk.jdi</additionalOptions>
+                    <doclint>none</doclint>
+                    <quiet>true</quiet>
                 </configuration>
             </plugin>
 
