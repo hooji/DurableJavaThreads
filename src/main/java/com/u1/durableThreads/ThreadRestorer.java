@@ -23,6 +23,14 @@ final class ThreadRestorer {
      * @return a Thread (not yet started) that will resume from the freeze point
      */
     static Thread restore(ThreadSnapshot snapshot) {
+        // Step 0: Sanity-check the snapshot
+        if (snapshot.frameCount() == 0) {
+            throw new IllegalArgumentException(
+                    "Cannot restore a snapshot with 0 frames. "
+                    + "This usually means the freeze captured the wrong thread "
+                    + "(see JdiHelper.findThread).");
+        }
+
         // Step 1: Force-load all classes referenced in the snapshot.
         // This triggers the agent's ClassFileTransformer, which instruments them
         // and populates InvokeRegistry with their invoke offset maps.

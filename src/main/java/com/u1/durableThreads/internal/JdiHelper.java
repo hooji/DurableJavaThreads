@@ -59,23 +59,22 @@ public final class JdiHelper {
 
     /**
      * Find the JDI ThreadReference corresponding to a Java thread.
+     *
+     * <p><b>Important:</b> We match by thread name, NOT by
+     * {@link ObjectReference#uniqueID()}.  JDI's {@code uniqueID()} is an
+     * internal mirror-object identifier that has <em>no</em> relation to
+     * {@link Thread#threadId()}.  Comparing the two can cause accidental
+     * collisions (returning the wrong thread), leading to corrupt snapshots
+     * with zero user frames.</p>
      */
     public static ThreadReference findThread(VirtualMachine vm, Thread javaThread) {
-        long threadId = javaThread.threadId();
-        for (ThreadReference tr : vm.allThreads()) {
-            // Match by thread ID
-            if (tr.uniqueID() == threadId) {
-                return tr;
-            }
-        }
-        // Fallback: match by name
         String name = javaThread.getName();
         for (ThreadReference tr : vm.allThreads()) {
             if (tr.name().equals(name)) {
                 return tr;
             }
         }
-        throw new RuntimeException("Could not find JDI ThreadReference for thread: " + javaThread.getName());
+        throw new RuntimeException("Could not find JDI ThreadReference for thread: " + name);
     }
 
     private static AttachingConnector findSocketAttachConnector() {

@@ -238,6 +238,13 @@ final class ThreadFreezer {
                         className, methodName, methodSig, bcp, invokeIndex, hash, locals));
             }
 
+            if (frameSnapshots.isEmpty()) {
+                throw new RuntimeException(
+                        "Captured 0 user frames for thread '" + threadName + "'. "
+                        + "This usually means the wrong thread was suspended "
+                        + "(JDI found a thread whose stack contains only infrastructure frames).");
+            }
+
             return new ThreadSnapshot(
                     Instant.now(),
                     threadName,
