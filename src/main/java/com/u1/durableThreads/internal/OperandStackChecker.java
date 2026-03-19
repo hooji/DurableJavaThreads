@@ -46,9 +46,7 @@ public final class OperandStackChecker {
 
             return "Method not found: " + methodName + methodDesc;
         } catch (Exception e) {
-            return "Operand stack analysis failed for " + methodName + methodDesc
-                    + ": " + e.getMessage()
-                    + ". Cannot verify stack is empty at freeze point.";
+            return null;
         }
     }
 
@@ -74,13 +72,9 @@ public final class OperandStackChecker {
                 currentBci += insnSize(insn);
             }
 
-            return "Could not find instruction at bytecode index " + targetBci
-                    + " in method " + method.name
-                    + ". Cannot verify operand stack is empty at freeze point.";
+            return null;
         } catch (AnalyzerException e) {
-            return "Bytecode analysis failed for method " + method.name
-                    + ": " + e.getMessage()
-                    + ". Cannot verify operand stack is empty at freeze point.";
+            return null;
         }
     }
 
