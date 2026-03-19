@@ -27,6 +27,17 @@ class EndToEndFreezeRestoreIT {
         classpath = ChildJvm.buildClasspath();
     }
 
+    /**
+     * Assert that a restore completed successfully — the restored thread
+     * didn't throw and RESTORE_COMPLETE was printed.
+     */
+    private static void assertRestoreSucceeded(ChildJvm.Result restoreResult) {
+        assertFalse(restoreResult.stdout().contains("RESTORE_FAILED"),
+                "Restored thread threw an exception. Stderr:\n" + restoreResult.stderr());
+        assertTrue(restoreResult.stdout().contains("RESTORE_COMPLETE"),
+                "Restore should complete. Stdout:\n" + restoreResult.stdout());
+    }
+
     // ===================================================================
     // Basic tests
     // ===================================================================
@@ -213,8 +224,7 @@ class EndToEndFreezeRestoreIT {
 
             assertTrue(restoreResult.stdout().contains("SNAPSHOT_LOADED=true"),
                     "Should load deep-chain snapshot. Stdout:\n" + restoreResult.stdout());
-            assertTrue(restoreResult.stdout().contains("RESTORE_COMPLETE"),
-                    "Restore should complete. Stdout:\n" + restoreResult.stdout());
+            assertRestoreSucceeded(restoreResult);
 
             // Verify the snapshot has multiple frames (at least 3: outer, middle, inner)
             // The FRAME_COUNT line tells us
@@ -267,8 +277,7 @@ class EndToEndFreezeRestoreIT {
 
             assertTrue(restoreResult.stdout().contains("SNAPSHOT_LOADED=true"),
                     "Should load loop snapshot. Stdout:\n" + restoreResult.stdout());
-            assertTrue(restoreResult.stdout().contains("RESTORE_COMPLETE"),
-                    "Restore should complete. Stdout:\n" + restoreResult.stdout());
+            assertRestoreSucceeded(restoreResult);
         } finally {
             Files.deleteIfExists(snapshotFile);
         }
@@ -314,8 +323,7 @@ class EndToEndFreezeRestoreIT {
 
             assertTrue(restoreResult.stdout().contains("SNAPSHOT_LOADED=true"),
                     "Should load return-value snapshot. Stdout:\n" + restoreResult.stdout());
-            assertTrue(restoreResult.stdout().contains("RESTORE_COMPLETE"),
-                    "Restore should complete. Stdout:\n" + restoreResult.stdout());
+            assertRestoreSucceeded(restoreResult);
         } finally {
             Files.deleteIfExists(snapshotFile);
         }
@@ -368,8 +376,7 @@ class EndToEndFreezeRestoreIT {
 
             assertTrue(restoreResult.stdout().contains("SNAPSHOT_LOADED=true"),
                     "Should load heap snapshot. Stdout:\n" + restoreResult.stdout());
-            assertTrue(restoreResult.stdout().contains("RESTORE_COMPLETE"),
-                    "Restore should complete. Stdout:\n" + restoreResult.stdout());
+            assertRestoreSucceeded(restoreResult);
 
             // Verify primitive local survived
             assertTrue(restoreResult.stdout().contains("AFTER_FREEZE primitiveLocal=99"),
@@ -436,8 +443,7 @@ class EndToEndFreezeRestoreIT {
 
             assertTrue(restoreResult.stdout().contains("SNAPSHOT_LOADED=true"),
                     "Should load fib snapshot. Stdout:\n" + restoreResult.stdout());
-            assertTrue(restoreResult.stdout().contains("RESTORE_COMPLETE"),
-                    "Restore should complete. Stdout:\n" + restoreResult.stdout());
+            assertRestoreSucceeded(restoreResult);
         } finally {
             Files.deleteIfExists(snapshotFile);
         }
@@ -481,8 +487,7 @@ class EndToEndFreezeRestoreIT {
 
             assertTrue(restoreResult.stdout().contains("SNAPSHOT_LOADED=true"),
                     "Should load try-catch snapshot");
-            assertTrue(restoreResult.stdout().contains("RESTORE_COMPLETE"),
-                    "Restore should complete");
+            assertRestoreSucceeded(restoreResult);
         } finally {
             Files.deleteIfExists(snapshotFile);
         }
@@ -526,8 +531,7 @@ class EndToEndFreezeRestoreIT {
 
             assertTrue(restoreResult.stdout().contains("SNAPSHOT_LOADED=true"),
                     "Should load nested loop snapshot");
-            assertTrue(restoreResult.stdout().contains("RESTORE_COMPLETE"),
-                    "Restore should complete");
+            assertRestoreSucceeded(restoreResult);
         } finally {
             Files.deleteIfExists(snapshotFile);
         }
@@ -571,8 +575,7 @@ class EndToEndFreezeRestoreIT {
 
             assertTrue(restoreResult.stdout().contains("SNAPSHOT_LOADED=true"),
                     "Should load many-locals snapshot");
-            assertTrue(restoreResult.stdout().contains("RESTORE_COMPLETE"),
-                    "Restore should complete");
+            assertRestoreSucceeded(restoreResult);
 
             // Verify the restored thread produced AFTER_FREEZE output
             // (actual local values depend on JDI local-setting success)

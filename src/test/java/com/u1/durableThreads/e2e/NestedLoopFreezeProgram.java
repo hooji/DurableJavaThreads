@@ -42,8 +42,12 @@ public class NestedLoopFreezeProgram {
     static void doWork(String snapshotFile) {
         int[] result = freezeInNestedLoop(5, 5, 2, 3, snapshotFile);
         // Only in RESTORED thread
-        System.out.println("TOTAL_ITERATIONS=" + result[0]);
-        System.out.println("FROZE_AT_TOTAL=" + result[1]);
+        if (result != null) {
+            System.out.println("TOTAL_ITERATIONS=" + result[0]);
+            System.out.println("FROZE_AT_TOTAL=" + result[1]);
+        } else {
+            System.out.println("NESTED_RESULT=null");
+        }
         System.out.flush();
     }
 

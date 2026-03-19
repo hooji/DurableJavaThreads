@@ -55,13 +55,6 @@ final class ThreadRestorer {
             // until the JDI worker sets locals and releases it
             ReplayState.activateWithLatch(resumeIndices);
 
-            Thread.currentThread().setUncaughtExceptionHandler((t, e) -> {
-                if (!(e instanceof com.u1.durableThreads.exception.ThreadFrozenError)) {
-                    System.err.println("Uncaught exception in restored thread: " + e);
-                    e.printStackTrace();
-                }
-            });
-
             try {
                 FrameSnapshot bottomFrame = snapshot.bottomFrame();
                 invokeBottomFrame(bottomFrame, restoredHeap, heapRestorer, snapshot);
