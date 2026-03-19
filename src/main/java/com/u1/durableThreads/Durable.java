@@ -69,24 +69,4 @@ public final class Durable {
 
         return ThreadRestorer.restore(snapshot);
     }
-
-    /**
-     * Install the default uncaught exception handler that silently ignores
-     * {@link ThreadFrozenError}. Called automatically by the agent at startup.
-     */
-    static void installExceptionHandler() {
-        Thread.UncaughtExceptionHandler existing = Thread.getDefaultUncaughtExceptionHandler();
-        Thread.setDefaultUncaughtExceptionHandler((thread, throwable) -> {
-            if (throwable instanceof ThreadFrozenError) {
-                // Silently ignore — the thread was intentionally terminated after freezing
-                return;
-            }
-            if (existing != null) {
-                existing.uncaughtException(thread, throwable);
-            } else {
-                System.err.println("Exception in thread \"" + thread.getName() + "\"");
-                throwable.printStackTrace();
-            }
-        });
-    }
 }

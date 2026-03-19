@@ -113,10 +113,29 @@ final class ThreadFreezer {
             // Terminate the target thread by interrupting it.
             // The thread is waiting on lock.wait(), so interrupt will wake it.
             // We set a flag that causes ThreadFrozenError to be thrown.
-            targetThread.interrupt();
-            // Directly stop the thread by having it throw ThreadFrozenError
-            // We do this by setting a special thread-local flag
+            // Install a per-thread handler to silently swallow the ThreadFrozenError
+            // that terminates this specific thread. We scope it narrowly — only this
+            // thread, only ThreadFrozenError — so we don't mask real exceptions.
+            Thread.UncaughtExceptionHandler previous = targetThread.getUncaughtExceptionHandler();
+            targetThread.setUncaughtExceptionHandler((t, e) -> {
+                if (e instanceof ThreadFrozenError) {
+                    return; // expected — silently swallow
+                }
+                // Not a freeze error — delegate to whatever was there before
+                if (previous != null) {
+                    previous.uncaughtException(t, e);
+                } else {
+                    Thread.UncaughtExceptionHandler defaultHandler = Thread.getDefaultUncaughtExceptionHandler();
+                    if (defaultHandler != null) {
+                        defaultHandler.uncaughtException(t, e);
+                    } else {
+                        System.err.println("Exception in thread \"" + t.getName() + "\"");
+                        e.printStackTrace();
+                    }
+                }
+            });
             FreezeFlag.markFrozen(targetThread);
+            targetThread.interrupt();
 
         } finally {
             vm.dispose();

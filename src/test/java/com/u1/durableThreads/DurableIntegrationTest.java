@@ -118,17 +118,4 @@ class DurableIntegrationTest {
                 "Simple snapshot serialized to " + bytes.length + " bytes (expected < 10KB)");
     }
 
-    @Test
-    void installExceptionHandlerIgnoresThreadFrozenError() {
-        // Install the handler
-        Durable.installExceptionHandler();
-
-        Thread.UncaughtExceptionHandler handler = Thread.getDefaultUncaughtExceptionHandler();
-        assertNotNull(handler);
-
-        // ThreadFrozenError should be silently ignored (no exception thrown)
-        assertDoesNotThrow(() ->
-                handler.uncaughtException(Thread.currentThread(),
-                        new com.u1.durableThreads.exception.ThreadFrozenError()));
-    }
 }
