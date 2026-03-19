@@ -27,6 +27,10 @@ class EndToEndFreezeRestoreIT {
         classpath = ChildJvm.buildClasspath();
     }
 
+    // ===================================================================
+    // Basic tests
+    // ===================================================================
+
     @Test
     @DisplayName("Agent loads successfully in child JVM")
     void agentLoads() throws Exception {
@@ -158,6 +162,162 @@ class EndToEndFreezeRestoreIT {
                 files.sorted(java.util.Comparator.reverseOrder())
                         .forEach(p -> { try { Files.delete(p); } catch (IOException ignored) {} });
             }
+        }
+    }
+
+    // ===================================================================
+    // E2E freeze/restore scenarios (duplicated from unit tests)
+    // ===================================================================
+
+    @Test
+    @DisplayName("E2E: Deep call chain freeze and restore")
+    void deepCallChainFreezeAndRestore() throws Exception {
+        Path snapshotFile = Files.createTempFile("durable-deep-", ".bin");
+        try {
+            // Step 1: Freeze — 3 levels deep (outer → middle → inner)
+            int freezePort = ChildJvm.findFreePort();
+            ChildJvm.Result freezeResult = ChildJvm.run(
+                    "com.u1.durableThreads.e2e.DeepCallChainFreezeProgram",
+                    classpath, freezePort,
+                    new String[]{snapshotFile.toString()}, 60);
+
+            System.out.println("=== DEEP CHAIN FREEZE STDOUT ===\n" + freezeResult.stdout());
+            if (!freezeResult.stderr().isBlank()) {
+                System.out.println("=== DEEP CHAIN FREEZE STDERR ===\n" + freezeResult.stderr());
+            }
+
+            assertTrue(freezeResult.stdout().contains("FREEZE_COMPLETE"),
+                    "Deep chain freeze should complete. Stdout:\n" + freezeResult.stdout());
+            assertTrue(freezeResult.stdout().contains("OUTER_BEFORE=15"),
+                    "Should execute outer method. Stdout:\n" + freezeResult.stdout());
+            assertTrue(freezeResult.stdout().contains("MIDDLE_BEFORE=30"),
+                    "Should execute middle method. Stdout:\n" + freezeResult.stdout());
+            assertTrue(freezeResult.stdout().contains("INNER_BEFORE=37"),
+                    "Should execute inner method. Stdout:\n" + freezeResult.stdout());
+            // Original thread should NOT reach post-freeze code
+            assertFalse(freezeResult.stdout().contains("INNER_AFTER"),
+                    "Original thread should not continue past freeze");
+            assertTrue(Files.size(snapshotFile) > 100, "Snapshot file should have content");
+
+            // Step 2: Restore in a NEW JVM
+            int restorePort = ChildJvm.findFreePort();
+            ChildJvm.Result restoreResult = ChildJvm.run(
+                    "com.u1.durableThreads.e2e.RestoreProgram",
+                    classpath, restorePort,
+                    new String[]{snapshotFile.toString()}, 60);
+
+            System.out.println("=== DEEP CHAIN RESTORE STDOUT ===\n" + restoreResult.stdout());
+            if (!restoreResult.stderr().isBlank()) {
+                System.out.println("=== DEEP CHAIN RESTORE STDERR ===\n" + restoreResult.stderr());
+            }
+
+            assertTrue(restoreResult.stdout().contains("SNAPSHOT_LOADED=true"),
+                    "Should load deep-chain snapshot. Stdout:\n" + restoreResult.stdout());
+            assertTrue(restoreResult.stdout().contains("RESTORE_COMPLETE"),
+                    "Restore should complete. Stdout:\n" + restoreResult.stdout());
+
+            // Verify the snapshot has multiple frames (at least 3: outer, middle, inner)
+            // The FRAME_COUNT line tells us
+            assertTrue(restoreResult.stdout().contains("FRAME_COUNT="),
+                    "Should report frame count. Stdout:\n" + restoreResult.stdout());
+        } finally {
+            Files.deleteIfExists(snapshotFile);
+        }
+    }
+
+    @Test
+    @DisplayName("E2E: Loop freeze captures correct iteration state")
+    void loopFreezeAndRestore() throws Exception {
+        Path snapshotFile = Files.createTempFile("durable-loop-", ".bin");
+        try {
+            // Step 1: Freeze inside a loop at iteration 4
+            int freezePort = ChildJvm.findFreePort();
+            ChildJvm.Result freezeResult = ChildJvm.run(
+                    "com.u1.durableThreads.e2e.LoopFreezeProgram",
+                    classpath, freezePort,
+                    new String[]{snapshotFile.toString()}, 60);
+
+            System.out.println("=== LOOP FREEZE STDOUT ===\n" + freezeResult.stdout());
+            if (!freezeResult.stderr().isBlank()) {
+                System.out.println("=== LOOP FREEZE STDERR ===\n" + freezeResult.stderr());
+            }
+
+            assertTrue(freezeResult.stdout().contains("FREEZE_COMPLETE"),
+                    "Loop freeze should complete. Stdout:\n" + freezeResult.stdout());
+            assertTrue(freezeResult.stdout().contains("BEFORE_FREEZE sum=10"),
+                    "Should capture sum=10 at i=4. Stdout:\n" + freezeResult.stdout());
+            // Original thread should NOT print AFTER_FREEZE or FINAL_SUM
+            assertFalse(freezeResult.stdout().contains("AFTER_FREEZE"),
+                    "Original thread should not continue past freeze");
+            assertFalse(freezeResult.stdout().contains("FINAL_SUM"),
+                    "Original thread should not complete the loop");
+            assertTrue(Files.size(snapshotFile) > 100, "Snapshot file should have content");
+
+            // Step 2: Restore in a NEW JVM
+            int restorePort = ChildJvm.findFreePort();
+            ChildJvm.Result restoreResult = ChildJvm.run(
+                    "com.u1.durableThreads.e2e.RestoreProgram",
+                    classpath, restorePort,
+                    new String[]{snapshotFile.toString()}, 60);
+
+            System.out.println("=== LOOP RESTORE STDOUT ===\n" + restoreResult.stdout());
+            if (!restoreResult.stderr().isBlank()) {
+                System.out.println("=== LOOP RESTORE STDERR ===\n" + restoreResult.stderr());
+            }
+
+            assertTrue(restoreResult.stdout().contains("SNAPSHOT_LOADED=true"),
+                    "Should load loop snapshot. Stdout:\n" + restoreResult.stdout());
+            assertTrue(restoreResult.stdout().contains("RESTORE_COMPLETE"),
+                    "Restore should complete. Stdout:\n" + restoreResult.stdout());
+        } finally {
+            Files.deleteIfExists(snapshotFile);
+        }
+    }
+
+    @Test
+    @DisplayName("E2E: Return values preserved across freeze/restore")
+    void returnValueFreezeAndRestore() throws Exception {
+        Path snapshotFile = Files.createTempFile("durable-retval-", ".bin");
+        try {
+            // Step 1: Freeze between chained method calls
+            int freezePort = ChildJvm.findFreePort();
+            ChildJvm.Result freezeResult = ChildJvm.run(
+                    "com.u1.durableThreads.e2e.ReturnValueFreezeProgram",
+                    classpath, freezePort,
+                    new String[]{snapshotFile.toString()}, 60);
+
+            System.out.println("=== RETVAL FREEZE STDOUT ===\n" + freezeResult.stdout());
+            if (!freezeResult.stderr().isBlank()) {
+                System.out.println("=== RETVAL FREEZE STDERR ===\n" + freezeResult.stderr());
+            }
+
+            assertTrue(freezeResult.stdout().contains("FREEZE_COMPLETE"),
+                    "Return-value freeze should complete. Stdout:\n" + freezeResult.stdout());
+            assertTrue(freezeResult.stdout().contains("BEFORE_FREEZE v1=15 v2=45 v3=43"),
+                    "Should capture pre-freeze locals. Stdout:\n" + freezeResult.stdout());
+            // Original thread should not continue past freeze
+            assertFalse(freezeResult.stdout().contains("AFTER_FREEZE"),
+                    "Original thread should not continue past freeze");
+            assertTrue(Files.size(snapshotFile) > 100, "Snapshot file should have content");
+
+            // Step 2: Restore in a NEW JVM
+            int restorePort = ChildJvm.findFreePort();
+            ChildJvm.Result restoreResult = ChildJvm.run(
+                    "com.u1.durableThreads.e2e.RestoreProgram",
+                    classpath, restorePort,
+                    new String[]{snapshotFile.toString()}, 60);
+
+            System.out.println("=== RETVAL RESTORE STDOUT ===\n" + restoreResult.stdout());
+            if (!restoreResult.stderr().isBlank()) {
+                System.out.println("=== RETVAL RESTORE STDERR ===\n" + restoreResult.stderr());
+            }
+
+            assertTrue(restoreResult.stdout().contains("SNAPSHOT_LOADED=true"),
+                    "Should load return-value snapshot. Stdout:\n" + restoreResult.stdout());
+            assertTrue(restoreResult.stdout().contains("RESTORE_COMPLETE"),
+                    "Restore should complete. Stdout:\n" + restoreResult.stdout());
+        } finally {
+            Files.deleteIfExists(snapshotFile);
         }
     }
 }
