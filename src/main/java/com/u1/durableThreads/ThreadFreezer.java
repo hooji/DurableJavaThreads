@@ -71,16 +71,60 @@ final class ThreadFreezer {
             }
         }
 
-        // If we reach here, either:
-        // - The worker failed (check error)
-        // - We timed out
-        // - This is a restored thread returning from freeze()
+        // We woke from lock.wait() without InterruptedException.
+        // This can happen if lock.notifyAll() in the finally block
+        // raced ahead of targetThread.interrupt() in performFreeze.
+        // Check the freeze flag — if set, we were successfully frozen.
+        if (FreezeFlag.isFrozen(Thread.currentThread())) {
+            throw new ThreadFrozenError();
+        }
+
         if (error[0] != null) {
             throw new RuntimeException("Freeze failed", error[0]);
         }
 
-        // If we're still alive and no error, this is the restored thread returning.
-        // (The original thread would have been killed by ThreadFrozenError.)
+        // Safety net: if we somehow reach this point in the ORIGINAL thread
+        // (not a restored thread), block forever. This should never happen —
+        // the freeze flag check above should catch it — but a frozen thread
+        // must NEVER be allowed to continue executing user code.
+        //
+        // For restored threads this code is unreachable: the replay prologue
+        // skips past the freeze() call entirely and resumes after it.
+        //
+        // We sleep in a loop (re-checking the freeze flag on each wake)
+        // and fall back to a busy spin as an absolute last resort.
+        if (Thread.currentThread().isInterrupted()) {
+            // Clear the flag so sleep doesn't immediately throw
+            Thread.interrupted();
+            throw new ThreadFrozenError();
+        }
+        blockForever();
+    }
+
+    /**
+     * Block the current thread indefinitely. Called as a safety net to
+     * guarantee that a frozen thread can never continue past freeze().
+     */
+    private static void blockForever() {
+        // Phase 1: sleep loop (low CPU cost)
+        for (int i = 0; i < 100; i++) {
+            if (FreezeFlag.isFrozen(Thread.currentThread())) {
+                throw new ThreadFrozenError();
+            }
+            try {
+                Thread.sleep(Long.MAX_VALUE);
+            } catch (InterruptedException e) {
+                // Re-check flag on each wake
+                if (FreezeFlag.isFrozen(Thread.currentThread())) {
+                    throw new ThreadFrozenError();
+                }
+            }
+        }
+        // Phase 2: busy spin (should truly never be reached)
+        //noinspection InfiniteLoopStatement
+        while (true) {
+            Thread.onSpinWait();
+        }
     }
 
     private static void performFreeze(Thread targetThread, Consumer<ThreadSnapshot> handler) {
