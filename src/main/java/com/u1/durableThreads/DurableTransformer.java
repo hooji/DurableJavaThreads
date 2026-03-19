@@ -128,43 +128,29 @@ public final class DurableTransformer implements ClassFileTransformer {
 
             String key = InvokeRegistry.key(className, method.name, method.desc);
 
-            // === PRIMARY: raw bytecode scan ===
+            // === PRIMARY (exact): raw bytecode scan ===
             List<Integer> rawOffsets;
             try {
                 rawOffsets = RawBytecodeScanner.scanInvokeOffsets(
                         instrumented, method.name, method.desc);
             } catch (Exception e) {
-                rawOffsets = null;
+                System.err.println("[DurableThreads] Raw bytecode scanner failed for "
+                        + className.replace('/', '.') + "." + method.name + ": " + e);
+                rawOffsets = List.of();
             }
 
-            // === SECONDARY: ASM tree API ===
+            // === CROSS-CHECK (approximate): ASM tree API ===
+            // Tree can't predict ldc/ldc_w promotion so BCPs may differ, but the
+            // invoke COUNT must agree. A count mismatch means one scanner has a bug
+            // in its invoke filtering.
             List<Integer> treeOffsets = computeOffsetsViaTree(method);
-
-            // Both methods must agree on the NUMBER of invokes.
-            // BCPs may differ slightly due to ldc/ldc_w promotion (the tree can't
-            // predict CP index sizes). The raw scanner is always the ground truth.
-            List<Integer> offsets;
-            if (rawOffsets != null) {
-                offsets = rawOffsets;
-                if (!treeOffsets.isEmpty() || !rawOffsets.isEmpty()) {
-                    if (rawOffsets.size() != treeOffsets.size()) {
-                        // COUNT mismatch is a real bug — the scanners disagree on
-                        // which instructions are invokes
-                        System.err.println("[DurableThreads] BCP CROSS-CHECK FAILED (count mismatch) for "
-                                + className.replace('/', '.') + "." + method.name
-                                + "\n  raw =" + rawOffsets
-                                + "\n  tree=" + treeOffsets);
-                    }
-                    // BCP value differences are expected (ldc/ldc_w, wide iinc) —
-                    // the raw scanner's values are correct
-                }
-            } else {
-                // Raw scanner crashed — fall back to tree with warning
-                offsets = treeOffsets;
-                System.err.println("[DurableThreads] Raw scanner failed for "
+            if (rawOffsets.size() != treeOffsets.size()) {
+                System.err.println("[DurableThreads] CROSS-CHECK FAILED (count) for "
                         + className.replace('/', '.') + "." + method.name
-                        + ", using tree offsets (approximate): " + treeOffsets);
+                        + " raw=" + rawOffsets.size() + " tree=" + treeOffsets.size());
             }
+
+            List<Integer> offsets = rawOffsets; // always use the exact values
 
             if (!offsets.isEmpty()) {
                 InvokeRegistry.register(key, offsets);
