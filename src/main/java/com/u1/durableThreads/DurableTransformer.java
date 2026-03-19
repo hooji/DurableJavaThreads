@@ -14,13 +14,20 @@ import java.util.List;
  */
 public final class DurableTransformer implements ClassFileTransformer {
 
-    /** Prefixes of classes that must NOT be instrumented to avoid recursion. */
+    /** Prefixes of classes that must NOT be instrumented. */
     private static final String[] EXCLUDED_PREFIXES = {
+            // Our own library and shaded dependencies
             "com/u1/durableThreads/",
             "org/objectweb/asm/",
             "org/objenesis/",
-            // Shaded copies
             "com/u1/durableThreads/shaded/",
+            // JDK internals — COMPUTE_FRAMES can't resolve bootstrap class hierarchies,
+            // and instrumenting JDK classes would cause stability issues
+            "java/",
+            "javax/",
+            "jdk/",
+            "sun/",
+            "com/sun/",
     };
 
     @Override
