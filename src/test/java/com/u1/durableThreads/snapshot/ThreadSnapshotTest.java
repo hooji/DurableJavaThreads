@@ -19,7 +19,7 @@ class ThreadSnapshotTest {
         );
         var frame = new FrameSnapshot(
                 "com/example/Foo", "doWork", "()V",
-                42, new byte[]{1, 2, 3}, locals);
+                42, 0, new byte[]{1, 2, 3}, locals);
         var heap = List.of(
                 new ObjectSnapshot(1L, "com.example.Foo", ObjectKind.REGULAR,
                         Map.of("field1", new PrimitiveRef(10)), null)
@@ -40,11 +40,11 @@ class ThreadSnapshotTest {
     @Test
     void multipleFramesOrderedBottomToTop() {
         var bottom = new FrameSnapshot("com/example/Main", "main", "([Ljava/lang/String;)V",
-                10, new byte[0], List.of());
+                10, 0, new byte[0], List.of());
         var middle = new FrameSnapshot("com/example/Service", "process", "()V",
-                25, new byte[0], List.of());
+                25, 0, new byte[0], List.of());
         var top = new FrameSnapshot("com/example/Service", "compute", "(I)I",
-                87, new byte[0], List.of());
+                87, 0, new byte[0], List.of());
 
         var snapshot = new ThreadSnapshot(Instant.now(), "t1",
                 List.of(bottom, middle, top), List.of());

@@ -180,11 +180,16 @@ final class ThreadFreezer {
                     }
                 }
 
+                // Compute the invoke index from the BCP — this is used at restore
+                // time to set __skip so the replay skips the freeze invoke.
+                String invokeKey = InvokeRegistry.key(className, methodName, methodSig);
+                int invokeIndex = InvokeRegistry.getInvokeIndex(invokeKey, bcp);
+
                 // Capture local variables
                 List<com.u1.durableThreads.snapshot.LocalVariable> locals = captureLocals(jdiFrame, heapWalker);
 
                 frameSnapshots.add(new FrameSnapshot(
-                        className, methodName, methodSig, bcp, hash, locals));
+                        className, methodName, methodSig, bcp, invokeIndex, hash, locals));
             }
 
             return new ThreadSnapshot(

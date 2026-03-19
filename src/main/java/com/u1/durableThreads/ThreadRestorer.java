@@ -1,8 +1,6 @@
 package com.u1.durableThreads;
 
 import com.sun.jdi.*;
-import com.sun.jdi.event.*;
-import com.sun.jdi.request.*;
 import com.u1.durableThreads.exception.BytecodeMismatchException;
 import com.u1.durableThreads.internal.*;
 import com.u1.durableThreads.snapshot.*;
@@ -25,21 +23,28 @@ final class ThreadRestorer {
      * @return a Thread (not yet started) that will resume from the freeze point
      */
     static Thread restore(ThreadSnapshot snapshot) {
-        // Step 1: Validate bytecode hashes
+        // Step 1: Force-load all classes referenced in the snapshot.
+        // This triggers the agent's ClassFileTransformer, which instruments them
+        // and populates InvokeRegistry with their invoke offset maps.
+        // Must happen BEFORE computeResumeIndices() which reads InvokeRegistry.
+        ensureClassesLoaded(snapshot);
+
+        // Step 2: Validate bytecode hashes
         validateBytecodeHashes(snapshot);
 
-        // Step 2: Rebuild the heap
+        // Step 3: Rebuild the heap
         HeapRestorer heapRestorer = new HeapRestorer();
         Map<Long, Object> restoredHeap = heapRestorer.restoreAll(snapshot.heap());
 
-        // Step 3: Build replay state
+        // Step 4: Build replay state (now InvokeRegistry has the data)
         int[] resumeIndices = computeResumeIndices(snapshot);
 
         // Step 4: Create the replay thread
         String threadName = snapshot.threadName() + "-restored";
         Thread replayThread = new Thread(() -> {
-            // Activate replay mode
-            ReplayState.activate(resumeIndices);
+            // Activate replay mode with latch — resumePoint() will block
+            // until the JDI worker sets locals and releases it
+            ReplayState.activateWithLatch(resumeIndices);
 
             Thread.currentThread().setUncaughtExceptionHandler((t, e) -> {
                 if (!(e instanceof com.u1.durableThreads.exception.ThreadFrozenError)) {
@@ -90,15 +95,16 @@ final class ThreadRestorer {
         }
     }
 
+    /**
+     * Read the pre-computed invoke indices directly from the snapshot.
+     * These were computed at freeze time when the exact BCP→index mapping
+     * was available from the freezing JVM's InvokeRegistry.
+     */
     private static int[] computeResumeIndices(ThreadSnapshot snapshot) {
         int[] indices = new int[snapshot.frameCount()];
 
         for (int i = 0; i < snapshot.frameCount(); i++) {
-            FrameSnapshot frame = snapshot.frames().get(i);
-            String key = InvokeRegistry.key(
-                    frame.className(), frame.methodName(), frame.methodSignature());
-            int invokeIndex = InvokeRegistry.getInvokeIndex(key, frame.bytecodeIndex());
-            indices[i] = Math.max(0, invokeIndex);
+            indices[i] = Math.max(0, snapshot.frames().get(i).invokeIndex());
         }
 
         return indices;
@@ -130,6 +136,14 @@ final class ThreadRestorer {
         method.invoke(receiver, args);
     }
 
+    /**
+     * Configure JDI worker that waits for the replay thread to block inside
+     * {@link ReplayState#resumePoint()}, then suspends it via JDI, sets local
+     * variables in all frames, deactivates replay mode, releases the latch,
+     * and resumes the thread.
+     *
+     * <p>No breakpoints needed — the latch provides deterministic synchronization.</p>
+     */
     private static void configureJdiRestore(Thread replayThread, String threadName,
                                             ThreadSnapshot snapshot,
                                             Map<Long, Object> restoredHeap,
@@ -139,59 +153,36 @@ final class ThreadRestorer {
                 int port = JdiHelper.detectJdwpPort();
                 if (port < 0) {
                     System.err.println("[DurableThreads] JDWP not available for restore");
+                    ReplayState.releaseResumePoint(); // unblock so thread doesn't hang
                     return;
                 }
 
                 VirtualMachine vm = JdiHelper.connect(port);
                 try {
-                    // Set a breakpoint on ReplayState.resumePoint()
-                    List<ReferenceType> types = vm.classesByName("com.u1.durableThreads.ReplayState");
-                    if (types.isEmpty()) {
-                        System.err.println("[DurableThreads] ReplayState not loaded");
+                    // Wait for the replay thread to reach resumePoint() and block on the latch.
+                    // We poll the thread state until it's WAITING (blocked on CountDownLatch.await).
+                    ThreadReference tr = waitForThreadWaiting(vm, threadName, 30_000);
+                    if (tr == null) {
+                        System.err.println("[DurableThreads] Timeout waiting for replay thread to reach resumePoint()");
+                        ReplayState.releaseResumePoint();
                         return;
                     }
 
-                    ReferenceType replayStateType = types.get(0);
-                    Method resumePointMethod = replayStateType.methodsByName("resumePoint").get(0);
-                    Location bpLocation = resumePointMethod.location();
+                    // Suspend the thread so we can safely modify its locals
+                    tr.suspend();
+                    try {
+                        // Set local variables in all frames
+                        setLocalsViaJdi(vm, tr, snapshot, restoredHeap, heapRestorer);
 
-                    BreakpointRequest bpReq = vm.eventRequestManager()
-                            .createBreakpointRequest(bpLocation);
-                    bpReq.setSuspendPolicy(EventRequest.SUSPEND_EVENT_THREAD);
-                    bpReq.enable();
-
-                    // Wait for the breakpoint in the replay thread
-                    EventQueue eventQueue = vm.eventQueue();
-                    boolean handled = false;
-                    while (!handled) {
-                        EventSet eventSet = eventQueue.remove(30_000); // 30s timeout
-                        if (eventSet == null) {
-                            System.err.println("[DurableThreads] Timeout waiting for resumePoint breakpoint");
-                            break;
-                        }
-
-                        for (Event event : eventSet) {
-                            if (event instanceof BreakpointEvent bpEvent) {
-                                ThreadReference tr = bpEvent.thread();
-                                if (tr.name().equals(threadName)) {
-                                    // Set local variables in all frames
-                                    setLocalsViaJdi(vm, tr, snapshot, restoredHeap, heapRestorer);
-
-                                    // Deactivate replay mode
-                                    deactivateReplayViaJdi(tr, replayStateType);
-
-                                    // Cleanup and resume
-                                    bpReq.disable();
-                                    vm.eventRequestManager().deleteEventRequest(bpReq);
-                                    eventSet.resume();
-                                    handled = true;
-                                    break;
-                                }
-                            }
-                        }
-                        if (!handled) {
-                            eventSet.resume();
-                        }
+                        // Deactivate replay mode and release latch.
+                        // We call these directly (same JVM, shared statics)
+                        // rather than via JDI invokeMethod, which requires
+                        // event-suspended threads.
+                        ReplayState.deactivate();
+                        ReplayState.releaseResumePoint();
+                    } finally {
+                        // Resume the thread — it wakes from the latch and continues
+                        tr.resume();
                     }
                 } finally {
                     vm.dispose();
@@ -199,10 +190,37 @@ final class ThreadRestorer {
             } catch (Exception e) {
                 System.err.println("[DurableThreads] JDI restore failed: " + e.getMessage());
                 e.printStackTrace(System.err);
+                ReplayState.releaseResumePoint(); // ensure thread doesn't hang on failure
             }
         }, "durable-restore-jdi-worker");
         jdiWorker.setDaemon(true);
         jdiWorker.start();
+    }
+
+    /**
+     * Poll JDI until the named thread enters WAITING state (blocked on the latch).
+     */
+    private static ThreadReference waitForThreadWaiting(VirtualMachine vm, String threadName,
+                                                         long timeoutMs) {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        while (System.currentTimeMillis() < deadline) {
+            for (ThreadReference tr : vm.allThreads()) {
+                if (tr.name().equals(threadName)) {
+                    int status = tr.status();
+                    if (status == ThreadReference.THREAD_STATUS_WAIT
+                            || status == ThreadReference.THREAD_STATUS_SLEEPING) {
+                        return tr;
+                    }
+                }
+            }
+            try {
+                Thread.sleep(10); // poll every 10ms
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return null;
+            }
+        }
+        return null;
     }
 
     /**
@@ -357,6 +375,33 @@ final class ThreadRestorer {
                     Collections.emptyList(), ObjectReference.INVOKE_SINGLE_THREADED);
         } catch (Exception e) {
             System.err.println("[DurableThreads] Failed to deactivate replay via JDI: " + e);
+        }
+    }
+
+    private static void releaseResumePointViaJdi(ThreadReference threadRef,
+                                                  ReferenceType replayStateType) {
+        try {
+            Method releaseMethod = replayStateType.methodsByName("releaseResumePoint").get(0);
+            threadRef.invokeMethod(threadRef, releaseMethod,
+                    Collections.emptyList(), ObjectReference.INVOKE_SINGLE_THREADED);
+        } catch (Exception e) {
+            System.err.println("[DurableThreads] Failed to release resume point via JDI: " + e);
+        }
+    }
+
+    /**
+     * Force-load all classes referenced in the snapshot frames.
+     * This triggers the agent's ClassFileTransformer which populates
+     * InvokeRegistry with invoke offset maps needed by computeResumeIndices().
+     */
+    private static void ensureClassesLoaded(ThreadSnapshot snapshot) {
+        for (FrameSnapshot frame : snapshot.frames()) {
+            String className = frame.className().replace('/', '.');
+            try {
+                Class.forName(className);
+            } catch (ClassNotFoundException e) {
+                // Class not available in this JVM — will fail later at invoke time
+            }
         }
     }
 

@@ -46,7 +46,7 @@ class DurableIntegrationTest {
         );
         var frame = new FrameSnapshot(
                 "com/example/Foo", "doWork", "()V",
-                42, new byte[]{1, 2, 3, 4}, locals);
+                42, 0, new byte[]{1, 2, 3, 4}, locals);
         var heap = List.of(
                 new ObjectSnapshot(1L, "com.example.Foo", ObjectKind.REGULAR,
                         Map.of("com.example.Foo.value", new PrimitiveRef(100)),
@@ -102,7 +102,7 @@ class DurableIntegrationTest {
     void snapshotSerializationSizeIsReasonable() throws Exception {
         // A simple snapshot shouldn't serialize to an enormous size
         var snapshot = new ThreadSnapshot(Instant.now(), "t1",
-                List.of(new FrameSnapshot("Foo", "bar", "()V", 0, new byte[32],
+                List.of(new FrameSnapshot("Foo", "bar", "()V", 0, 0, new byte[32],
                         List.of(new LocalVariable(0, "x", "I", new PrimitiveRef(1))))),
                 List.of());
 

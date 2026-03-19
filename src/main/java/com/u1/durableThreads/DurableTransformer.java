@@ -16,8 +16,7 @@ public final class DurableTransformer implements ClassFileTransformer {
 
     /** Prefixes of classes that must NOT be instrumented. */
     private static final String[] EXCLUDED_PREFIXES = {
-            // Our own library and shaded dependencies
-            "com/u1/durableThreads/",
+            // Shaded dependencies
             "org/objectweb/asm/",
             "org/objenesis/",
             "com/u1/durableThreads/shaded/",
@@ -30,16 +29,41 @@ public final class DurableTransformer implements ClassFileTransformer {
             "com/sun/",
     };
 
+    /** Specific library classes that must NOT be instrumented (to avoid recursion). */
+    private static final String[] EXCLUDED_CLASSES = {
+            "com/u1/durableThreads/Durable",
+            "com/u1/durableThreads/DurableAgent",
+            "com/u1/durableThreads/DurableTransformer",
+            "com/u1/durableThreads/PrologueInjector",
+            "com/u1/durableThreads/ReplayState",
+            "com/u1/durableThreads/ThreadFreezer",
+            "com/u1/durableThreads/ThreadRestorer",
+    };
+
     @Override
     public byte[] transform(ClassLoader loader, String className, Class<?> classBeingRedefined,
                             ProtectionDomain protectionDomain, byte[] classfileBuffer) {
         if (className == null) return null;
 
-        // Don't instrument our own classes or core dependencies
+        // Don't instrument excluded prefixes (JDK, shaded deps)
         for (String prefix : EXCLUDED_PREFIXES) {
             if (className.startsWith(prefix)) {
                 return null;
             }
+        }
+
+        // Don't instrument specific library classes (to avoid recursion)
+        for (String excluded : EXCLUDED_CLASSES) {
+            if (className.equals(excluded) || className.startsWith(excluded + "$")) {
+                return null;
+            }
+        }
+
+        // Don't instrument internal subpackages
+        if (className.startsWith("com/u1/durableThreads/internal/")
+                || className.startsWith("com/u1/durableThreads/snapshot/")
+                || className.startsWith("com/u1/durableThreads/exception/")) {
+            return null;
         }
 
         try {
@@ -78,58 +102,85 @@ public final class DurableTransformer implements ClassFileTransformer {
     }
 
     /**
-     * Analyze the instrumented bytecode to find the bytecode offsets of invoke instructions.
-     * These offsets are registered in {@link InvokeRegistry} for use during freeze.
+     * Analyze the instrumented bytecode to find the bytecode offsets of invoke
+     * instructions that correspond to the PrologueInjector's invoke indices.
+     *
+     * <p>We use ASM's tree API to iterate instructions and compute BCPs.
+     * We match the same filtering logic as PrologueInjector: skip ReplayState
+     * calls and invokespecial &lt;init&gt; calls.</p>
      */
     private void buildInvokeOffsetMaps(String className, byte[] instrumented) {
-        ClassReader cr = new ClassReader(instrumented);
-        cr.accept(new ClassVisitor(Opcodes.ASM9) {
-            @Override
-            public MethodVisitor visitMethod(int access, String name, String descriptor,
-                                             String signature, String[] exceptions) {
-                if ((access & (Opcodes.ACC_ABSTRACT | Opcodes.ACC_NATIVE)) != 0) {
-                    return null;
+        org.objectweb.asm.tree.ClassNode classNode = new org.objectweb.asm.tree.ClassNode();
+        new ClassReader(instrumented).accept(classNode, 0);
+
+        for (org.objectweb.asm.tree.MethodNode method : classNode.methods) {
+            if ((method.access & (Opcodes.ACC_ABSTRACT | Opcodes.ACC_NATIVE)) != 0) continue;
+            if ("<clinit>".equals(method.name)) continue;
+            if ("<init>".equals(method.name)) continue;
+
+            String key = InvokeRegistry.key(className, method.name, method.desc);
+            List<Integer> offsets = new ArrayList<>();
+
+            // Compute BCP for each instruction by accumulating sizes
+            int bcp = 0;
+            for (int i = 0; i < method.instructions.size(); i++) {
+                org.objectweb.asm.tree.AbstractInsnNode insn = method.instructions.get(i);
+
+                if (insn instanceof org.objectweb.asm.tree.MethodInsnNode methodInsn) {
+                    // Skip ReplayState calls (prologue internals)
+                    boolean isReplayStateCall = "com/u1/durableThreads/ReplayState".equals(methodInsn.owner)
+                            || "com/u1/durableThreads/shaded/asm".equals(methodInsn.owner);
+                    // Skip invokespecial <init> (matches PrologueInjector exclusion)
+                    boolean isInitCall = methodInsn.getOpcode() == Opcodes.INVOKESPECIAL
+                            && "<init>".equals(methodInsn.name);
+
+                    if (!isReplayStateCall && !isInitCall) {
+                        offsets.add(bcp);
+                    }
+                } else if (insn instanceof org.objectweb.asm.tree.InvokeDynamicInsnNode) {
+                    offsets.add(bcp);
                 }
-                if ("<clinit>".equals(name)) {
-                    return null;
-                }
 
-                String key = InvokeRegistry.key(className, name, descriptor);
-                List<Integer> offsets = new ArrayList<>();
-
-                return new MethodVisitor(Opcodes.ASM9) {
-                    private int currentOffset = 0;
-                    private boolean inOriginalCode = false;
-                    // We need to track bytecode offsets. ASM doesn't directly give us
-                    // offsets during visiting, but we can use Label offsets after visitEnd.
-                    // For simplicity, we'll collect all invoke instructions and use
-                    // their ordering. The actual BCP mapping will be resolved at freeze
-                    // time by re-analyzing the bytecode.
-
-                    @Override
-                    public void visitMethodInsn(int opcode, String owner, String name,
-                                                String descriptor, boolean isInterface) {
-                        // Skip our own prologue calls (to ReplayState)
-                        if (!"com/u1/durableThreads/ReplayState".equals(owner)) {
-                            offsets.add(offsets.size()); // index-based for now
-                        }
-                    }
-
-                    @Override
-                    public void visitInvokeDynamicInsn(String name, String descriptor,
-                                                       Handle bootstrapMethodHandle,
-                                                       Object... bootstrapMethodArguments) {
-                        offsets.add(offsets.size());
-                    }
-
-                    @Override
-                    public void visitEnd() {
-                        if (!offsets.isEmpty()) {
-                            InvokeRegistry.register(key, offsets);
-                        }
-                    }
-                };
+                bcp += insnSize(insn);
             }
-        }, 0);
+
+            if (!offsets.isEmpty()) {
+                InvokeRegistry.register(key, offsets);
+            }
+        }
+    }
+
+    /**
+     * Compute the bytecode size of an instruction for BCP tracking.
+     */
+    private static int insnSize(org.objectweb.asm.tree.AbstractInsnNode insn) {
+        int opcode = insn.getOpcode();
+        if (opcode == -1) return 0; // pseudo-instruction (label, line number, frame)
+
+        return switch (opcode) {
+            case Opcodes.BIPUSH, Opcodes.NEWARRAY, Opcodes.LDC -> 2;
+            case Opcodes.SIPUSH, Opcodes.IINC -> 3;
+            case Opcodes.GOTO, Opcodes.IF_ICMPEQ, Opcodes.IF_ICMPNE,
+                 Opcodes.IF_ICMPLT, Opcodes.IF_ICMPGE, Opcodes.IF_ICMPGT, Opcodes.IF_ICMPLE,
+                 Opcodes.IFEQ, Opcodes.IFNE, Opcodes.IFLT, Opcodes.IFGE, Opcodes.IFGT,
+                 Opcodes.IFLE, Opcodes.IFNULL, Opcodes.IFNONNULL,
+                 Opcodes.JSR, Opcodes.IF_ACMPEQ, Opcodes.IF_ACMPNE,
+                 Opcodes.GETSTATIC, Opcodes.PUTSTATIC, Opcodes.GETFIELD, Opcodes.PUTFIELD,
+                 Opcodes.INVOKEVIRTUAL, Opcodes.INVOKESPECIAL, Opcodes.INVOKESTATIC,
+                 Opcodes.NEW, Opcodes.ANEWARRAY, Opcodes.CHECKCAST, Opcodes.INSTANCEOF -> 3;
+            case Opcodes.INVOKEINTERFACE, Opcodes.INVOKEDYNAMIC, Opcodes.MULTIANEWARRAY -> 5;
+            case Opcodes.TABLESWITCH -> {
+                // Variable size: 0-3 padding + 4*3 + 4*N
+                var ts = (org.objectweb.asm.tree.TableSwitchInsnNode) insn;
+                int cases = ts.labels.size();
+                yield 1 + 3 + 12 + 4 * cases; // approximate (alignment padding varies)
+            }
+            case Opcodes.LOOKUPSWITCH -> {
+                var ls = (org.objectweb.asm.tree.LookupSwitchInsnNode) insn;
+                int pairs = ls.labels.size();
+                yield 1 + 3 + 8 + 8 * pairs; // approximate
+            }
+            default -> 1;
+        };
     }
 }

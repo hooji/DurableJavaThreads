@@ -8,6 +8,7 @@ public record FrameSnapshot(
         String methodName,
         String methodSignature,
         int bytecodeIndex,
+        int invokeIndex,
         byte[] bytecodeHash,
         List<LocalVariable> locals
 ) implements Serializable {

@@ -1,5 +1,7 @@
 package com.u1.durableThreads;
 
+import java.util.concurrent.CountDownLatch;
+
 /**
  * Thread-local state that drives the replay prologue during thread restoration.
  *
@@ -10,6 +12,12 @@ package com.u1.durableThreads;
 public final class ReplayState {
 
     private static final ThreadLocal<ReplayData> REPLAY = new ThreadLocal<>();
+
+    /**
+     * Latch that the replay thread blocks on inside {@link #resumePoint()}.
+     * The JDI worker counts it down after setting locals and deactivating replay.
+     */
+    private static volatile CountDownLatch resumeLatch;
 
     /** Data held per-thread during replay. */
     static final class ReplayData {
@@ -66,23 +74,62 @@ public final class ReplayState {
     }
 
     /**
-     * Called at the deepest frame during replay. This is where JDI sets a breakpoint,
-     * suspends the thread, writes local variables into all frames, deactivates replay
-     * mode, and resumes the thread.
+     * Called at the deepest frame during replay. This method <b>blocks</b> until
+     * the JDI worker has:
+     * <ol>
+     *   <li>Suspended this thread</li>
+     *   <li>Set local variables in all frames</li>
+     *   <li>Deactivated replay mode</li>
+     *   <li>Released the latch</li>
+     * </ol>
+     *
+     * <p>After this method returns, the calling resume stub's {@code __skip} value
+     * causes execution to skip the freeze invoke and continue with the restored
+     * locals in the original code.</p>
      */
     public static void resumePoint() {
-        // Intentionally empty. JDI uses this as a breakpoint location.
-        // After JDI sets locals and deactivates replay, the thread resumes
-        // and execution continues from after the invoke in the deepest frame's
-        // resume stub, which gotos the original code.
+        CountDownLatch latch = resumeLatch;
+        if (latch != null) {
+            try {
+                latch.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
+    /**
+     * Release the latch, allowing the replay thread to continue past
+     * {@link #resumePoint()}. Called by the JDI worker after setting locals
+     * and deactivating replay mode.
+     */
+    public static void releaseResumePoint() {
+        CountDownLatch latch = resumeLatch;
+        if (latch != null) {
+            latch.countDown();
+        }
     }
 
     /**
      * Activate replay mode for the current thread.
+     * The resume point will NOT block (suitable for in-process replay tests).
      *
      * @param resumeIndices invoke-index for each frame, bottom (0) to top
      */
     public static void activate(int[] resumeIndices) {
+        resumeLatch = null;
+        REPLAY.set(new ReplayData(resumeIndices));
+    }
+
+    /**
+     * Activate replay mode with a blocking resume point.
+     * The replay thread will block inside {@link #resumePoint()} until
+     * {@link #releaseResumePoint()} is called by the JDI worker.
+     *
+     * @param resumeIndices invoke-index for each frame, bottom (0) to top
+     */
+    public static void activateWithLatch(int[] resumeIndices) {
+        resumeLatch = new CountDownLatch(1);
         REPLAY.set(new ReplayData(resumeIndices));
     }
 
@@ -106,14 +153,11 @@ public final class ReplayState {
     public static Object dummyInstance(String className) {
         try {
             Class<?> clazz = Class.forName(className);
-            // Use sun.misc.Unsafe to allocate without calling a constructor
             var unsafeField = sun.misc.Unsafe.class.getDeclaredField("theUnsafe");
             unsafeField.setAccessible(true);
             var unsafe = (sun.misc.Unsafe) unsafeField.get(null);
             return unsafe.allocateInstance(clazz);
         } catch (Exception e) {
-            // If we can't allocate, return null and hope for the best.
-            // The invoked method's prologue will fire before any fields are accessed.
             return null;
         }
     }

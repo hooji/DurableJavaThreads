@@ -3,6 +3,7 @@ package com.u1.durableThreads.e2e;
 import java.io.*;
 import java.nio.file.*;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -72,13 +73,22 @@ public final class ChildJvm {
 
         Process proc = pb.start();
 
-        // Read stdout and stderr in parallel
-        String stdout = readStream(proc.getInputStream());
-        String stderr = readStream(proc.getErrorStream());
+        // Read stdout and stderr in background threads to avoid blocking
+        var stdoutFuture = CompletableFuture.supplyAsync(
+                () -> readStream(proc.getInputStream()));
+        var stderrFuture = CompletableFuture.supplyAsync(
+                () -> readStream(proc.getErrorStream()));
 
         boolean finished = proc.waitFor(timeoutSec, TimeUnit.SECONDS);
         if (!finished) {
             proc.destroyForcibly();
+            proc.waitFor(5, TimeUnit.SECONDS); // give it a moment to die
+        }
+
+        String stdout = stdoutFuture.get(5, TimeUnit.SECONDS);
+        String stderr = stderrFuture.get(5, TimeUnit.SECONDS);
+
+        if (!finished) {
             return new Result(-1, stdout, stderr + "\n[TIMEOUT after " + timeoutSec + "s]");
         }
 

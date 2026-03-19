@@ -350,6 +350,7 @@ class SequentialFreezeRestoreTest {
                 "com/u1/durableThreads/SequentialFreezeRestoreTest$PeriodicFreezeWorkflow",
                 "runLoop", "(IIILjava/util/List;)I",
                 42, // placeholder BCP
+                0, // invokeIndex
                 new byte[32], // placeholder hash
                 locals
         );
