@@ -46,7 +46,7 @@ This produces `target/durable-threads-0.3.0-SNAPSHOT.jar` — a shaded jar that 
 
 ### Hello World
 
-Here's the simplest possible example. A thread counts to 3, freezes itself to a file, and is later restored in a new JVM where it picks up right where it left off.
+A thread runs a loop from 0 to 10 and freezes itself at `i == 5`. A second JVM restores the thread, which picks up at `i == 5` and finishes the loop.
 
 **FreezeDemo.java** — run this first:
 
@@ -61,30 +61,15 @@ public class FreezeDemo {
     }
 
     static void doWork() {
-        int counter = 0;
+        for (int i = 0; i <= 10; i++) {
+            System.out.println("i=" + i);
 
-        counter++;
-        System.out.println("counter = " + counter);  // prints 1
-
-        counter++;
-        System.out.println("counter = " + counter);  // prints 2
-
-        counter++;
-        System.out.println("counter = " + counter);  // prints 3
-
-        // Freeze the thread — serialize its entire state to a file.
-        // The original thread is terminated here. Everything after
-        // this line ONLY executes in a restored thread.
-        Durable.freeze("./MyFrozenThread.dat");
-
-        // --- This code only runs after restore in a new JVM ---
-
-        counter++;
-        System.out.println("counter = " + counter);  // prints 4
-
-        counter++;
-        System.out.println("counter = " + counter);  // prints 5
-
+            if (i == 5) {
+                Durable.freeze("./snapshot.dat");
+                // Everything below only runs after restore
+                System.out.println("Resumed!");
+            }
+        }
         System.out.println("Done!");
     }
 }
@@ -97,13 +82,10 @@ import com.u1.durableThreads.Durable;
 
 public class RestoreDemo {
     public static void main(String[] args) throws Exception {
-        // Deserialize the snapshot and rebuild the thread.
-        // The returned thread has the full call stack and all local
-        // variables (including counter == 3) restored from the file.
-        Thread restored = Durable.restore("./MyFrozenThread.dat");
+        Thread restored = Durable.restore("./snapshot.dat");
         restored.start();
         restored.join();
-        // prints 4, 5, Done!
+        // prints: Resumed!, i=6, i=7, ... i=10, Done!
     }
 }
 ```
@@ -114,14 +96,14 @@ Both JVMs must be started with the agent and JDWP enabled:
 # Compile
 javac -cp durable-threads-0.3.0-SNAPSHOT.jar FreezeDemo.java RestoreDemo.java
 
-# Freeze — prints 1, 2, 3 then writes ./MyFrozenThread.dat
+# Freeze — prints i=0 .. i=5, then writes ./snapshot.dat
 java -javaagent:durable-threads-0.3.0-SNAPSHOT.jar \
      -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=127.0.0.1:0 \
      --add-modules jdk.jdi \
      -cp .:durable-threads-0.3.0-SNAPSHOT.jar \
      FreezeDemo
 
-# Restore — prints 4, 5, Done!
+# Restore — prints Resumed!, i=6 .. i=10, Done!
 java -javaagent:durable-threads-0.3.0-SNAPSHOT.jar \
      -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=127.0.0.1:0 \
      --add-modules jdk.jdi \
@@ -129,13 +111,13 @@ java -javaagent:durable-threads-0.3.0-SNAPSHOT.jar \
      RestoreDemo
 ```
 
-That's it. The `counter` local variable was at 3 when the thread froze. The restored thread picks up with `counter == 3` and continues from the line after `freeze()`.
+The loop variable `i` was 5 when the thread froze. The restored thread resumes from the line after `freeze()` with `i == 5` and continues the loop to completion.
 
 ### What happened under the hood
 
-1. `Durable.freeze("./MyFrozenThread.dat")` connected to the JVM's debug interface (JDWP), walked the thread's call stack, captured every local variable (`counter`, `this`, etc.) and every heap object reachable from those variables, and serialized everything into `./MyFrozenThread.dat`. The original thread was then terminated.
+1. `Durable.freeze("./snapshot.dat")` connected to the JVM's debug interface (JDWP), walked the thread's call stack, captured every local variable (`i`, etc.) and every heap object reachable from those variables, and serialized everything into `./snapshot.dat`. The original thread was then terminated.
 
-2. `Durable.restore("./MyFrozenThread.dat")` deserialized the snapshot, rebuilt all the heap objects first (so object references are available), then re-entered every method on the original call stack using injected replay prologues, set all local variables via JDI, and handed back a `Thread` ready to resume from exactly where `freeze()` was called.
+2. `Durable.restore("./snapshot.dat")` deserialized the snapshot, rebuilt all the heap objects first (so object references are available), then re-entered every method on the original call stack using injected replay prologues, set all local variables via JDI, and handed back a `Thread` ready to resume from exactly where `freeze()` was called.
 
 ### More control
 
