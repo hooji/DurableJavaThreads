@@ -146,7 +146,9 @@ final class ThreadFreezer {
                 // Capture the thread's state
                 ThreadSnapshot snapshot = captureSnapshot(threadRef, targetThread.getName());
 
-                // Call the handler with the snapshot
+                // Call the handler with the snapshot.
+                // This happens while the target thread is still suspended, so the
+                // handler can safely write the snapshot without racing the target.
                 handler.accept(snapshot);
 
             } finally {
@@ -154,36 +156,38 @@ final class ThreadFreezer {
                 threadRef.resume();
             }
 
-            // Terminate the target thread by interrupting it.
-            // The thread is waiting on lock.wait(), so interrupt will wake it.
-            // We set a flag that causes ThreadFrozenError to be thrown.
-            // Install a per-thread handler to silently swallow the ThreadFrozenError
-            // that terminates this specific thread. We scope it narrowly — only this
-            // thread, only ThreadFrozenError — so we don't mask real exceptions.
-            Thread.UncaughtExceptionHandler previous = targetThread.getUncaughtExceptionHandler();
-            targetThread.setUncaughtExceptionHandler((t, e) -> {
-                if (e instanceof ThreadFrozenError) {
-                    return; // expected — silently swallow
-                }
-                // Not a freeze error — delegate to whatever was there before
-                if (previous != null) {
-                    previous.uncaughtException(t, e);
-                } else {
-                    Thread.UncaughtExceptionHandler defaultHandler = Thread.getDefaultUncaughtExceptionHandler();
-                    if (defaultHandler != null) {
-                        defaultHandler.uncaughtException(t, e);
-                    } else {
-                        System.err.println("Exception in thread \"" + t.getName() + "\"");
-                        e.printStackTrace();
-                    }
-                }
-            });
-            FreezeFlag.markFrozen(targetThread);
-            targetThread.interrupt();
-
         } finally {
             vm.dispose();
         }
+
+        // Terminate the target thread AFTER all JDI housekeeping is complete.
+        // This is critical: if the target is the main thread, killing it may
+        // terminate the JVM. We must ensure vm.dispose() and the handler have
+        // both finished before that can happen.
+        //
+        // Install a per-thread handler to silently swallow the ThreadFrozenError
+        // that terminates this specific thread. We scope it narrowly — only this
+        // thread, only ThreadFrozenError — so we don't mask real exceptions.
+        Thread.UncaughtExceptionHandler previous = targetThread.getUncaughtExceptionHandler();
+        targetThread.setUncaughtExceptionHandler((t, e) -> {
+            if (e instanceof ThreadFrozenError) {
+                return; // expected — silently swallow
+            }
+            // Not a freeze error — delegate to whatever was there before
+            if (previous != null) {
+                previous.uncaughtException(t, e);
+            } else {
+                Thread.UncaughtExceptionHandler defaultHandler = Thread.getDefaultUncaughtExceptionHandler();
+                if (defaultHandler != null) {
+                    defaultHandler.uncaughtException(t, e);
+                } else {
+                    System.err.println("Exception in thread \"" + t.getName() + "\"");
+                    e.printStackTrace();
+                }
+            }
+        });
+        FreezeFlag.markFrozen(targetThread);
+        targetThread.interrupt();
     }
 
     /** Prefixes of classes whose frames should be excluded from the snapshot. */

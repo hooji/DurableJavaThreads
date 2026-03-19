@@ -14,22 +14,75 @@ public final class JdiHelper {
     private JdiHelper() {}
 
     /**
-     * Auto-detect the JDWP port from the current JVM's input arguments.
+     * Auto-detect the JDWP port that this JVM is actually listening on.
+     *
+     * <p>When the JVM is started with {@code address=127.0.0.1:0}, the OS
+     * assigns a random port. The command-line argument still says "0", so
+     * we use the Attach API to read the actual listening address from the
+     * JDWP agent's properties ({@code sun.jdwp.listenerAddress}).</p>
      *
      * @return the JDWP port, or -1 if not found
      */
     public static int detectJdwpPort() {
+        // First try parsing command-line arguments (fast, works for fixed ports)
+        int argPort = detectPortFromArguments();
+        if (argPort > 0) {
+            return argPort;
+        }
+
+        // If port was 0 (OS-assigned), use the Attach API to find the actual port
+        int attachPort = detectPortViaAttachApi();
+        if (attachPort > 0) {
+            return attachPort;
+        }
+
+        return -1;
+    }
+
+    /**
+     * Use the Attach API to query the JDWP agent for its actual listening address.
+     * This is the only reliable way to get the port when {@code address=...:0} is used.
+     */
+    private static int detectPortViaAttachApi() {
+        try {
+            String pid = String.valueOf(ProcessHandle.current().pid());
+            com.sun.tools.attach.VirtualMachine attachVm = com.sun.tools.attach.VirtualMachine.attach(pid);
+            try {
+                String address = attachVm.getAgentProperties().getProperty("sun.jdwp.listenerAddress");
+                if (address != null) {
+                    // Format: "dt_socket:127.0.0.1:50728" or "dt_socket:50728"
+                    int lastColon = address.lastIndexOf(':');
+                    if (lastColon >= 0) {
+                        return Integer.parseInt(address.substring(lastColon + 1).trim());
+                    }
+                }
+            } finally {
+                attachVm.detach();
+            }
+        } catch (Exception e) {
+            // Attach API not available or failed — return -1
+        }
+        return -1;
+    }
+
+    /**
+     * Parse the JDWP port from the JVM's command-line input arguments.
+     * Returns the port if it is a fixed (non-zero) value, or -1 if not found
+     * or if port 0 was specified (meaning OS-assigned).
+     */
+    private static int detectPortFromArguments() {
         var args = java.lang.management.ManagementFactory.getRuntimeMXBean().getInputArguments();
         for (String arg : args) {
             if (arg.contains("jdwp") && arg.contains("address=")) {
-                // Parse address=*:5005 or address=5005 or address=host:5005
                 String addressPart = extractValue(arg, "address");
                 if (addressPart != null) {
-                    // Handle *:port and host:port formats
                     int colonIdx = addressPart.lastIndexOf(':');
                     String portStr = colonIdx >= 0 ? addressPart.substring(colonIdx + 1) : addressPart;
                     try {
-                        return Integer.parseInt(portStr.trim());
+                        int port = Integer.parseInt(portStr.trim());
+                        if (port > 0) {
+                            return port;
+                        }
                     } catch (NumberFormatException e) {
                         // continue searching
                     }
@@ -49,7 +102,7 @@ public final class JdiHelper {
         try {
             AttachingConnector connector = findSocketAttachConnector();
             Map<String, Connector.Argument> arguments = connector.defaultArguments();
-            arguments.get("hostname").setValue("localhost");
+            arguments.get("hostname").setValue("127.0.0.1");
             arguments.get("port").setValue(String.valueOf(port));
             return connector.attach(arguments);
         } catch (Exception e) {

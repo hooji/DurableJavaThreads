@@ -14,7 +14,7 @@ Download [`durable-threads-0.4.0.jar`](https://github.com/hooji/DurableJavaThrea
 
 ### Hello World
 
-A thread runs a loop from 0 to 10 and freezes itself at `i == 5`. A second JVM restores the thread, which picks up at `i == 5` and finishes the loop.
+The main thread runs a loop from 0 to 10 and freezes itself at `i == 5`. A second JVM restores the thread, which picks up at `i == 5` and finishes the loop.
 
 **FreezeDemo.java** — run this first:
 
@@ -23,12 +23,6 @@ import com.u1.durableThreads.Durable;
 
 public class FreezeDemo {
     public static void main(String[] args) throws Exception {
-        Thread worker = new Thread(() -> doWork());
-        worker.start();
-        worker.join();
-    }
-
-    static void doWork() {
         for (int i = 0; i <= 10; i++) {
             System.out.println("i=" + i);
 
@@ -62,11 +56,11 @@ public class RestoreDemo {
 Both JVMs must be started with the agent and JDWP enabled:
 
 ```bash
-% javac -cp durable-threads-0.4.0.jar FreezeDemo.java RestoreDemo.java
+% javac -g -cp durable-threads-0.4.0.jar FreezeDemo.java RestoreDemo.java
 
 % java -javaagent:durable-threads-0.4.0.jar \
        -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=127.0.0.1:0 \
-       --add-modules jdk.jdi \
+       --add-modules jdk.jdi,jdk.attach -Djdk.attach.allowAttachSelf=true \
        -cp .:durable-threads-0.4.0.jar \
        FreezeDemo
 i=0
@@ -79,7 +73,7 @@ About to freeze!
 
 % java -javaagent:durable-threads-0.4.0.jar \
        -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=127.0.0.1:0 \
-       --add-modules jdk.jdi \
+       --add-modules jdk.jdi,jdk.attach -Djdk.attach.allowAttachSelf=true \
        -cp .:durable-threads-0.4.0.jar \
        RestoreDemo
 Resumed!
@@ -263,7 +257,7 @@ src/main/java/com/u1/durableThreads/
 
 - **Java 21+** — uses modern language features and JDI APIs
 - **JDWP** — the JVM must be started with `-agentlib:jdwp=...` for freeze/restore
-- **jdk.jdi module** — add `--add-modules jdk.jdi` to the command line
+- **jdk.jdi and jdk.attach modules** — add `--add-modules jdk.jdi,jdk.attach -Djdk.attach.allowAttachSelf=true` to the command line
 
 ## License
 
