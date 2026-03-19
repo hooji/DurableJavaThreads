@@ -36,9 +36,23 @@ import java.util.List;
 public final class PrologueInjector extends ClassVisitor {
 
     private String className;
+    /** method key ("name+desc") → number of original invokes that received indices. */
+    private final java.util.Map<String, Integer> invokeCountsByMethod = new java.util.HashMap<>();
 
     public PrologueInjector(ClassVisitor cv) {
         super(Opcodes.ASM9, cv);
+    }
+
+    /**
+     * Returns the number of original invokes that PrologueInjector assigned
+     * skip-check indices to in the given method.  This is the authoritative
+     * count — the raw bytecode scanner may see additional invokes in resume
+     * stubs, but only the last {@code getOriginalInvokeCount()} entries in
+     * the scanner's list correspond to the original code.
+     */
+    public int getOriginalInvokeCount(String methodName, String methodDesc) {
+        Integer n = invokeCountsByMethod.get(methodName + methodDesc);
+        return n != null ? n : 0;
     }
 
     @Override
@@ -58,7 +72,8 @@ public final class PrologueInjector extends ClassVisitor {
         if ("<clinit>".equals(name)) return mv;
         if ("<init>".equals(name)) return mv;
 
-        return new PrologueMethodVisitor(access, name, descriptor, className, mv);
+        return new PrologueMethodVisitor(access, name, descriptor, className, mv,
+                invokeCountsByMethod);
     }
 
     private static class PrologueMethodVisitor extends MethodVisitor {
@@ -68,6 +83,7 @@ public final class PrologueInjector extends ClassVisitor {
         private final String methodDesc;
         private final String className;
         private final MethodVisitor target;
+        private final java.util.Map<String, Integer> invokeCountsOut;
 
         private final List<InvokeInfo> invokeInfos = new ArrayList<>();
         private final List<Runnable> bufferedOps = new ArrayList<>();
@@ -77,13 +93,15 @@ public final class PrologueInjector extends ClassVisitor {
         private int originalMaxLocals = 0;
 
         PrologueMethodVisitor(int access, String name, String desc, String className,
-                              MethodVisitor target) {
+                              MethodVisitor target,
+                              java.util.Map<String, Integer> invokeCountsOut) {
             super(Opcodes.ASM9, null);
             this.methodAccess = access;
             this.methodName = name;
             this.methodDesc = desc;
             this.className = className;
             this.target = target;
+            this.invokeCountsOut = invokeCountsOut;
         }
 
         // --- Buffering ---
@@ -187,6 +205,10 @@ public final class PrologueInjector extends ClassVisitor {
 
         @Override
         public void visitEnd() {
+            // Record the count before emitting — this is the authoritative number
+            // of original-code invokes that received skip-check indices.
+            invokeCountsOut.put(methodName + methodDesc, invokeCounter);
+
             if (!hasCode) {
                 target.visitEnd();
                 return;
