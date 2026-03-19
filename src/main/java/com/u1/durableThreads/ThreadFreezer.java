@@ -115,13 +115,41 @@ final class ThreadFreezer {
         }
     }
 
+    /** Prefixes of classes whose frames should be excluded from the snapshot. */
+    private static final String[] EXCLUDED_FRAME_PREFIXES = {
+            "java/", "javax/", "jdk/", "sun/", "com/sun/",
+    };
+
+    /** Specific library classes to exclude (not the whole package — user subpackages may exist). */
+    private static final String[] EXCLUDED_FRAME_CLASSES = {
+            "com/u1/durableThreads/Durable",
+            "com/u1/durableThreads/ThreadFreezer",
+            "com/u1/durableThreads/ThreadRestorer",
+            "com/u1/durableThreads/ReplayState",
+    };
+
+    private static boolean isUserFrame(String className) {
+        for (String prefix : EXCLUDED_FRAME_PREFIXES) {
+            if (className.startsWith(prefix)) return false;
+        }
+        for (String excluded : EXCLUDED_FRAME_CLASSES) {
+            if (className.equals(excluded) || className.startsWith(excluded + "$")) return false;
+        }
+        // Filter lambda-generated classes — their names are JVM-specific and non-portable.
+        // The actual lambda body is a synthetic method on the enclosing class, which IS captured.
+        if (className.contains("$$Lambda")) return false;
+        return true;
+    }
+
     private static ThreadSnapshot captureSnapshot(ThreadReference threadRef, String threadName) {
         try {
             List<StackFrame> jdiFrames = threadRef.frames();
             List<FrameSnapshot> frameSnapshots = new ArrayList<>();
             HeapWalker heapWalker = new HeapWalker();
 
-            // Walk frames bottom to top (JDI gives top to bottom)
+            // Walk frames bottom to top (JDI gives top to bottom).
+            // Filter out JDK and library-internal frames — they can't be replayed
+            // (not instrumented) and are infrastructure that gets recreated naturally.
             for (int i = jdiFrames.size() - 1; i >= 0; i--) {
                 StackFrame jdiFrame = jdiFrames.get(i);
                 Location location = jdiFrame.location();
@@ -131,6 +159,10 @@ final class ThreadFreezer {
                 String className = declaringType.name().replace('.', '/');
                 String methodName = method.name();
                 String methodSig = method.signature();
+
+                // Skip non-user frames (JDK internals, our library, etc.)
+                if (!isUserFrame(className)) continue;
+
                 int bcp = (int) location.codeIndex();
 
                 // Compute bytecode hash
