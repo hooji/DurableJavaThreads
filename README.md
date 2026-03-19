@@ -106,26 +106,6 @@ public class RestoreWorkflow {
 
 Run the restore JVM with the same agent flags.
 
-#### 3. Control instrumentation scope (optional)
-
-By default, the agent instruments all non-JDK classes. You can restrict it to specific packages:
-
-```bash
-# Only instrument your application packages:
-java -javaagent:durable-threads-0.3.0-SNAPSHOT.jar=includes=com.myapp;com.mylib \
-     ...
-
-# Exclude noisy third-party packages:
-java -javaagent:durable-threads-0.3.0-SNAPSHOT.jar=excludes=com.thirdparty;org.logging \
-     ...
-
-# Both (only included packages are instrumented, minus excluded sub-packages):
-java -javaagent:durable-threads-0.3.0-SNAPSHOT.jar=includes=com.myapp&excludes=com.myapp.generated \
-     ...
-```
-
-Package names use dots. Multiple packages are separated by semicolons. The agent always excludes JDK internals and its own classes regardless of configuration.
-
 ## API
 
 ### `Durable.freeze(Consumer<ThreadSnapshot> handler)`
@@ -179,7 +159,6 @@ src/main/java/com/u1/durableThreads/
 ├── Durable.java              # Public API
 ├── DurableAgent.java          # Java agent (premain)
 ├── DurableTransformer.java    # ClassFileTransformer
-├── InstrumentationScope.java  # Configurable include/exclude package filtering
 ├── PrologueInjector.java      # ASM ClassVisitor — injects replay prologues
 ├── ReplayState.java           # Thread-local replay coordination
 ├── ThreadFreezer.java         # Freeze implementation (JDI stack walk)

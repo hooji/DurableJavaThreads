@@ -15,12 +15,6 @@ import java.util.List;
  */
 public final class DurableTransformer implements ClassFileTransformer {
 
-    private final InstrumentationScope scope;
-
-    DurableTransformer(InstrumentationScope scope) {
-        this.scope = scope;
-    }
-
     /** Prefixes of classes that must NOT be instrumented. */
     private static final String[] EXCLUDED_PREFIXES = {
             // Shaded dependencies
@@ -70,11 +64,6 @@ public final class DurableTransformer implements ClassFileTransformer {
         if (className.startsWith("com/u1/durableThreads/internal/")
                 || className.startsWith("com/u1/durableThreads/snapshot/")
                 || className.startsWith("com/u1/durableThreads/exception/")) {
-            return null;
-        }
-
-        // Check user-configured scope (includes/excludes)
-        if (!scope.isInScope(className)) {
             return null;
         }
 
