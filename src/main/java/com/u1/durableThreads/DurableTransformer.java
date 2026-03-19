@@ -140,18 +140,30 @@ public final class DurableTransformer implements ClassFileTransformer {
             // === SECONDARY: ASM tree API ===
             List<Integer> treeOffsets = computeOffsetsViaTree(method);
 
-            // Use raw if available, otherwise fall back to tree
+            // Both methods must agree on the NUMBER of invokes.
+            // BCPs may differ slightly due to ldc/ldc_w promotion (the tree can't
+            // predict CP index sizes). The raw scanner is always the ground truth.
             List<Integer> offsets;
-            if (rawOffsets != null && !rawOffsets.isEmpty()) {
+            if (rawOffsets != null) {
                 offsets = rawOffsets;
-                // Cross-check
-                if (!rawOffsets.equals(treeOffsets)) {
-                    System.err.println("[DurableThreads] BCP cross-check mismatch for "
-                            + className.replace('/', '.') + "." + method.name
-                            + " raw=" + rawOffsets + " tree=" + treeOffsets);
+                if (!treeOffsets.isEmpty() || !rawOffsets.isEmpty()) {
+                    if (rawOffsets.size() != treeOffsets.size()) {
+                        // COUNT mismatch is a real bug — the scanners disagree on
+                        // which instructions are invokes
+                        System.err.println("[DurableThreads] BCP CROSS-CHECK FAILED (count mismatch) for "
+                                + className.replace('/', '.') + "." + method.name
+                                + "\n  raw =" + rawOffsets
+                                + "\n  tree=" + treeOffsets);
+                    }
+                    // BCP value differences are expected (ldc/ldc_w, wide iinc) —
+                    // the raw scanner's values are correct
                 }
             } else {
+                // Raw scanner crashed — fall back to tree with warning
                 offsets = treeOffsets;
+                System.err.println("[DurableThreads] Raw scanner failed for "
+                        + className.replace('/', '.') + "." + method.name
+                        + ", using tree offsets (approximate): " + treeOffsets);
             }
 
             if (!offsets.isEmpty()) {
@@ -162,6 +174,7 @@ public final class DurableTransformer implements ClassFileTransformer {
 
     /**
      * Compute invoke offsets using ASM tree API (cross-check approach).
+     * Must produce EXACT same results as the raw bytecode scanner.
      */
     private List<Integer> computeOffsetsViaTree(org.objectweb.asm.tree.MethodNode method) {
         List<Integer> offsets = new ArrayList<>();
@@ -180,21 +193,61 @@ public final class DurableTransformer implements ClassFileTransformer {
                 offsets.add(bcp);
             }
 
-            bcp += insnSize(insn);
+            bcp += insnSize(insn, bcp);
         }
         return offsets;
     }
 
     /**
-     * Compute the bytecode size of an instruction for BCP tracking.
+     * Compute the exact bytecode size of an ASM tree instruction, accounting for
+     * ClassWriter's short-form optimizations and alignment padding.
+     *
+     * @param insn the instruction node
+     * @param bcp  the current bytecode position (needed for switch alignment)
      */
-    private static int insnSize(org.objectweb.asm.tree.AbstractInsnNode insn) {
+    private static int insnSize(org.objectweb.asm.tree.AbstractInsnNode insn, int bcp) {
         int opcode = insn.getOpcode();
         if (opcode == -1) return 0; // pseudo-instruction (label, line number, frame)
 
+        // Handle var instructions: ASM normalizes iload_0..iload_3 to ILOAD with
+        // operand 0..3, but ClassWriter emits the 1-byte short form for operands 0-3.
+        if (insn instanceof org.objectweb.asm.tree.VarInsnNode varInsn) {
+            int var = varInsn.var;
+            return switch (opcode) {
+                case Opcodes.ILOAD, Opcodes.LLOAD, Opcodes.FLOAD, Opcodes.DLOAD, Opcodes.ALOAD,
+                     Opcodes.ISTORE, Opcodes.LSTORE, Opcodes.FSTORE, Opcodes.DSTORE, Opcodes.ASTORE ->
+                        var <= 3 ? 1 : 2;
+                case Opcodes.RET -> 2;
+                default -> 2;
+            };
+        }
+
+        // Handle IINC: 3 bytes normally, 6 bytes if wide (var > 255 or increment out of byte range)
+        if (insn instanceof org.objectweb.asm.tree.IincInsnNode iincInsn) {
+            if (iincInsn.var > 255 || iincInsn.incr < -128 || iincInsn.incr > 127) {
+                return 6; // wide iinc
+            }
+            return 3;
+        }
+
+        // Handle LDC: ClassWriter may use ldc (2 bytes) or ldc_w (3 bytes)
+        // depending on the constant pool index. For most constants, ldc (2) is used.
+        if (opcode == Opcodes.LDC) {
+            if (insn instanceof org.objectweb.asm.tree.LdcInsnNode ldcInsn) {
+                // ldc_w is used for long/double (which are actually LDC2_W) and
+                // when the CP index > 255. We can't know the CP index from the tree,
+                // but long/double always use ldc2_w (3 bytes). For others, assume ldc (2).
+                Object cst = ldcInsn.cst;
+                if (cst instanceof Long || cst instanceof Double) {
+                    return 3; // ldc2_w
+                }
+            }
+            return 2; // ldc
+        }
+
         return switch (opcode) {
-            case Opcodes.BIPUSH, Opcodes.NEWARRAY, Opcodes.LDC -> 2;
-            case Opcodes.SIPUSH, Opcodes.IINC -> 3;
+            case Opcodes.BIPUSH, Opcodes.NEWARRAY -> 2;
+            case Opcodes.SIPUSH -> 3;
             case Opcodes.GOTO, Opcodes.IF_ICMPEQ, Opcodes.IF_ICMPNE,
                  Opcodes.IF_ICMPLT, Opcodes.IF_ICMPGE, Opcodes.IF_ICMPGT, Opcodes.IF_ICMPLE,
                  Opcodes.IFEQ, Opcodes.IFNE, Opcodes.IFLT, Opcodes.IFGE, Opcodes.IFGT,
@@ -203,17 +256,19 @@ public final class DurableTransformer implements ClassFileTransformer {
                  Opcodes.GETSTATIC, Opcodes.PUTSTATIC, Opcodes.GETFIELD, Opcodes.PUTFIELD,
                  Opcodes.INVOKEVIRTUAL, Opcodes.INVOKESPECIAL, Opcodes.INVOKESTATIC,
                  Opcodes.NEW, Opcodes.ANEWARRAY, Opcodes.CHECKCAST, Opcodes.INSTANCEOF -> 3;
-            case Opcodes.INVOKEINTERFACE, Opcodes.INVOKEDYNAMIC, Opcodes.MULTIANEWARRAY -> 5;
+            case Opcodes.INVOKEINTERFACE, Opcodes.INVOKEDYNAMIC -> 5;
+            case Opcodes.MULTIANEWARRAY -> 4;
             case Opcodes.TABLESWITCH -> {
-                // Variable size: 0-3 padding + 4*3 + 4*N
                 var ts = (org.objectweb.asm.tree.TableSwitchInsnNode) insn;
+                int padding = (4 - ((bcp + 1) % 4)) % 4;
                 int cases = ts.labels.size();
-                yield 1 + 3 + 12 + 4 * cases; // approximate (alignment padding varies)
+                yield 1 + padding + 12 + 4 * cases;
             }
             case Opcodes.LOOKUPSWITCH -> {
                 var ls = (org.objectweb.asm.tree.LookupSwitchInsnNode) insn;
+                int padding = (4 - ((bcp + 1) % 4)) % 4;
                 int pairs = ls.labels.size();
-                yield 1 + 3 + 8 + 8 * pairs; // approximate
+                yield 1 + padding + 8 + 8 * pairs;
             }
             default -> 1;
         };
