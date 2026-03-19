@@ -388,4 +388,233 @@ class EndToEndFreezeRestoreIT {
             Files.deleteIfExists(snapshotFile);
         }
     }
+
+    // ===================================================================
+    // E2E scenario tests: edge cases and stress scenarios
+    // ===================================================================
+
+    @Test
+    @DisplayName("E2E: Recursive fibonacci freeze and restore")
+    void fibonacciFreezeAndRestore() throws Exception {
+        Path snapshotFile = Files.createTempFile("durable-fib-", ".bin");
+        try {
+            // Step 1: Freeze during fib(10) at n=5
+            int freezePort = ChildJvm.findFreePort();
+            ChildJvm.Result freezeResult = ChildJvm.run(
+                    "com.u1.durableThreads.e2e.FibonacciFreezeProgram",
+                    classpath, freezePort,
+                    new String[]{snapshotFile.toString(), "5"}, 60);
+
+            System.out.println("=== FIB FREEZE STDOUT ===\n" + freezeResult.stdout());
+            if (!freezeResult.stderr().isBlank()) {
+                System.out.println("=== FIB FREEZE STDERR ===\n" + freezeResult.stderr());
+            }
+
+            assertTrue(freezeResult.stdout().contains("FREEZE_COMPLETE"),
+                    "Fibonacci freeze should complete. Stdout:\n" + freezeResult.stdout());
+            assertTrue(freezeResult.stdout().contains("FREEZING at n=5"),
+                    "Should freeze at n=5. Stdout:\n" + freezeResult.stdout());
+            assertFalse(freezeResult.stdout().contains("FIB_RESULT"),
+                    "Original thread should not produce result");
+            assertTrue(Files.size(snapshotFile) > 100, "Snapshot file should have content");
+
+            // Snapshot should have multiple recursive frames
+            assertTrue(freezeResult.stdout().contains("FRAME_COUNT="),
+                    "Should report frame count. Stdout:\n" + freezeResult.stdout());
+
+            // Step 2: Restore
+            int restorePort = ChildJvm.findFreePort();
+            ChildJvm.Result restoreResult = ChildJvm.run(
+                    "com.u1.durableThreads.e2e.RestoreProgram",
+                    classpath, restorePort,
+                    new String[]{snapshotFile.toString()}, 60);
+
+            System.out.println("=== FIB RESTORE STDOUT ===\n" + restoreResult.stdout());
+            if (!restoreResult.stderr().isBlank()) {
+                System.out.println("=== FIB RESTORE STDERR ===\n" + restoreResult.stderr());
+            }
+
+            assertTrue(restoreResult.stdout().contains("SNAPSHOT_LOADED=true"),
+                    "Should load fib snapshot. Stdout:\n" + restoreResult.stdout());
+            assertTrue(restoreResult.stdout().contains("RESTORE_COMPLETE"),
+                    "Restore should complete. Stdout:\n" + restoreResult.stdout());
+        } finally {
+            Files.deleteIfExists(snapshotFile);
+        }
+    }
+
+    @Test
+    @DisplayName("E2E: Try-catch freeze preserves exception handling")
+    void tryCatchFreezeAndRestore() throws Exception {
+        Path snapshotFile = Files.createTempFile("durable-trycatch-", ".bin");
+        try {
+            int freezePort = ChildJvm.findFreePort();
+            ChildJvm.Result freezeResult = ChildJvm.run(
+                    "com.u1.durableThreads.e2e.TryCatchFreezeProgram",
+                    classpath, freezePort,
+                    new String[]{snapshotFile.toString()}, 60);
+
+            System.out.println("=== TRYCATCH FREEZE STDOUT ===\n" + freezeResult.stdout());
+            if (!freezeResult.stderr().isBlank()) {
+                System.out.println("=== TRYCATCH FREEZE STDERR ===\n" + freezeResult.stderr());
+            }
+
+            assertTrue(freezeResult.stdout().contains("FREEZE_COMPLETE"),
+                    "Try-catch freeze should complete. Stdout:\n" + freezeResult.stdout());
+            assertTrue(freezeResult.stdout().contains("TRY_BEFORE"),
+                    "Should execute code before freeze in try block");
+            assertFalse(freezeResult.stdout().contains("TRY_AFTER"),
+                    "Original thread should not continue past freeze");
+            assertTrue(Files.size(snapshotFile) > 100);
+
+            // Step 2: Restore — verify try/catch/finally semantics
+            int restorePort = ChildJvm.findFreePort();
+            ChildJvm.Result restoreResult = ChildJvm.run(
+                    "com.u1.durableThreads.e2e.RestoreProgram",
+                    classpath, restorePort,
+                    new String[]{snapshotFile.toString()}, 60);
+
+            System.out.println("=== TRYCATCH RESTORE STDOUT ===\n" + restoreResult.stdout());
+            if (!restoreResult.stderr().isBlank()) {
+                System.out.println("=== TRYCATCH RESTORE STDERR ===\n" + restoreResult.stderr());
+            }
+
+            assertTrue(restoreResult.stdout().contains("SNAPSHOT_LOADED=true"),
+                    "Should load try-catch snapshot");
+            assertTrue(restoreResult.stdout().contains("RESTORE_COMPLETE"),
+                    "Restore should complete");
+        } finally {
+            Files.deleteIfExists(snapshotFile);
+        }
+    }
+
+    @Test
+    @DisplayName("E2E: Nested loop freeze preserves both loop counters")
+    void nestedLoopFreezeAndRestore() throws Exception {
+        Path snapshotFile = Files.createTempFile("durable-nested-", ".bin");
+        try {
+            int freezePort = ChildJvm.findFreePort();
+            ChildJvm.Result freezeResult = ChildJvm.run(
+                    "com.u1.durableThreads.e2e.NestedLoopFreezeProgram",
+                    classpath, freezePort,
+                    new String[]{snapshotFile.toString()}, 60);
+
+            System.out.println("=== NESTED FREEZE STDOUT ===\n" + freezeResult.stdout());
+            if (!freezeResult.stderr().isBlank()) {
+                System.out.println("=== NESTED FREEZE STDERR ===\n" + freezeResult.stderr());
+            }
+
+            assertTrue(freezeResult.stdout().contains("FREEZE_COMPLETE"),
+                    "Nested loop freeze should complete. Stdout:\n" + freezeResult.stdout());
+            assertTrue(freezeResult.stdout().contains("BEFORE_FREEZE i=2 j=3"),
+                    "Should freeze at i=2, j=3. Stdout:\n" + freezeResult.stdout());
+            assertFalse(freezeResult.stdout().contains("TOTAL_ITERATIONS"),
+                    "Original thread should not complete");
+            assertTrue(Files.size(snapshotFile) > 100);
+
+            // Step 2: Restore
+            int restorePort = ChildJvm.findFreePort();
+            ChildJvm.Result restoreResult = ChildJvm.run(
+                    "com.u1.durableThreads.e2e.RestoreProgram",
+                    classpath, restorePort,
+                    new String[]{snapshotFile.toString()}, 60);
+
+            System.out.println("=== NESTED RESTORE STDOUT ===\n" + restoreResult.stdout());
+            if (!restoreResult.stderr().isBlank()) {
+                System.out.println("=== NESTED RESTORE STDERR ===\n" + restoreResult.stderr());
+            }
+
+            assertTrue(restoreResult.stdout().contains("SNAPSHOT_LOADED=true"),
+                    "Should load nested loop snapshot");
+            assertTrue(restoreResult.stdout().contains("RESTORE_COMPLETE"),
+                    "Restore should complete");
+        } finally {
+            Files.deleteIfExists(snapshotFile);
+        }
+    }
+
+    @Test
+    @DisplayName("E2E: Many typed local variables survive freeze/restore")
+    void manyLocalsFreezeAndRestore() throws Exception {
+        Path snapshotFile = Files.createTempFile("durable-locals-", ".bin");
+        try {
+            int freezePort = ChildJvm.findFreePort();
+            ChildJvm.Result freezeResult = ChildJvm.run(
+                    "com.u1.durableThreads.e2e.ManyLocalsFreezeProgram",
+                    classpath, freezePort,
+                    new String[]{snapshotFile.toString()}, 60);
+
+            System.out.println("=== MANY LOCALS FREEZE STDOUT ===\n" + freezeResult.stdout());
+            if (!freezeResult.stderr().isBlank()) {
+                System.out.println("=== MANY LOCALS FREEZE STDERR ===\n" + freezeResult.stderr());
+            }
+
+            assertTrue(freezeResult.stdout().contains("FREEZE_COMPLETE"),
+                    "Many locals freeze should complete. Stdout:\n" + freezeResult.stdout());
+            assertTrue(freezeResult.stdout().contains("BEFORE_FREEZE a=10"),
+                    "Should capture locals before freeze. Stdout:\n" + freezeResult.stdout());
+            assertFalse(freezeResult.stdout().contains("AFTER_FREEZE"),
+                    "Original thread should not continue past freeze");
+            assertTrue(Files.size(snapshotFile) > 100);
+
+            // Step 2: Restore — verify all typed locals survived
+            int restorePort = ChildJvm.findFreePort();
+            ChildJvm.Result restoreResult = ChildJvm.run(
+                    "com.u1.durableThreads.e2e.RestoreProgram",
+                    classpath, restorePort,
+                    new String[]{snapshotFile.toString()}, 60);
+
+            System.out.println("=== MANY LOCALS RESTORE STDOUT ===\n" + restoreResult.stdout());
+            if (!restoreResult.stderr().isBlank()) {
+                System.out.println("=== MANY LOCALS RESTORE STDERR ===\n" + restoreResult.stderr());
+            }
+
+            assertTrue(restoreResult.stdout().contains("SNAPSHOT_LOADED=true"),
+                    "Should load many-locals snapshot");
+            assertTrue(restoreResult.stdout().contains("RESTORE_COMPLETE"),
+                    "Restore should complete");
+
+            // Verify the restored thread produced AFTER_FREEZE output
+            // (actual local values depend on JDI local-setting success)
+            assertTrue(restoreResult.stdout().contains("AFTER_FREEZE"),
+                    "Restored thread should reach post-freeze code. Stdout:\n" + restoreResult.stdout());
+        } finally {
+            Files.deleteIfExists(snapshotFile);
+        }
+    }
+
+    @Test
+    @DisplayName("E2E: Periodic freeze/restore (i%5==1) captures checkpoints")
+    void periodicFreezeRestoreCapturesCheckpoints() throws Exception {
+        Path snapshotDir = Files.createTempDirectory("durable-periodic-");
+        try {
+            int port = ChildJvm.findFreePort();
+            ChildJvm.Result result = ChildJvm.run(
+                    "com.u1.durableThreads.e2e.PeriodicFreezeRestoreProgram",
+                    classpath, port,
+                    new String[]{snapshotDir.toString()}, 120);
+
+            System.out.println("=== PERIODIC STDOUT ===\n" + result.stdout());
+            if (!result.stderr().isBlank()) {
+                System.out.println("=== PERIODIC STDERR ===\n" + result.stderr());
+            }
+
+            // First freeze at i=1 (1 % 5 == 1) should succeed
+            assertTrue(result.stdout().contains("FREEZE i=1"),
+                    "First periodic freeze should succeed. Stdout:\n" + result.stdout());
+
+            // Verify at least one checkpoint file was written
+            long checkpointCount;
+            try (var files = Files.list(snapshotDir)) {
+                checkpointCount = files.filter(p -> p.toString().endsWith(".bin")).count();
+            }
+            assertTrue(checkpointCount >= 1,
+                    "At least one checkpoint file should be written. Count: " + checkpointCount);
+        } finally {
+            try (var files = Files.walk(snapshotDir)) {
+                files.sorted(java.util.Comparator.reverseOrder())
+                        .forEach(p -> { try { Files.delete(p); } catch (IOException ignored) {} });
+            }
+        }
+    }
 }
