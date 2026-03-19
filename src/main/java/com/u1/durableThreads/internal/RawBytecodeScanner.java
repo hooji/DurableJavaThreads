@@ -1,7 +1,6 @@
 package com.u1.durableThreads.internal;
 
-import org.objectweb.asm.*;
-import org.objectweb.asm.tree.*;
+import org.objectweb.asm.Opcodes;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -36,37 +35,7 @@ public final class RawBytecodeScanner {
     public static List<Integer> scanInvokeOffsets(byte[] classBytes,
                                                    String methodName, String methodDesc) {
         List<Integer> results = new ArrayList<>();
-
-        // Use ASM to find the Code attribute's raw bytes for the target method.
-        // ClassReader gives us the method body as a byte range within classBytes.
-        ClassReader cr = new ClassReader(classBytes);
-
-        // We need access to the constant pool to resolve method owners.
-        // Build a quick index of the constant pool.
-        int cpCount = cr.readUnsignedShort(8);
-
-        cr.accept(new ClassVisitor(Opcodes.ASM9) {
-            @Override
-            public MethodVisitor visitMethod(int access, String name, String descriptor,
-                                             String signature, String[] exceptions) {
-                if (!name.equals(methodName) || !descriptor.equals(methodDesc)) return null;
-                if ((access & (Opcodes.ACC_ABSTRACT | Opcodes.ACC_NATIVE)) != 0) return null;
-
-                // Return a MethodVisitor that will receive visitAttribute for Code.
-                // But actually, we can't easily get raw Code bytes via the visitor API.
-                // Instead, we'll use the MethodNode to get the instruction list,
-                // serialize it to bytes via ClassWriter, then scan the bytes.
-                return null;
-            }
-        }, ClassReader.SKIP_CODE);
-
-        // Better approach: use ClassReader's internal structure.
-        // The class file format is: ... methods[count] { access(2), name(2), desc(2), attrs }
-        // Each method's Code attribute contains the raw bytecode.
-        // Let's walk the class file to find our method's Code.
-
         scanClassFileForMethodCode(classBytes, methodName, methodDesc, results);
-
         return results;
     }
 
@@ -139,12 +108,15 @@ public final class RawBytecodeScanner {
         // Methods
         int methodCount = readU2(cf, pos); pos += 2;
         for (int m = 0; m < methodCount; m++) {
+            int access = readU2(cf, pos);
             int nameIdx = readU2(cf, pos + 2);
             int descIdx = readU2(cf, pos + 4);
             pos += 6;
-            String mName = utf8[nameIdx];
-            String mDesc = utf8[descIdx];
+            String mName = (nameIdx < utf8.length && utf8[nameIdx] != null) ? utf8[nameIdx] : "?idx=" + nameIdx;
+            String mDesc = (descIdx < utf8.length && utf8[descIdx] != null) ? utf8[descIdx] : "?idx=" + descIdx;
             boolean isTarget = targetMethod.equals(mName) && targetDesc.equals(mDesc);
+
+            // method matching happens via isTarget flag
 
             int attrCount = readU2(cf, pos); pos += 2;
             for (int a = 0; a < attrCount; a++) {
@@ -184,11 +156,13 @@ public final class RawBytecodeScanner {
 
             if (isInvoke) {
                 int cpIdx = readU2(code, pc + 1);
-                // Resolve owner and name
+                // Resolve owner and name from method/interfacemethod ref
                 int classIdx = refClassIdx[cpIdx];
-                String owner = utf8[classNameIdx[classIdx]];
+                int classNameI = classNameIdx[classIdx];
+                String owner = (classNameI > 0 && classNameI < utf8.length) ? utf8[classNameI] : null;
                 int natIdx = refNatIdx[cpIdx];
-                String name = utf8[natNameIdx[natIdx]];
+                int nameI = natNameIdx[natIdx];
+                String name = (nameI > 0 && nameI < utf8.length) ? utf8[nameI] : null;
 
                 // Apply PrologueInjector filters
                 boolean skip = "com/u1/durableThreads/ReplayState".equals(owner)
@@ -201,12 +175,18 @@ public final class RawBytecodeScanner {
                 results.add(bcp);
             }
 
-            pc += opcodeSize(code, pc, op);
+            pc += opcodeSize(code, pc, bcp, op);
         }
     }
 
-    /** Exact bytecode instruction size (reads actual bytes for variable-length instructions). */
-    private static int opcodeSize(byte[] code, int pc, int opcode) {
+    /**
+     * Exact bytecode instruction size.
+     * @param code  the class file bytes
+     * @param pc    absolute position in code[]
+     * @param bcp   bytecode position relative to method's Code start (for alignment)
+     * @param opcode the instruction opcode
+     */
+    private static int opcodeSize(byte[] code, int pc, int bcp, int opcode) {
         return switch (opcode) {
             // 2-byte
             case 0x10, 0x12, 0x15, 0x16, 0x17, 0x18, 0x19, // bipush, ldc, iload..aload
@@ -227,18 +207,21 @@ public final class RawBytecodeScanner {
             case 0xb9, 0xba, 0xc8, 0xc9 -> 5; // invokeinterface, invokedynamic, goto_w, jsr_w
             // wide
             case 0xc4 -> (code[pc + 1] & 0xFF) == 0x84 ? 6 : 4;
-            // tableswitch (variable, alignment-padded)
+            // tableswitch (variable, alignment-padded relative to method start)
             case 0xaa -> {
-                int aligned = (pc + 4) & ~3;
-                int low = readI4(code, aligned + 4);
-                int high = readI4(code, aligned + 8);
-                yield (aligned - pc) + 12 + (high - low + 1) * 4;
+                // Padding aligns the NEXT byte to a 4-byte boundary relative to BCP 0
+                int padding = (4 - ((bcp + 1) % 4)) % 4;
+                int afterPad = pc + 1 + padding;
+                int low = readI4(code, afterPad + 4);
+                int high = readI4(code, afterPad + 8);
+                yield 1 + padding + 12 + (high - low + 1) * 4;
             }
-            // lookupswitch (variable, alignment-padded)
+            // lookupswitch (variable, alignment-padded relative to method start)
             case 0xab -> {
-                int aligned = (pc + 4) & ~3;
-                int npairs = readI4(code, aligned + 4);
-                yield (aligned - pc) + 8 + npairs * 8;
+                int padding = (4 - ((bcp + 1) % 4)) % 4;
+                int afterPad = pc + 1 + padding;
+                int npairs = readI4(code, afterPad + 4);
+                yield 1 + padding + 8 + npairs * 8;
             }
             // All other instructions are 1 byte
             default -> 1;
