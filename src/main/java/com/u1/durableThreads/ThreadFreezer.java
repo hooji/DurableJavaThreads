@@ -1,6 +1,7 @@
 package com.u1.durableThreads;
 
 import com.sun.jdi.*;
+import com.u1.durableThreads.exception.LambdaFrameException;
 import com.u1.durableThreads.exception.NonEmptyStackException;
 import com.u1.durableThreads.exception.ThreadFrozenError;
 import com.u1.durableThreads.internal.*;
@@ -128,17 +129,27 @@ final class ThreadFreezer {
             "com/u1/durableThreads/ReplayState",
     };
 
-    private static boolean isUserFrame(String className) {
+    /**
+     * Check if a frame is a JDK/library infrastructure frame that should be
+     * silently skipped (not captured). These are frames that get recreated
+     * naturally during restore (Thread.run, reflection, etc.).
+     */
+    private static boolean isInfrastructureFrame(String className) {
         for (String prefix : EXCLUDED_FRAME_PREFIXES) {
-            if (className.startsWith(prefix)) return false;
+            if (className.startsWith(prefix)) return true;
         }
         for (String excluded : EXCLUDED_FRAME_CLASSES) {
-            if (className.equals(excluded) || className.startsWith(excluded + "$")) return false;
+            if (className.equals(excluded) || className.startsWith(excluded + "$")) return true;
         }
-        // Filter lambda-generated classes — their names are JVM-specific and non-portable.
-        // The actual lambda body is a synthetic method on the enclosing class, which IS captured.
-        if (className.contains("$$Lambda")) return false;
-        return true;
+        return false;
+    }
+
+    /**
+     * Check if a frame is a lambda-generated class.
+     * Lambda frames cannot be replayed and are a hard error.
+     */
+    private static boolean isLambdaFrame(String className) {
+        return className.contains("$$Lambda");
     }
 
     private static ThreadSnapshot captureSnapshot(ThreadReference threadRef, String threadName) {
@@ -160,8 +171,17 @@ final class ThreadFreezer {
                 String methodName = method.name();
                 String methodSig = method.signature();
 
-                // Skip non-user frames (JDK internals, our library, etc.)
-                if (!isUserFrame(className)) continue;
+                // Skip JDK/library infrastructure frames (Thread.run, reflection, etc.)
+                if (isInfrastructureFrame(className)) continue;
+
+                // Lambda frames are a hard error — they can't be replayed
+                if (isLambdaFrame(className)) {
+                    // Find the enclosing method name for the error message
+                    String enclosing = className.contains("/")
+                            ? className.substring(0, className.indexOf("$$Lambda"))
+                            : className;
+                    throw new LambdaFrameException(className, enclosing + "." + methodName);
+                }
 
                 int bcp = (int) location.codeIndex();
 

@@ -26,11 +26,12 @@ public class LoopFreezeProgram {
         String snapshotFile = args[0];
         Durable.installExceptionHandler();
 
-        Thread worker = new Thread(() -> {
-            int result = computeWithFreeze(snapshotFile);
-            // Only in RESTORED thread
-            System.out.println("LOOP_RESULT=" + result);
-            System.out.flush();
+        // Use anonymous Runnable — lambda frames cause LambdaFrameException
+        Thread worker = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                doWork(snapshotFile);
+            }
         }, "loop-worker");
         worker.setUncaughtExceptionHandler((t, e) -> {
             if (e.getClass().getSimpleName().equals("ThreadFrozenError")) return;
@@ -39,6 +40,13 @@ public class LoopFreezeProgram {
         });
         worker.start();
         worker.join(30_000);
+    }
+
+    static void doWork(String snapshotFile) {
+        int result = computeWithFreeze(snapshotFile);
+        // Only in RESTORED thread
+        System.out.println("LOOP_RESULT=" + result);
+        System.out.flush();
     }
 
     public static int computeWithFreeze(String snapshotFile) {

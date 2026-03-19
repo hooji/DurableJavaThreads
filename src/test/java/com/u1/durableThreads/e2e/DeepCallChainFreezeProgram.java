@@ -25,11 +25,12 @@ public class DeepCallChainFreezeProgram {
         String snapshotFile = args[0];
         Durable.installExceptionHandler();
 
-        Thread worker = new Thread(() -> {
-            int result = outerMethod(5, snapshotFile);
-            // This only executes in the RESTORED thread
-            System.out.println("DEEP_RESULT=" + result);
-            System.out.flush();
+        // Use anonymous Runnable — lambda frames cause LambdaFrameException
+        Thread worker = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                doWork(snapshotFile);
+            }
         }, "deep-chain-worker");
         worker.setUncaughtExceptionHandler((t, e) -> {
             if (e.getClass().getSimpleName().equals("ThreadFrozenError")) return;
@@ -38,6 +39,13 @@ public class DeepCallChainFreezeProgram {
         });
         worker.start();
         worker.join(30_000);
+    }
+
+    static void doWork(String snapshotFile) {
+        int result = outerMethod(5, snapshotFile);
+        // This only executes in the RESTORED thread
+        System.out.println("DEEP_RESULT=" + result);
+        System.out.flush();
     }
 
     public static int outerMethod(int value, String snapshotFile) {

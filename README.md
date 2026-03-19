@@ -177,7 +177,7 @@ src/main/java/com/u1/durableThreads/
 
 - **Heap object references** — Objects referenced by local variables are captured and restored via JDI. Transient fields are skipped. Objects don't need to implement `Serializable` — the library extracts field data directly via reflection/JDI.
 
-- **Lambda frames excluded** — Lambda-generated classes (`$$Lambda`) have JVM-specific names and are not portable across JVM instances. The lambda body (a synthetic method on the enclosing class) IS captured.
+- **No lambda frames in call stack** — If `Durable.freeze()` is called from within a lambda, or if any frame in the frozen thread's call stack is a lambda-generated class (`$$Lambda`), the library throws `LambdaFrameException`. Lambda class names are JVM-specific and cannot be replayed during restore. To fix: refactor the lambda into a named method or inner class, or move the `freeze()` call outside the lambda.
 
 ## Requirements
 

@@ -27,8 +27,13 @@ public class SequentialFreezeProgram {
 
         Durable.installExceptionHandler();
 
-        // Run the workflow on a worker thread
-        Thread worker = new Thread(() -> runWorkflow(snapshotDir), "seq-freeze-worker");
+        // Use anonymous Runnable — lambda frames cause LambdaFrameException
+        Thread worker = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                runWorkflow(snapshotDir);
+            }
+        }, "seq-freeze-worker");
         worker.setUncaughtExceptionHandler((t, e) -> {
             if (e.getClass().getSimpleName().equals("ThreadFrozenError")) return;
             System.err.println("UNCAUGHT=" + e);
@@ -38,7 +43,7 @@ public class SequentialFreezeProgram {
         worker.join(90_000);
     }
 
-    private static void runWorkflow(String snapshotDir) {
+    static void runWorkflow(String snapshotDir) {
         int sum = 0;
         int freezeCount = 0;
         int minSnapshotSize = Integer.MAX_VALUE;

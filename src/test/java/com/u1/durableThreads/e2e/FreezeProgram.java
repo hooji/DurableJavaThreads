@@ -30,31 +30,13 @@ public class FreezeProgram {
         // Install the ThreadFrozenError handler so the thread exits cleanly
         Durable.installExceptionHandler();
 
-        Thread worker = new Thread(() -> {
-            int counter = 42;
-            String message = "hello-from-freeze";
-
-            System.out.println("BEFORE_FREEZE=" + counter);
-            System.out.flush();
-
-            Durable.freeze(snapshot -> {
-                try {
-                    byte[] bytes = serialize(snapshot);
-                    Files.write(Path.of(snapshotFile), bytes);
-                    System.out.println("FREEZE_COMPLETE");
-                    System.out.println("SNAPSHOT_SIZE=" + bytes.length);
-                    System.out.println("FRAME_COUNT=" + snapshot.frameCount());
-                    System.out.flush();
-                } catch (Exception e) {
-                    System.err.println("FREEZE_ERROR=" + e.getMessage());
-                    e.printStackTrace(System.err);
-                }
-            });
-
-            // This line only executes in a RESTORED thread
-            System.out.println("AFTER_FREEZE=" + counter);
-            System.out.println("MESSAGE=" + message);
-            System.out.flush();
+        // Use anonymous Runnable instead of lambda — lambda frames ($$Lambda)
+        // are not portable and would cause LambdaFrameException during freeze.
+        Thread worker = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                doWork(snapshotFile);
+            }
         }, "freeze-worker");
         worker.setUncaughtExceptionHandler((t, e) -> {
             if (e.getClass().getSimpleName().equals("ThreadFrozenError")) {
@@ -66,6 +48,33 @@ public class FreezeProgram {
         });
         worker.start();
         worker.join(30_000);
+    }
+
+    static void doWork(String snapshotFile) {
+        int counter = 42;
+        String message = "hello-from-freeze";
+
+        System.out.println("BEFORE_FREEZE=" + counter);
+        System.out.flush();
+
+        Durable.freeze(snapshot -> {
+            try {
+                byte[] bytes = serialize(snapshot);
+                Files.write(Path.of(snapshotFile), bytes);
+                System.out.println("FREEZE_COMPLETE");
+                System.out.println("SNAPSHOT_SIZE=" + bytes.length);
+                System.out.println("FRAME_COUNT=" + snapshot.frameCount());
+                System.out.flush();
+            } catch (Exception e) {
+                System.err.println("FREEZE_ERROR=" + e.getMessage());
+                e.printStackTrace(System.err);
+            }
+        });
+
+        // This line only executes in a RESTORED thread
+        System.out.println("AFTER_FREEZE=" + counter);
+        System.out.println("MESSAGE=" + message);
+        System.out.flush();
     }
 
     private static byte[] serialize(ThreadSnapshot snapshot) throws IOException {
