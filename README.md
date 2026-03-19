@@ -42,7 +42,7 @@ cd DurableJavaThreads
 mvn clean package -DskipTests
 ```
 
-This produces `target/durable-threads-0.2.0-SNAPSHOT.jar` — a shaded jar that bundles ASM and Objenesis.
+This produces `target/durable-threads-0.3.0-SNAPSHOT.jar` — a shaded jar that bundles ASM and Objenesis.
 
 ### Usage
 
@@ -78,10 +78,10 @@ public class MyWorkflow {
 Run with the agent and JDWP:
 
 ```bash
-java -javaagent:durable-threads-0.2.0-SNAPSHOT.jar \
+java -javaagent:durable-threads-0.3.0-SNAPSHOT.jar \
      -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=127.0.0.1:0 \
      --add-modules jdk.jdi \
-     -cp your-app.jar:durable-threads-0.2.0-SNAPSHOT.jar \
+     -cp your-app.jar:durable-threads-0.3.0-SNAPSHOT.jar \
      MyWorkflow
 ```
 
@@ -105,6 +105,26 @@ public class RestoreWorkflow {
 ```
 
 Run the restore JVM with the same agent flags.
+
+#### 3. Control instrumentation scope (optional)
+
+By default, the agent instruments all non-JDK classes. You can restrict it to specific packages:
+
+```bash
+# Only instrument your application packages:
+java -javaagent:durable-threads-0.3.0-SNAPSHOT.jar=includes=com.myapp;com.mylib \
+     ...
+
+# Exclude noisy third-party packages:
+java -javaagent:durable-threads-0.3.0-SNAPSHOT.jar=excludes=com.thirdparty;org.logging \
+     ...
+
+# Both (only included packages are instrumented, minus excluded sub-packages):
+java -javaagent:durable-threads-0.3.0-SNAPSHOT.jar=includes=com.myapp&excludes=com.myapp.generated \
+     ...
+```
+
+Package names use dots. Multiple packages are separated by semicolons. The agent always excludes JDK internals and its own classes regardless of configuration.
 
 ## API
 
@@ -137,6 +157,9 @@ mvn clean verify
 
 # Stress tests (each E2E scenario repeated 20x to detect intermittent failures)
 mvn package -DskipTests && mvn failsafe:integration-test failsafe:verify -Pstress
+
+# Performance benchmarks (freeze/restore latency and snapshot sizes)
+mvn package -DskipTests && mvn failsafe:integration-test -Dit.test=PerformanceBenchmarkIT
 ```
 
 ## How It Compares
@@ -156,6 +179,7 @@ src/main/java/com/u1/durableThreads/
 ├── Durable.java              # Public API
 ├── DurableAgent.java          # Java agent (premain)
 ├── DurableTransformer.java    # ClassFileTransformer
+├── InstrumentationScope.java  # Configurable include/exclude package filtering
 ├── PrologueInjector.java      # ASM ClassVisitor — injects replay prologues
 ├── ReplayState.java           # Thread-local replay coordination
 ├── ThreadFreezer.java         # Freeze implementation (JDI stack walk)
