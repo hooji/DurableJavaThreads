@@ -143,10 +143,29 @@ public final class JdiHeapWalker {
         return false;
     }
 
+    /** Collection types we can capture by walking internals via JDI. */
+    private static final Set<String> CAPTURABLE_COLLECTIONS = Set.of(
+            "java.util.ArrayList",
+            "java.util.LinkedList",
+            "java.util.HashSet",
+            "java.util.LinkedHashSet",
+            "java.util.TreeSet",
+            "java.util.HashMap",
+            "java.util.LinkedHashMap",
+            "java.util.TreeMap",
+            "java.util.concurrent.ConcurrentHashMap",
+            "java.util.ArrayDeque"
+    );
+
     private void captureRegularObject(long snapId, ObjectReference objRef,
                                        ReferenceType refType, String className) {
-        // JDK internal types (ArrayList, HashMap, etc.) have inaccessible fields
-        // and version-specific internals. Store them as opaque objects without fields.
+        // Known JDK collections: capture elements by walking internal storage
+        if (CAPTURABLE_COLLECTIONS.contains(className)) {
+            captureCollection(snapId, objRef, refType, className);
+            return;
+        }
+
+        // Other JDK internal types: store as opaque (inaccessible fields)
         if (isOpaqueType(className)) {
             snapshots.add(new ObjectSnapshot(snapId, className,
                     ObjectKind.REGULAR, Map.of(), null, null));
@@ -196,6 +215,120 @@ public final class JdiHeapWalker {
 
         snapshots.add(new ObjectSnapshot(snapId, className,
                 ObjectKind.REGULAR, fields, null, structureHash));
+    }
+
+    /**
+     * Capture a JDK collection by walking its internal storage via JDI.
+     * For List/Set: elements stored in arrayElements.
+     * For Map: key/value pairs interleaved in arrayElements (k0,v0,k1,v1,...).
+     */
+    private void captureCollection(long snapId, ObjectReference objRef,
+                                    ReferenceType refType, String className) {
+        try {
+            if (className.contains("Map")) {
+                captureMap(snapId, objRef, refType, className);
+            } else {
+                captureListOrSet(snapId, objRef, refType, className);
+            }
+        } catch (Exception e) {
+            // Fallback: store as opaque
+            snapshots.add(new ObjectSnapshot(snapId, className,
+                    ObjectKind.REGULAR, Map.of(), null, null));
+        }
+    }
+
+    private void captureListOrSet(long snapId, ObjectReference objRef,
+                                   ReferenceType refType, String className) {
+        List<ObjectRef> elements = new ArrayList<>();
+
+        // Try to read size and elementData (ArrayList) or navigate linked structure
+        com.sun.jdi.Field sizeField = findField(refType, "size");
+        com.sun.jdi.Field elementDataField = findField(refType, "elementData");
+
+        if (elementDataField != null && sizeField != null) {
+            // ArrayList-like: read elementData array up to size
+            Value sizeVal = objRef.getValue(sizeField);
+            int size = (sizeVal instanceof IntegerValue iv) ? iv.value() : 0;
+            Value dataVal = objRef.getValue(elementDataField);
+            if (dataVal instanceof ArrayReference arr) {
+                for (int i = 0; i < Math.min(size, arr.length()); i++) {
+                    elements.add(capture(arr.getValue(i)));
+                }
+            }
+        } else {
+            // HashSet wraps a HashMap — read the map's keys
+            com.sun.jdi.Field mapField = findField(refType, "map");
+            if (mapField != null) {
+                Value mapVal = objRef.getValue(mapField);
+                if (mapVal instanceof ObjectReference mapRef) {
+                    List<ObjectRef> pairs = extractMapEntries(mapRef);
+                    // HashSet: only keep keys (even indices)
+                    for (int i = 0; i < pairs.size(); i += 2) {
+                        elements.add(pairs.get(i));
+                    }
+                }
+            }
+        }
+
+        snapshots.add(new ObjectSnapshot(snapId, className,
+                ObjectKind.COLLECTION, Map.of(), elements.toArray(new ObjectRef[0]), null));
+    }
+
+    private void captureMap(long snapId, ObjectReference objRef,
+                             ReferenceType refType, String className) {
+        List<ObjectRef> pairs = extractMapEntries(objRef);
+        snapshots.add(new ObjectSnapshot(snapId, className,
+                ObjectKind.COLLECTION, Map.of(), pairs.toArray(new ObjectRef[0]), null));
+    }
+
+    /** Extract key/value pairs from a HashMap-like structure via JDI. */
+    private List<ObjectRef> extractMapEntries(ObjectReference mapRef) {
+        List<ObjectRef> pairs = new ArrayList<>();
+        try {
+            ReferenceType mapType = mapRef.referenceType();
+            com.sun.jdi.Field tableField = findField(mapType, "table");
+            if (tableField == null) return pairs;
+
+            Value tableVal = mapRef.getValue(tableField);
+            if (!(tableVal instanceof ArrayReference table)) return pairs;
+
+            for (int i = 0; i < table.length(); i++) {
+                Value bucketVal = table.getValue(i);
+                if (!(bucketVal instanceof ObjectReference node)) continue;
+
+                // Walk the linked list in each bucket
+                while (node != null) {
+                    com.sun.jdi.Field keyField = findField(node.referenceType(), "key");
+                    com.sun.jdi.Field valField = findField(node.referenceType(), "val");
+                    if (valField == null) valField = findField(node.referenceType(), "value");
+
+                    if (keyField != null && valField != null) {
+                        pairs.add(capture(node.getValue(keyField)));
+                        pairs.add(capture(node.getValue(valField)));
+                    }
+
+                    com.sun.jdi.Field nextField = findField(node.referenceType(), "next");
+                    if (nextField != null) {
+                        Value nextVal = node.getValue(nextField);
+                        node = (nextVal instanceof ObjectReference or) ? or : null;
+                    } else {
+                        break;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            // Best effort
+        }
+        return pairs;
+    }
+
+    private static com.sun.jdi.Field findField(ReferenceType type, String name) {
+        com.sun.jdi.Field f = type.fieldByName(name);
+        if (f != null) return f;
+        if (type instanceof ClassType ct && ct.superclass() != null) {
+            return findField(ct.superclass(), name);
+        }
+        return null;
     }
 
     private static boolean isTransient(Field field) {

@@ -72,6 +72,10 @@ public final class HeapRestorer {
                 int length = snap.arrayElements() != null ? snap.arrayElements().length : 0;
                 yield Array.newInstance(componentType, length);
             }
+            case COLLECTION -> {
+                // Collections are rebuilt by adding elements in the populate pass
+                yield createEmptyCollection(snap.className());
+            }
             case REGULAR -> {
                 try {
                     Class<?> clazz = Class.forName(snap.className());
@@ -92,8 +96,66 @@ public final class HeapRestorer {
         switch (snap.kind()) {
             case STRING -> {} // Strings are immutable, already set during allocation
             case ARRAY -> populateArray(obj, snap);
+            case COLLECTION -> populateCollection(obj, snap);
             case REGULAR -> populateRegularObject(obj, snap);
         }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void populateCollection(Object obj, ObjectSnapshot snap) {
+        ObjectRef[] elements = snap.arrayElements();
+        if (elements == null || elements.length == 0) return;
+
+        String className = snap.className();
+
+        if (className.contains("Map")) {
+            // Map: elements are interleaved key/value pairs
+            if (obj instanceof java.util.Map map) {
+                for (int i = 0; i + 1 < elements.length; i += 2) {
+                    Object key = resolve(elements[i]);
+                    Object value = resolve(elements[i + 1]);
+                    try {
+                        map.put(key, value);
+                    } catch (Exception e) {
+                        // Skip entries that can't be added (e.g., null keys in TreeMap)
+                    }
+                }
+            }
+        } else {
+            // List, Set, Deque: elements are sequential
+            if (obj instanceof java.util.Collection coll) {
+                for (ObjectRef element : elements) {
+                    try {
+                        coll.add(resolve(element));
+                    } catch (Exception e) {
+                        // Skip elements that can't be added
+                    }
+                }
+            }
+        }
+    }
+
+    private static Object createEmptyCollection(String className) {
+        return switch (className) {
+            case "java.util.ArrayList" -> new java.util.ArrayList<>();
+            case "java.util.LinkedList" -> new java.util.LinkedList<>();
+            case "java.util.HashSet" -> new java.util.HashSet<>();
+            case "java.util.LinkedHashSet" -> new java.util.LinkedHashSet<>();
+            case "java.util.TreeSet" -> new java.util.TreeSet<>();
+            case "java.util.HashMap" -> new java.util.HashMap<>();
+            case "java.util.LinkedHashMap" -> new java.util.LinkedHashMap<>();
+            case "java.util.TreeMap" -> new java.util.TreeMap<>();
+            case "java.util.concurrent.ConcurrentHashMap" -> new java.util.concurrent.ConcurrentHashMap<>();
+            case "java.util.ArrayDeque" -> new java.util.ArrayDeque<>();
+            default -> {
+                try {
+                    Class<?> clazz = Class.forName(className);
+                    yield OBJENESIS.newInstance(clazz);
+                } catch (ClassNotFoundException e) {
+                    throw new RuntimeException("Cannot create collection: " + className, e);
+                }
+            }
+        };
     }
 
     private void populateArray(Object array, ObjectSnapshot snap) {
