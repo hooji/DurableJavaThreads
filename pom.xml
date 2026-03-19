@@ -30,9 +30,9 @@
         <maven.compiler.source>21</maven.compiler.source>
         <maven.compiler.target>21</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <asm.version>9.7.1</asm.version>
-        <objenesis.version>3.4</objenesis.version>
-        <junit.version>5.11.3</junit.version>
+        <asm.version>9.9.1</asm.version>
+        <objenesis.version>3.5</objenesis.version>
+        <junit.version>5.14.2</junit.version>
     </properties>
 
     <dependencies>
