@@ -93,22 +93,32 @@ public class RestoreDemo {
 Both JVMs must be started with the agent and JDWP enabled:
 
 ```bash
-# Compile
-javac -cp durable-threads-0.3.0-SNAPSHOT.jar FreezeDemo.java RestoreDemo.java
+% javac -cp durable-threads-0.3.0-SNAPSHOT.jar FreezeDemo.java RestoreDemo.java
 
-# Freeze — prints i=0 .. i=5, then writes ./snapshot.dat
-java -javaagent:durable-threads-0.3.0-SNAPSHOT.jar \
-     -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=127.0.0.1:0 \
-     --add-modules jdk.jdi \
-     -cp .:durable-threads-0.3.0-SNAPSHOT.jar \
-     FreezeDemo
+% java -javaagent:durable-threads-0.3.0-SNAPSHOT.jar \
+       -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=127.0.0.1:0 \
+       --add-modules jdk.jdi \
+       -cp .:durable-threads-0.3.0-SNAPSHOT.jar \
+       FreezeDemo
+i=0
+i=1
+i=2
+i=3
+i=4
+i=5
 
-# Restore — prints Resumed!, i=6 .. i=10, Done!
-java -javaagent:durable-threads-0.3.0-SNAPSHOT.jar \
-     -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=127.0.0.1:0 \
-     --add-modules jdk.jdi \
-     -cp .:durable-threads-0.3.0-SNAPSHOT.jar \
-     RestoreDemo
+% java -javaagent:durable-threads-0.3.0-SNAPSHOT.jar \
+       -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=127.0.0.1:0 \
+       --add-modules jdk.jdi \
+       -cp .:durable-threads-0.3.0-SNAPSHOT.jar \
+       RestoreDemo
+Resumed!
+i=6
+i=7
+i=8
+i=9
+i=10
+Done!
 ```
 
 The loop variable `i` was 5 when the thread froze. The restored thread resumes from the line after `freeze()` with `i == 5` and continues the loop to completion.
