@@ -59,8 +59,15 @@ final class ThreadFreezer {
             try {
                 lock.wait(30_000); // 30 second timeout
             } catch (InterruptedException e) {
+                // This is the expected freeze termination path.
+                // Thread B interrupted us after capturing the snapshot.
+                // Throw ThreadFrozenError to cleanly terminate this thread.
+                if (FreezeFlag.isFrozen(Thread.currentThread())) {
+                    throw new ThreadFrozenError();
+                }
+                // If we weren't marked as frozen, this was an unexpected interrupt
                 Thread.currentThread().interrupt();
-                throw new RuntimeException("Freeze interrupted", e);
+                throw new RuntimeException("Freeze interrupted unexpectedly", e);
             }
         }
 

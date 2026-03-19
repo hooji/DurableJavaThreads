@@ -23,8 +23,6 @@ public class RestoreProgram {
         }
         String snapshotFile = args[0];
 
-        Durable.installExceptionHandler();
-
         byte[] bytes = Files.readAllBytes(Path.of(snapshotFile));
         ThreadSnapshot snapshot = deserialize(bytes);
 

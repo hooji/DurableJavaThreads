@@ -53,8 +53,6 @@ import com.u1.durableThreads.Durable;
 
 public class MyWorkflow {
     public static void main(String[] args) throws Exception {
-        Durable.installExceptionHandler();
-
         Thread worker = new Thread(() -> {
             int progress = 0;
             for (int i = 0; i < 1000; i++) {
@@ -95,8 +93,6 @@ import com.u1.durableThreads.snapshot.ThreadSnapshot;
 
 public class RestoreWorkflow {
     public static void main(String[] args) throws Exception {
-        Durable.installExceptionHandler();
-
         byte[] bytes = Files.readAllBytes(Path.of("checkpoint.bin"));
         ThreadSnapshot snapshot = deserialize(bytes);
 
@@ -119,10 +115,6 @@ Freezes the calling thread. The handler receives the snapshot for persistence. T
 ### `Durable.restore(ThreadSnapshot snapshot)`
 
 Returns a `Thread` (not yet started) that will replay the call stack and resume from the freeze point when started.
-
-### `Durable.installExceptionHandler()`
-
-Installs a default uncaught exception handler that silently ignores `ThreadFrozenError` (thrown to terminate frozen threads).
 
 ### `ThreadSnapshot`
 

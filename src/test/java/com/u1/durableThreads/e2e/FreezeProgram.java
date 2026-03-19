@@ -27,9 +27,6 @@ public class FreezeProgram {
         }
         String snapshotFile = args[0];
 
-        // Install the ThreadFrozenError handler so the thread exits cleanly
-        Durable.installExceptionHandler();
-
         // Use anonymous Runnable instead of lambda — lambda frames ($$Lambda)
         // are not portable and would cause LambdaFrameException during freeze.
         Thread worker = new Thread(new Runnable() {

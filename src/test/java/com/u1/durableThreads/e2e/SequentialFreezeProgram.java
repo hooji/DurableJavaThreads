@@ -25,8 +25,6 @@ public class SequentialFreezeProgram {
         }
         String snapshotDir = args[0];
 
-        Durable.installExceptionHandler();
-
         // Use anonymous Runnable — lambda frames cause LambdaFrameException
         Thread worker = new Thread(new Runnable() {
             @Override

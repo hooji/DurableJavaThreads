@@ -72,10 +72,9 @@ public final class Durable {
 
     /**
      * Install the default uncaught exception handler that silently ignores
-     * {@link ThreadFrozenError}. Called automatically by the agent, but can
-     * be called manually if needed.
+     * {@link ThreadFrozenError}. Called automatically by the agent at startup.
      */
-    public static void installExceptionHandler() {
+    static void installExceptionHandler() {
         Thread.UncaughtExceptionHandler existing = Thread.getDefaultUncaughtExceptionHandler();
         Thread.setDefaultUncaughtExceptionHandler((thread, throwable) -> {
             if (throwable instanceof ThreadFrozenError) {

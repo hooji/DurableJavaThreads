@@ -19,6 +19,7 @@ public final class DurableAgent {
     public static void premain(String agentArgs, Instrumentation inst) {
         instrumentation = inst;
         inst.addTransformer(new DurableTransformer());
+        Durable.installExceptionHandler();
         loaded = true;
     }
 
