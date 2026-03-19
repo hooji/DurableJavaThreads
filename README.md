@@ -6,43 +6,11 @@ Durable Threads is a pure-Java library that captures the full execution state of
 
 [![CI](https://github.com/hooji/DurableJavaThreads/actions/workflows/ci.yml/badge.svg)](https://github.com/hooji/DurableJavaThreads/actions/workflows/ci.yml)
 
-## How It Works
-
-```
-Thread running          Snapshot file          New JVM
-┌──────────────┐       ┌──────────────┐       ┌──────────────┐
-│ outerMethod  │       │ frames:      │       │ outerMethod  │
-│  middleMethod│ ───►  │  - outer     │ ───►  │  middleMethod│
-│   innerMethod│ freeze│  - middle    │restore│   innerMethod│
-│    ► freeze()│       │  - inner     │       │    ► continues
-│              │       │ locals, heap │       │              │
-└──────────────┘       └──────────────┘       └──────────────┘
-```
-
-1. **Bytecode instrumentation** — A Java agent (`-javaagent`) rewrites classes at load time using ASM, injecting a replay prologue into every method. This prologue is dormant during normal execution and activates only during restore.
-
-2. **Freeze via JDI** — When you call `Durable.freeze()`, the library connects to the JVM's own debug interface (JDWP), walks the calling thread's stack frames, and captures every local variable and referenced heap object into a `ThreadSnapshot`. **Important:** the operand stack must be empty at every active call site in the frozen thread's stack — that is, `freeze()` must not be called in the middle of an expression that has pushed intermediate values onto the operand stack. In practice, this means `Durable.freeze()` should be called as a standalone statement, not nested inside another expression. The library validates this at freeze time and throws `NonEmptyStackException` if violated.
-
-3. **Serialize** — The snapshot is a plain `Serializable` object. Write it to a file, a database, S3 — anywhere.
-
-4. **Restore via replay** — In a new JVM, `Durable.restore(snapshot)` rebuilds the heap, re-enters every method on the original call stack using the injected prologues, sets local variables via JDI, and resumes execution from exactly where `freeze()` was called.
-
 ## Quick Start
 
-### Prerequisites
+### Download
 
-- Java 21 or later (OpenJDK / Temurin recommended)
-- Maven 3.9+
-
-### Build
-
-```bash
-git clone https://github.com/hooji/DurableJavaThreads.git
-cd DurableJavaThreads
-mvn clean package -DskipTests
-```
-
-This produces `target/durable-threads-0.3.0-SNAPSHOT.jar` — a shaded jar that bundles ASM and Objenesis.
+Download [`durable-threads-0.4.0.jar`](https://github.com/hooji/DurableJavaThreads/releases/download/v0.4.0/durable-threads-0.4.0.jar) from the [latest release](https://github.com/hooji/DurableJavaThreads/releases/latest). This is a shaded jar that bundles all dependencies (ASM and Objenesis).
 
 ### Hello World
 
@@ -93,12 +61,12 @@ public class RestoreDemo {
 Both JVMs must be started with the agent and JDWP enabled:
 
 ```bash
-% javac -cp durable-threads-0.3.0-SNAPSHOT.jar FreezeDemo.java RestoreDemo.java
+% javac -cp durable-threads-0.4.0.jar FreezeDemo.java RestoreDemo.java
 
-% java -javaagent:durable-threads-0.3.0-SNAPSHOT.jar \
+% java -javaagent:durable-threads-0.4.0.jar \
        -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=127.0.0.1:0 \
        --add-modules jdk.jdi \
-       -cp .:durable-threads-0.3.0-SNAPSHOT.jar \
+       -cp .:durable-threads-0.4.0.jar \
        FreezeDemo
 i=0
 i=1
@@ -107,10 +75,10 @@ i=3
 i=4
 i=5
 
-% java -javaagent:durable-threads-0.3.0-SNAPSHOT.jar \
+% java -javaagent:durable-threads-0.4.0.jar \
        -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=127.0.0.1:0 \
        --add-modules jdk.jdi \
-       -cp .:durable-threads-0.3.0-SNAPSHOT.jar \
+       -cp .:durable-threads-0.4.0.jar \
        RestoreDemo
 Resumed!
 i=6
@@ -176,7 +144,55 @@ A `Serializable` record containing:
 - `List<FrameSnapshot>` — the call stack (bottom to top)
 - `List<ObjectSnapshot>` — the heap (objects referenced by locals)
 
-## Running Tests
+## How It Works
+
+```
+Thread running          Snapshot file          New JVM
+┌──────────────┐       ┌──────────────┐       ┌──────────────┐
+│ outerMethod  │       │ frames:      │       │ outerMethod  │
+│  middleMethod│ ───►  │  - outer     │ ───►  │  middleMethod│
+│   innerMethod│ freeze│  - middle    │restore│   innerMethod│
+│    ► freeze()│       │  - inner     │       │    ► continues
+│              │       │ locals, heap │       │              │
+└──────────────┘       └──────────────┘       └──────────────┘
+```
+
+1. **Bytecode instrumentation** — A Java agent (`-javaagent`) rewrites classes at load time using ASM, injecting a replay prologue into every method. This prologue is dormant during normal execution and activates only during restore.
+
+2. **Freeze via JDI** — When you call `Durable.freeze()`, the library connects to the JVM's own debug interface (JDWP), walks the calling thread's stack frames, and captures every local variable and referenced heap object into a `ThreadSnapshot`. **Important:** the operand stack must be empty at every active call site in the frozen thread's stack — that is, `freeze()` must not be called in the middle of an expression that has pushed intermediate values onto the operand stack. In practice, this means `Durable.freeze()` should be called as a standalone statement, not nested inside another expression. The library validates this at freeze time and throws `NonEmptyStackException` if violated.
+
+3. **Serialize** — The snapshot is a plain `Serializable` object. Write it to a file, a database, S3 — anywhere.
+
+4. **Restore via replay** — In a new JVM, `Durable.restore(snapshot)` rebuilds the heap, re-enters every method on the original call stack using the injected prologues, sets local variables via JDI, and resumes execution from exactly where `freeze()` was called.
+
+### How It Compares
+
+| Feature | Durable Threads | Quasar/Loom | CRIU | Project Loom |
+|---|---|---|---|---|
+| Stock JVM | Yes | Quasar: No (agent + bytecode) | No (kernel module) | Yes (but no serialize) |
+| Serialize to disk | Yes | No | Yes (process-level) | No |
+| Cross-JVM restore | Yes | No | Limited | No |
+| Java 21+ | Yes | Quasar: abandoned | Yes | Yes |
+| Granularity | Thread | Fiber | Process | Thread |
+
+## Building
+
+### Prerequisites
+
+- Java 21 or later (OpenJDK / Temurin recommended)
+- Maven 3.9+
+
+### Build from source
+
+```bash
+git clone https://github.com/hooji/DurableJavaThreads.git
+cd DurableJavaThreads
+mvn clean package -DskipTests
+```
+
+This produces `target/durable-threads-0.4.0.jar` — a shaded jar that bundles ASM and Objenesis.
+
+### Running Tests
 
 ```bash
 # Unit tests (fast, no agent required)
@@ -195,15 +211,25 @@ mvn package -DskipTests && mvn failsafe:integration-test failsafe:verify -Pstres
 mvn package -DskipTests && mvn failsafe:integration-test -Dit.test=PerformanceBenchmarkIT
 ```
 
-## How It Compares
+## Dependency
 
-| Feature | Durable Threads | Quasar/Loom | CRIU | Project Loom |
-|---|---|---|---|---|
-| Stock JVM | Yes | Quasar: No (agent + bytecode) | No (kernel module) | Yes (but no serialize) |
-| Serialize to disk | Yes | No | Yes (process-level) | No |
-| Cross-JVM restore | Yes | No | Limited | No |
-| Java 21+ | Yes | Quasar: abandoned | Yes | Yes |
-| Granularity | Thread | Fiber | Process | Thread |
+### Maven
+
+```xml
+<dependency>
+    <groupId>com.u1</groupId>
+    <artifactId>durable-threads</artifactId>
+    <version>0.4.0</version>
+</dependency>
+```
+
+### Gradle
+
+```groovy
+implementation 'com.u1:durable-threads:0.4.0'
+```
+
+> **Note:** Durable Threads is not yet published to Maven Central. For now, download the jar from the [releases page](https://github.com/hooji/DurableJavaThreads/releases) or build from source.
 
 ## Project Structure
 
