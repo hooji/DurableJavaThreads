@@ -1,0 +1,182 @@
+package com.u1.durableThreads.internal;
+
+import com.sun.jdi.*;
+import com.u1.durableThreads.snapshot.*;
+
+import java.util.*;
+
+/**
+ * Walks the object graph via JDI (Java Debug Interface) to capture
+ * objects reachable from local variables in a suspended thread.
+ *
+ * <p>Unlike {@link HeapWalker} which operates on live Java objects in the
+ * same JVM, this walker reads object state through JDI mirrors, which
+ * works even when the target thread is suspended.</p>
+ *
+ * <p>This handles objects that don't implement Serializable — we extract
+ * field data directly via JDI reflection, bypassing Java serialization.</p>
+ */
+public final class JdiHeapWalker {
+
+    private long nextId = 1;
+    private final Map<Long, Long> jdiIdToSnapId = new HashMap<>();
+    private final List<ObjectSnapshot> snapshots = new ArrayList<>();
+    private final Map<Long, byte[]> classStructureHashes = new HashMap<>();
+
+    /**
+     * Capture a JDI Value into the snapshot heap.
+     *
+     * @param value the JDI Value (may be null)
+     * @return an ObjectRef pointing into the snapshot
+     */
+    public ObjectRef capture(Value value) {
+        if (value == null) {
+            return new NullRef();
+        }
+
+        if (value instanceof PrimitiveValue pv) {
+            return capturePrimitive(pv);
+        }
+
+        if (value instanceof StringReference sr) {
+            return new PrimitiveRef(sr.value());
+        }
+
+        if (value instanceof ObjectReference objRef) {
+            return captureObject(objRef);
+        }
+
+        return new NullRef();
+    }
+
+    /**
+     * Get all captured object snapshots.
+     */
+    public List<ObjectSnapshot> getSnapshots() {
+        return Collections.unmodifiableList(snapshots);
+    }
+
+    /**
+     * Get the class structure hash for a given snapshot object ID.
+     */
+    public byte[] getClassStructureHash(long snapId) {
+        return classStructureHashes.get(snapId);
+    }
+
+    private ObjectRef capturePrimitive(PrimitiveValue pv) {
+        return switch (pv) {
+            case BooleanValue v -> new PrimitiveRef(v.value());
+            case ByteValue v -> new PrimitiveRef(v.value());
+            case CharValue v -> new PrimitiveRef(v.value());
+            case ShortValue v -> new PrimitiveRef(v.value());
+            case IntegerValue v -> new PrimitiveRef(v.value());
+            case LongValue v -> new PrimitiveRef(v.value());
+            case FloatValue v -> new PrimitiveRef(v.value());
+            case DoubleValue v -> new PrimitiveRef(v.value());
+            default -> new PrimitiveRef(0);
+        };
+    }
+
+    private ObjectRef captureObject(ObjectReference objRef) {
+        long jdiId = objRef.uniqueID();
+
+        // Already visited — return existing reference
+        Long existingSnapId = jdiIdToSnapId.get(jdiId);
+        if (existingSnapId != null) {
+            return new HeapRef(existingSnapId);
+        }
+
+        long snapId = nextId++;
+        jdiIdToSnapId.put(jdiId, snapId);
+
+        ReferenceType refType = objRef.referenceType();
+        String className = refType.name();
+
+        try {
+            if (objRef instanceof StringReference sr) {
+                captureString(snapId, sr);
+            } else if (objRef instanceof ArrayReference arrRef) {
+                captureArray(snapId, arrRef, className);
+            } else {
+                captureRegularObject(snapId, objRef, refType, className);
+            }
+        } catch (Exception e) {
+            // If capture fails, store an empty snapshot so the ID is valid
+            snapshots.add(new ObjectSnapshot(snapId, className, ObjectKind.REGULAR,
+                    Map.of(), null, null));
+        }
+
+        return new HeapRef(snapId);
+    }
+
+    private void captureString(long snapId, StringReference sr) {
+        Map<String, ObjectRef> fields = new LinkedHashMap<>();
+        fields.put("value", new PrimitiveRef(sr.value()));
+        snapshots.add(new ObjectSnapshot(snapId, "java.lang.String",
+                ObjectKind.STRING, fields, null, null));
+    }
+
+    private void captureArray(long snapId, ArrayReference arrRef, String className) {
+        List<Value> values = arrRef.getValues();
+        ObjectRef[] elements = new ObjectRef[values.size()];
+
+        for (int i = 0; i < values.size(); i++) {
+            elements[i] = capture(values.get(i));
+        }
+
+        snapshots.add(new ObjectSnapshot(snapId, className,
+                ObjectKind.ARRAY, Map.of(), elements, null));
+    }
+
+    private void captureRegularObject(long snapId, ObjectReference objRef,
+                                       ReferenceType refType, String className) {
+        Map<String, ObjectRef> fields = new LinkedHashMap<>();
+
+        // Walk class hierarchy via JDI
+        ReferenceType current = refType;
+        Set<String> visitedTypes = new HashSet<>();
+
+        while (current != null) {
+            String typeName = current.name();
+            if (typeName.equals("java.lang.Object") || visitedTypes.contains(typeName)) break;
+            visitedTypes.add(typeName);
+
+            try {
+                List<Field> jdiFields = current.fields();
+                // Get all field values in one call (more efficient than per-field)
+                Map<Field, Value> fieldValues = objRef.getValues(jdiFields);
+
+                for (Field jdiField : jdiFields) {
+                    if (jdiField.isStatic()) continue;
+                    // Skip transient fields
+                    if (isTransient(jdiField)) continue;
+
+                    String fieldKey = typeName + "." + jdiField.name();
+                    Value value = fieldValues.get(jdiField);
+                    fields.put(fieldKey, capture(value));
+                }
+            } catch (Exception e) {
+                // Skip fields we can't read
+            }
+
+            // Walk to superclass
+            if (current instanceof ClassType ct) {
+                current = ct.superclass();
+            } else {
+                break;
+            }
+        }
+
+        // Compute class structure hash
+        byte[] structureHash = ClassStructureHasher.hashClassStructure(refType);
+        classStructureHashes.put(snapId, structureHash);
+
+        snapshots.add(new ObjectSnapshot(snapId, className,
+                ObjectKind.REGULAR, fields, null, structureHash));
+    }
+
+    private static boolean isTransient(Field field) {
+        // JDI Field doesn't have isTransient() directly, check modifiers
+        return (field.modifiers() & 0x0080) != 0; // ACC_TRANSIENT = 0x0080
+    }
+}

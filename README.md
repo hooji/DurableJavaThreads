@@ -21,7 +21,7 @@ Thread running          Snapshot file          New JVM
 
 1. **Bytecode instrumentation** — A Java agent (`-javaagent`) rewrites classes at load time using ASM, injecting a replay prologue into every method. This prologue is dormant during normal execution and activates only during restore.
 
-2. **Freeze via JDI** — When you call `Durable.freeze()`, the library connects to the JVM's own debug interface (JDWP), walks the calling thread's stack frames, and captures every local variable, operand, and referenced heap object into a `ThreadSnapshot`.
+2. **Freeze via JDI** — When you call `Durable.freeze()`, the library connects to the JVM's own debug interface (JDWP), walks the calling thread's stack frames, and captures every local variable and referenced heap object into a `ThreadSnapshot`. **Important:** the operand stack must be empty at every active call site in the frozen thread's stack — that is, `freeze()` must not be called in the middle of an expression that has pushed intermediate values onto the operand stack. In practice, this means `Durable.freeze()` should be called as a standalone statement, not nested inside another expression. The library validates this at freeze time and throws `NonEmptyStackException` if violated.
 
 3. **Serialize** — The snapshot is a plain `Serializable` object. Write it to a file, a database, S3 — anywhere.
 
@@ -170,6 +170,14 @@ src/main/java/com/u1/durableThreads/
 ├── internal/                  # InvokeRegistry, BytecodeHasher, HeapRestorer, etc.
 └── snapshot/                  # ThreadSnapshot, FrameSnapshot, ObjectSnapshot, etc.
 ```
+
+## Limitations
+
+- **Empty operand stack required** — `Durable.freeze()` must be called as a standalone statement. Every active stack frame in the frozen thread must have an empty operand stack at its call site (no intermediate expression values on the stack). The library enforces this at freeze time and throws `NonEmptyStackException` if the constraint is violated. In practice: don't call `freeze()` inside `System.out.println(Durable.freeze(...))` or `foo(bar(), Durable.freeze(...))`.
+
+- **Heap object references** — Objects referenced by local variables are captured and restored via JDI. Transient fields are skipped. Objects don't need to implement `Serializable` — the library extracts field data directly via reflection/JDI.
+
+- **Lambda frames excluded** — Lambda-generated classes (`$$Lambda`) have JVM-specific names and are not portable across JVM instances. The lambda body (a synthetic method on the enclosing class) IS captured.
 
 ## Requirements
 

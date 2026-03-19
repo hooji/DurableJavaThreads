@@ -145,7 +145,7 @@ final class ThreadFreezer {
         try {
             List<StackFrame> jdiFrames = threadRef.frames();
             List<FrameSnapshot> frameSnapshots = new ArrayList<>();
-            HeapWalker heapWalker = new HeapWalker();
+            JdiHeapWalker heapWalker = new JdiHeapWalker();
 
             // Walk frames bottom to top (JDI gives top to bottom).
             // Filter out JDK and library-internal frames — they can't be replayed
@@ -203,7 +203,7 @@ final class ThreadFreezer {
         }
     }
 
-    private static List<com.u1.durableThreads.snapshot.LocalVariable> captureLocals(StackFrame frame, HeapWalker heapWalker) {
+    private static List<com.u1.durableThreads.snapshot.LocalVariable> captureLocals(StackFrame frame, JdiHeapWalker heapWalker) {
         List<com.u1.durableThreads.snapshot.LocalVariable> result = new ArrayList<>();
         try {
             Location location = frame.location();
@@ -222,7 +222,7 @@ final class ThreadFreezer {
                     if (!jdiLocal.isVisible(frame)) continue;
 
                     Value value = frame.getValue(jdiLocal);
-                    ObjectRef ref = convertValue(value, heapWalker);
+                    ObjectRef ref = heapWalker.capture(value);
                     // JDI LocalVariable doesn't expose slot index directly;
                     // use hashCode as a proxy, or get it from the variable table
                     int slot = 0;
@@ -244,41 +244,6 @@ final class ThreadFreezer {
             // Return what we have so far
         }
         return result;
-    }
-
-    private static ObjectRef convertValue(Value value, HeapWalker heapWalker) {
-        if (value == null) {
-            return new NullRef();
-        }
-
-        if (value instanceof PrimitiveValue pv) {
-            return switch (pv) {
-                case BooleanValue v -> new PrimitiveRef(v.value());
-                case ByteValue v -> new PrimitiveRef(v.value());
-                case CharValue v -> new PrimitiveRef(v.value());
-                case ShortValue v -> new PrimitiveRef(v.value());
-                case IntegerValue v -> new PrimitiveRef(v.value());
-                case LongValue v -> new PrimitiveRef(v.value());
-                case FloatValue v -> new PrimitiveRef(v.value());
-                case DoubleValue v -> new PrimitiveRef(v.value());
-                default -> new PrimitiveRef(0);
-            };
-        }
-
-        if (value instanceof StringReference sr) {
-            return new PrimitiveRef(sr.value());
-        }
-
-        if (value instanceof ObjectReference objRef) {
-            // For object references, we'd need to mirror them into our heap.
-            // This is complex — for now, use the heap walker to capture them
-            // via the actual live objects (which requires getting the real object
-            // from the JDI mirror).
-            // TODO: Implement full JDI-based object graph walking
-            return new NullRef();
-        }
-
-        return new NullRef();
     }
 
     /**

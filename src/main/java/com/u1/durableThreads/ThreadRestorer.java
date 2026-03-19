@@ -32,9 +32,18 @@ final class ThreadRestorer {
         // Step 2: Validate bytecode hashes
         validateBytecodeHashes(snapshot);
 
+        // Step 2b: Validate class structure hashes for heap objects
+        validateClassStructureHashes(snapshot);
+
         // Step 3: Rebuild the heap
         HeapRestorer heapRestorer = new HeapRestorer();
         Map<Long, Object> restoredHeap = heapRestorer.restoreAll(snapshot.heap());
+
+        // Step 3b: Populate the heap object bridge for JDI access
+        HeapObjectBridge.clear();
+        for (Map.Entry<Long, Object> entry : restoredHeap.entrySet()) {
+            HeapObjectBridge.put(entry.getKey(), entry.getValue());
+        }
 
         // Step 4: Build replay state (now InvokeRegistry has the data)
         int[] resumeIndices = computeResumeIndices(snapshot);
@@ -87,6 +96,37 @@ final class ThreadRestorer {
                     classBytecode, frame.methodName(), frame.methodSignature());
             if (currentHash == null || !Arrays.equals(frame.bytecodeHash(), currentHash)) {
                 mismatched.add(frame.className().replace('/', '.') + "." + frame.methodName());
+            }
+        }
+
+        if (!mismatched.isEmpty()) {
+            throw new BytecodeMismatchException(mismatched);
+        }
+    }
+
+    /**
+     * Validate class structure hashes for heap objects to detect incompatible
+     * class changes (added/removed/renamed fields, type changes).
+     */
+    private static void validateClassStructureHashes(ThreadSnapshot snapshot) {
+        List<String> mismatched = new ArrayList<>();
+
+        for (ObjectSnapshot objSnap : snapshot.heap()) {
+            if (objSnap.classStructureHash() == null || objSnap.classStructureHash().length == 0) {
+                continue;
+            }
+            if (objSnap.kind() != ObjectKind.REGULAR) {
+                continue;
+            }
+
+            try {
+                Class<?> clazz = Class.forName(objSnap.className());
+                byte[] currentHash = ClassStructureHasher.hashClassStructure(clazz);
+                if (!Arrays.equals(objSnap.classStructureHash(), currentHash)) {
+                    mismatched.add(objSnap.className());
+                }
+            } catch (ClassNotFoundException e) {
+                mismatched.add(objSnap.className() + " (class not found)");
             }
         }
 
@@ -180,6 +220,9 @@ final class ThreadRestorer {
                         // event-suspended threads.
                         ReplayState.deactivate();
                         ReplayState.releaseResumePoint();
+
+                        // Clean up the heap bridge
+                        HeapObjectBridge.clear();
                     } finally {
                         // Resume the thread — it wakes from the latch and continues
                         tr.resume();
@@ -338,17 +381,125 @@ final class ThreadRestorer {
         return switch (ref) {
             case NullRef ignored -> null;
             case PrimitiveRef p -> convertPrimitiveToJdiValue(vm, p.value());
-            case HeapRef h -> {
-                // For heap objects, we'd need to mirror the restored Java object
-                // into a JDI ObjectReference. This requires the object to exist in
-                // the target VM (which it does, since we restored it via HeapRestorer).
-                // However, JDI doesn't provide a direct way to get an ObjectReference
-                // from a local Java object in the same VM.
-                // For now, we use null for heap references — the application code
-                // can reinitialize object references after freeze() returns.
-                yield null;
-            }
+            case HeapRef h -> resolveHeapRefViaJdi(vm, h.id());
         };
+    }
+
+    /**
+     * Resolve a heap object reference to a JDI ObjectReference by reading it
+     * from the {@link HeapObjectBridge}.
+     *
+     * <p>The restored object lives in the same JVM. We stored it in
+     * HeapObjectBridge.objects (a static ConcurrentHashMap). JDI can read
+     * that map via ReferenceType field access, then call get() to obtain
+     * the ObjectReference.</p>
+     */
+    private static Value resolveHeapRefViaJdi(VirtualMachine vm, long snapshotId) {
+        try {
+            // Find the HeapObjectBridge class in JDI
+            List<ReferenceType> bridgeTypes = vm.classesByName(
+                    "com.u1.durableThreads.internal.HeapObjectBridge");
+            if (bridgeTypes.isEmpty()) return null;
+
+            ReferenceType bridgeType = bridgeTypes.get(0);
+
+            // Find the static 'objects' field (ConcurrentHashMap<String, Object>)
+            com.sun.jdi.Field objectsField = bridgeType.fieldByName("objects");
+            if (objectsField == null) return null;
+
+            ObjectReference mapRef = (ObjectReference) bridgeType.getValue(objectsField);
+            if (mapRef == null) return null;
+
+            // Call map.get(key) via JDI to get the ObjectReference
+            StringReference keyRef = vm.mirrorOf(String.valueOf(snapshotId));
+            ReferenceType mapType = mapRef.referenceType();
+            Method getMethod = mapType.methodsByName("get", "(Ljava/lang/Object;)Ljava/lang/Object;").get(0);
+
+            // We need an event-suspended thread to invoke methods.
+            // Since we're calling from the JDI worker and the replay thread is suspended,
+            // we use a helper approach: read the value directly from the Map's internal state.
+            // However, ConcurrentHashMap doesn't expose values via fields easily.
+            // Instead, we use the simpler approach of looking up objects via the entrySet.
+            //
+            // Alternative: since both JVMs share the same address space, use a static
+            // array indexed by snapshot ID for O(1) JDI field access.
+            return getObjectFromBridgeArray(vm, bridgeType, snapshotId);
+        } catch (Exception e) {
+            // Best effort — return null if we can't resolve
+            return null;
+        }
+    }
+
+    /**
+     * Get a restored object from the bridge using a static array approach.
+     * Falls back to null if the object can't be retrieved via JDI.
+     */
+    private static Value getObjectFromBridgeArray(VirtualMachine vm,
+                                                   ReferenceType bridgeType,
+                                                   long snapshotId) {
+        try {
+            // Read the static 'objects' map field
+            com.sun.jdi.Field objectsField = bridgeType.fieldByName("objects");
+            if (objectsField == null) return null;
+
+            ObjectReference mapRef = (ObjectReference) bridgeType.getValue(objectsField);
+            if (mapRef == null) return null;
+
+            // Use the values() method to get a Collection, then convert to array
+            // This avoids needing to invoke methods on a suspended thread
+            ReferenceType mapType = mapRef.referenceType();
+
+            // Try to find the entry by iterating internal Node array
+            // ConcurrentHashMap stores entries in a Node[] table
+            com.sun.jdi.Field tableField = findField(mapType, "table");
+            if (tableField == null) return null;
+
+            ArrayReference table = (ArrayReference) mapRef.getValue(tableField);
+            if (table == null) return null;
+
+            String targetKey = String.valueOf(snapshotId);
+
+            // Walk the hash table buckets
+            for (int i = 0; i < table.length(); i++) {
+                ObjectReference node = (ObjectReference) table.getValue(i);
+                while (node != null) {
+                    // Read key and val fields from the Node
+                    com.sun.jdi.Field keyField = findField(node.referenceType(), "key");
+                    com.sun.jdi.Field valField = findField(node.referenceType(), "val");
+                    com.sun.jdi.Field nextField = findField(node.referenceType(), "next");
+
+                    if (keyField == null || valField == null) break;
+
+                    Value keyVal = node.getValue(keyField);
+                    if (keyVal instanceof StringReference sr && sr.value().equals(targetKey)) {
+                        return node.getValue(valField);
+                    }
+
+                    // Follow the chain
+                    if (nextField != null) {
+                        Value nextVal = node.getValue(nextField);
+                        node = (nextVal instanceof ObjectReference or) ? or : null;
+                    } else {
+                        break;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            // Best effort
+        }
+        return null;
+    }
+
+    /**
+     * Find a field by name in a type or its supertypes.
+     */
+    private static com.sun.jdi.Field findField(ReferenceType type, String name) {
+        com.sun.jdi.Field f = type.fieldByName(name);
+        if (f != null) return f;
+        if (type instanceof ClassType ct && ct.superclass() != null) {
+            return findField(ct.superclass(), name);
+        }
+        return null;
     }
 
     /**
