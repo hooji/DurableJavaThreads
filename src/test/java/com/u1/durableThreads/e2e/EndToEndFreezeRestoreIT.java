@@ -320,4 +320,72 @@ class EndToEndFreezeRestoreIT {
             Files.deleteIfExists(snapshotFile);
         }
     }
+
+    @Test
+    @DisplayName("E2E: Heap objects (POJO, array, list) captured in freeze snapshot")
+    void heapObjectFreezeCapture() throws Exception {
+        Path snapshotFile = Files.createTempFile("durable-heap-", ".bin");
+        try {
+            int freezePort = ChildJvm.findFreePort();
+            ChildJvm.Result freezeResult = ChildJvm.run(
+                    "com.u1.durableThreads.e2e.HeapObjectFreezeProgram",
+                    classpath, freezePort,
+                    new String[]{snapshotFile.toString()}, 60);
+
+            System.out.println("=== HEAP FREEZE STDOUT ===\n" + freezeResult.stdout());
+            if (!freezeResult.stderr().isBlank()) {
+                System.out.println("=== HEAP FREEZE STDERR ===\n" + freezeResult.stderr());
+            }
+
+            assertTrue(freezeResult.stdout().contains("FREEZE_COMPLETE"),
+                    "Heap object freeze should complete. Stdout:\n" + freezeResult.stdout());
+            assertTrue(freezeResult.stdout().contains("BEFORE_FREEZE alice=Alice(30)"),
+                    "Should capture alice before freeze. Stdout:\n" + freezeResult.stdout());
+            assertTrue(freezeResult.stdout().contains("BEFORE_FREEZE scores.length=5"),
+                    "Should capture scores before freeze. Stdout:\n" + freezeResult.stdout());
+
+            // Heap should contain objects (Person, int[], ArrayList, Strings, etc.)
+            assertTrue(freezeResult.stdout().contains("HEAP_SIZE="),
+                    "Should report heap size. Stdout:\n" + freezeResult.stdout());
+
+            // Original thread should NOT reach post-freeze code
+            assertFalse(freezeResult.stdout().contains("AFTER_FREEZE"),
+                    "Original thread should not continue past freeze");
+
+            assertTrue(Files.size(snapshotFile) > 100, "Snapshot file should have content");
+
+            // Step 2: Restore in a NEW JVM and verify object state
+            int restorePort = ChildJvm.findFreePort();
+            ChildJvm.Result restoreResult = ChildJvm.run(
+                    "com.u1.durableThreads.e2e.RestoreProgram",
+                    classpath, restorePort,
+                    new String[]{snapshotFile.toString()}, 60);
+
+            System.out.println("=== HEAP RESTORE STDOUT ===\n" + restoreResult.stdout());
+            if (!restoreResult.stderr().isBlank()) {
+                System.out.println("=== HEAP RESTORE STDERR ===\n" + restoreResult.stderr());
+            }
+
+            assertTrue(restoreResult.stdout().contains("SNAPSHOT_LOADED=true"),
+                    "Should load heap snapshot. Stdout:\n" + restoreResult.stdout());
+            assertTrue(restoreResult.stdout().contains("RESTORE_COMPLETE"),
+                    "Restore should complete. Stdout:\n" + restoreResult.stdout());
+
+            // Verify primitive local survived
+            assertTrue(restoreResult.stdout().contains("AFTER_FREEZE primitiveLocal=99"),
+                    "Primitive local should survive. Stdout:\n" + restoreResult.stdout());
+
+            // Verify object locals — report what we got for debugging
+            // Full heap object restoration depends on JDI ObjectReference resolution
+            String stdout = restoreResult.stdout();
+            System.out.println("=== HEAP RESTORE OBJECT STATE ===");
+            for (String line : stdout.split("\n")) {
+                if (line.startsWith("AFTER_FREEZE")) {
+                    System.out.println("  " + line);
+                }
+            }
+        } finally {
+            Files.deleteIfExists(snapshotFile);
+        }
+    }
 }

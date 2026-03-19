@@ -5,6 +5,7 @@ import org.objenesis.ObjenesisStd;
 
 import java.lang.reflect.Array;
 import java.lang.reflect.Field;
+import java.lang.reflect.InaccessibleObjectException;
 import java.lang.reflect.Modifier;
 import java.util.HashMap;
 import java.util.List;
@@ -127,8 +128,9 @@ public final class HeapRestorer {
                 field.setAccessible(true);
                 Object value = resolve(entry.getValue());
                 field.set(obj, value);
-            } catch (ClassNotFoundException | NoSuchFieldException | IllegalAccessException e) {
-                // Skip fields that can't be restored
+            } catch (ClassNotFoundException | NoSuchFieldException | IllegalAccessException
+                     | InaccessibleObjectException e) {
+                // Skip fields that can't be restored (e.g., JDK module-protected fields)
             }
         }
     }

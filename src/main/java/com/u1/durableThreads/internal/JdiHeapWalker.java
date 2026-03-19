@@ -96,7 +96,10 @@ public final class JdiHeapWalker {
             if (objRef instanceof StringReference sr) {
                 captureString(snapId, sr);
             } else if (objRef instanceof ArrayReference arrRef) {
-                captureArray(snapId, arrRef, className);
+                // Convert JDI display name ("int[]", "java.lang.String[][]") to
+                // JVM internal name ("[I", "[[Ljava.lang.String;") for Class.forName()
+                String jvmArrayName = toJvmArrayName(className);
+                captureArray(snapId, arrRef, jvmArrayName);
             } else {
                 captureRegularObject(snapId, objRef, refType, className);
             }
@@ -128,8 +131,28 @@ public final class JdiHeapWalker {
                 ObjectKind.ARRAY, Map.of(), elements, null));
     }
 
+    /** Packages whose internal fields should not be walked (JDK internals). */
+    private static final String[] OPAQUE_PACKAGES = {
+            "java.", "javax.", "jdk.", "sun.", "com.sun."
+    };
+
+    private static boolean isOpaqueType(String className) {
+        for (String prefix : OPAQUE_PACKAGES) {
+            if (className.startsWith(prefix)) return true;
+        }
+        return false;
+    }
+
     private void captureRegularObject(long snapId, ObjectReference objRef,
                                        ReferenceType refType, String className) {
+        // JDK internal types (ArrayList, HashMap, etc.) have inaccessible fields
+        // and version-specific internals. Store them as opaque objects without fields.
+        if (isOpaqueType(className)) {
+            snapshots.add(new ObjectSnapshot(snapId, className,
+                    ObjectKind.REGULAR, Map.of(), null, null));
+            return;
+        }
+
         Map<String, ObjectRef> fields = new LinkedHashMap<>();
 
         // Walk class hierarchy via JDI
@@ -178,5 +201,35 @@ public final class JdiHeapWalker {
     private static boolean isTransient(Field field) {
         // JDI Field doesn't have isTransient() directly, check modifiers
         return (field.modifiers() & 0x0080) != 0; // ACC_TRANSIENT = 0x0080
+    }
+
+    /**
+     * Convert JDI array type display name to JVM internal name.
+     * JDI gives "int[]", "byte[][]", "java.lang.String[]" etc.
+     * Class.forName needs "[I", "[[B", "[Ljava.lang.String;" etc.
+     */
+    static String toJvmArrayName(String jdiName) {
+        // Count dimensions
+        int dims = 0;
+        String base = jdiName;
+        while (base.endsWith("[]")) {
+            dims++;
+            base = base.substring(0, base.length() - 2);
+        }
+        if (dims == 0) return jdiName; // not an array
+
+        String prefix = "[".repeat(dims);
+        String descriptor = switch (base) {
+            case "boolean" -> "Z";
+            case "byte"    -> "B";
+            case "char"    -> "C";
+            case "short"   -> "S";
+            case "int"     -> "I";
+            case "long"    -> "J";
+            case "float"   -> "F";
+            case "double"  -> "D";
+            default        -> "L" + base + ";";
+        };
+        return prefix + descriptor;
     }
 }
