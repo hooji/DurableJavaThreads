@@ -1,6 +1,7 @@
 package com.u1.durableThreads;
 
 import com.u1.durableThreads.internal.InvokeRegistry;
+import com.u1.durableThreads.internal.RawBytecodeScanner;
 import org.objectweb.asm.*;
 
 import java.lang.instrument.ClassFileTransformer;
@@ -88,13 +89,18 @@ public final class DurableTransformer implements ClassFileTransformer {
             // Store the instrumented bytecode for hash computation
             InvokeRegistry.storeInstrumentedBytecode(className, instrumented);
 
-            // Post-process: analyze the instrumented bytecode to build invoke offset maps
-            buildInvokeOffsetMaps(className, instrumented);
+            // Post-process: analyze the instrumented bytecode to build invoke offset maps.
+            // This must not fail — if it does, we still return the instrumented bytes.
+            try {
+                buildInvokeOffsetMaps(className, instrumented);
+            } catch (Exception mapEx) {
+                System.err.println("[DurableThreads] Warning: failed to build invoke maps for " +
+                        className.replace('/', '.') + ": " + mapEx.getMessage());
+            }
 
             return instrumented;
         } catch (Exception e) {
             // If instrumentation fails for any class, skip it silently.
-            // This can happen for unusual bytecode patterns.
             System.err.println("[DurableThreads] Warning: failed to instrument " +
                     className.replace('/', '.') + ": " + e.getMessage());
             return null;
@@ -102,12 +108,14 @@ public final class DurableTransformer implements ClassFileTransformer {
     }
 
     /**
-     * Analyze the instrumented bytecode to find the bytecode offsets of invoke
-     * instructions that correspond to the PrologueInjector's invoke indices.
+     * Analyze the instrumented bytecode to find the exact bytecode positions of
+     * invoke instructions that correspond to the PrologueInjector's invoke indices.
      *
-     * <p>We use ASM's tree API to iterate instructions and compute BCPs.
-     * We match the same filtering logic as PrologueInjector: skip ReplayState
-     * calls and invokespecial &lt;init&gt; calls.</p>
+     * <p>Uses two independent approaches and cross-checks them:</p>
+     * <ol>
+     *   <li><b>Raw bytecode scan</b> — parses actual bytes, zero approximation (primary)</li>
+     *   <li><b>ASM tree API</b> — walks InsnList, computes sizes (cross-check)</li>
+     * </ol>
      */
     private void buildInvokeOffsetMaps(String className, byte[] instrumented) {
         org.objectweb.asm.tree.ClassNode classNode = new org.objectweb.asm.tree.ClassNode();
@@ -119,35 +127,62 @@ public final class DurableTransformer implements ClassFileTransformer {
             if ("<init>".equals(method.name)) continue;
 
             String key = InvokeRegistry.key(className, method.name, method.desc);
-            List<Integer> offsets = new ArrayList<>();
 
-            // Compute BCP for each instruction by accumulating sizes
-            int bcp = 0;
-            for (int i = 0; i < method.instructions.size(); i++) {
-                org.objectweb.asm.tree.AbstractInsnNode insn = method.instructions.get(i);
+            // === PRIMARY: raw bytecode scan ===
+            List<Integer> rawOffsets;
+            try {
+                rawOffsets = RawBytecodeScanner.scanInvokeOffsets(
+                        instrumented, method.name, method.desc);
+            } catch (Exception e) {
+                rawOffsets = null;
+            }
 
-                if (insn instanceof org.objectweb.asm.tree.MethodInsnNode methodInsn) {
-                    // Skip ReplayState calls (prologue internals)
-                    boolean isReplayStateCall = "com/u1/durableThreads/ReplayState".equals(methodInsn.owner)
-                            || "com/u1/durableThreads/shaded/asm".equals(methodInsn.owner);
-                    // Skip invokespecial <init> (matches PrologueInjector exclusion)
-                    boolean isInitCall = methodInsn.getOpcode() == Opcodes.INVOKESPECIAL
-                            && "<init>".equals(methodInsn.name);
+            // === SECONDARY: ASM tree API ===
+            List<Integer> treeOffsets = computeOffsetsViaTree(method);
 
-                    if (!isReplayStateCall && !isInitCall) {
-                        offsets.add(bcp);
-                    }
-                } else if (insn instanceof org.objectweb.asm.tree.InvokeDynamicInsnNode) {
-                    offsets.add(bcp);
+            // Use raw if available, otherwise fall back to tree
+            List<Integer> offsets;
+            if (rawOffsets != null && !rawOffsets.isEmpty()) {
+                offsets = rawOffsets;
+                // Cross-check
+                if (!rawOffsets.equals(treeOffsets)) {
+                    System.err.println("[DurableThreads] BCP cross-check mismatch for "
+                            + className.replace('/', '.') + "." + method.name
+                            + " raw=" + rawOffsets + " tree=" + treeOffsets);
                 }
-
-                bcp += insnSize(insn);
+            } else {
+                offsets = treeOffsets;
             }
 
             if (!offsets.isEmpty()) {
                 InvokeRegistry.register(key, offsets);
             }
         }
+    }
+
+    /**
+     * Compute invoke offsets using ASM tree API (cross-check approach).
+     */
+    private List<Integer> computeOffsetsViaTree(org.objectweb.asm.tree.MethodNode method) {
+        List<Integer> offsets = new ArrayList<>();
+        int bcp = 0;
+        for (int i = 0; i < method.instructions.size(); i++) {
+            org.objectweb.asm.tree.AbstractInsnNode insn = method.instructions.get(i);
+
+            if (insn instanceof org.objectweb.asm.tree.MethodInsnNode methodInsn) {
+                boolean isReplayStateCall = "com/u1/durableThreads/ReplayState".equals(methodInsn.owner);
+                boolean isInitCall = methodInsn.getOpcode() == Opcodes.INVOKESPECIAL
+                        && "<init>".equals(methodInsn.name);
+                if (!isReplayStateCall && !isInitCall) {
+                    offsets.add(bcp);
+                }
+            } else if (insn instanceof org.objectweb.asm.tree.InvokeDynamicInsnNode) {
+                offsets.add(bcp);
+            }
+
+            bcp += insnSize(insn);
+        }
+        return offsets;
     }
 
     /**
