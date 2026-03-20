@@ -216,6 +216,18 @@ final class ThreadRestorer {
                                 + "during replay prologue execution.");
                     }
 
+                    // Phase 1a: Set method parameters in all user frames so that
+                    // when original code re-executes, control flow matches the
+                    // original execution (e.g., loop counters, branch conditions).
+                    // Only parameters (always in scope) are set here; non-parameter
+                    // locals are set in Phase 2 when the thread is at localsReady().
+                    tr.suspend();
+                    try {
+                        setLocalsViaJdi(vm, tr, snapshot, restoredHeap, heapRestorer);
+                    } finally {
+                        tr.resume();
+                    }
+
                     // Deactivate replay mode and release resume latch.
                     // Thread will wake, set __skip in resume stub, goto original code,
                     // skip all invokes up to target, then block at localsReady().

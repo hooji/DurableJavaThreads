@@ -93,10 +93,17 @@ public final class PrologueInjector extends ClassVisitor {
 
         private final List<InvokeInfo> invokeInfos = new ArrayList<>();
         private final List<Runnable> bufferedOps = new ArrayList<>();
+        private final List<LocalVarInfo> localVars = new ArrayList<>();
 
         private int invokeCounter = 0;
         private boolean hasCode = false;
         private int originalMaxLocals = 0;
+
+        // Method-wide labels for extending local variable scope.
+        // By extending scope to cover resume stubs, JDI can set parameters
+        // at any BCI (needed for Phase 1 of two-phase restore).
+        private Label methodStartLabel;
+        private Label methodEndLabel;
 
         PrologueMethodVisitor(int access, String name, String desc, String className,
                               MethodVisitor target,
@@ -181,7 +188,8 @@ public final class PrologueInjector extends ClassVisitor {
         }
         @Override public void visitLocalVariable(String name, String desc, String sig,
                                                   Label start, Label end, int index) {
-            bufferedOps.add(() -> target.visitLocalVariable(name, desc, sig, start, end, index));
+            // Collect for deduplication — emitted with method-wide scope at the end
+            localVars.add(new LocalVarInfo(name, desc, sig, start, end, index));
         }
         @Override public void visitLineNumber(int line, Label start) {
             bufferedOps.add(() -> target.visitLineNumber(line, start));
@@ -229,11 +237,60 @@ public final class PrologueInjector extends ClassVisitor {
                 emitFullPrologue(skipSlot);
             }
 
+            // Emit deduplicated local variables with method-wide scope
+            emitLocalVariables();
+
             target.visitMaxs(0, 0);
             target.visitEnd();
         }
 
+        /**
+         * Emit local variable debug info. Method parameters get method-wide scope
+         * so JDI can set them at resume stub BCIs (Phase 1 of two-phase restore).
+         * Non-parameter locals keep their original scope to avoid InconsistentDebugInfoException.
+         */
+        private void emitLocalVariables() {
+            if (methodStartLabel == null || methodEndLabel == null) {
+                // No prologue was emitted — emit original entries unchanged
+                for (LocalVarInfo lv : localVars) {
+                    target.visitLocalVariable(lv.name(), lv.desc(), lv.sig(),
+                            lv.start(), lv.end(), lv.index());
+                }
+                return;
+            }
+
+            // Compute parameter slot count from method descriptor
+            int paramSlots = 0;
+            if ((methodAccess & Opcodes.ACC_STATIC) == 0) {
+                paramSlots = 1; // 'this'
+            }
+            for (Type t : Type.getArgumentTypes(methodDesc)) {
+                paramSlots += t.getSize();
+            }
+
+            // Extend scope only for parameter slots; deduplicate to avoid
+            // Duplicated LocalVariableTable errors from if/else branches
+            java.util.Set<String> seenParams = new java.util.HashSet<>();
+            for (LocalVarInfo lv : localVars) {
+                if (lv.index() < paramSlots) {
+                    String key = lv.name() + "\0" + lv.desc() + "\0" + lv.index();
+                    if (seenParams.add(key)) {
+                        target.visitLocalVariable(lv.name(), lv.desc(), lv.sig(),
+                                methodStartLabel, methodEndLabel, lv.index());
+                    }
+                } else {
+                    // Non-parameter: keep original scope
+                    target.visitLocalVariable(lv.name(), lv.desc(), lv.sig(),
+                            lv.start(), lv.end(), lv.index());
+                }
+            }
+        }
+
         private void emitNoInvokePrologue() {
+            methodStartLabel = new Label();
+            methodEndLabel = new Label();
+            target.visitLabel(methodStartLabel);
+
             Label normalCode = new Label();
             target.visitMethodInsn(Opcodes.INVOKESTATIC,
                     "com/u1/durableThreads/ReplayState", "isReplayThread", "()Z", false);
@@ -244,11 +301,18 @@ public final class PrologueInjector extends ClassVisitor {
             for (Runnable op : bufferedOps) {
                 op.run();
             }
+
+            target.visitLabel(methodEndLabel);
         }
 
         private void emitFullPrologue(int skipSlot) {
             int retValSlot = skipSlot + 1; // Object slot for boxed return values
             Label originalCode = new Label();
+
+            // Method-wide labels for extending local variable scope
+            methodStartLabel = new Label();
+            methodEndLabel = new Label();
+            target.visitLabel(methodStartLabel);
 
             // --- PROLOGUE ---
 
@@ -284,6 +348,9 @@ public final class PrologueInjector extends ClassVisitor {
             // --- ORIGINAL CODE with inline skip checks ---
             target.visitLabel(originalCode);
             emitOriginalCodeWithSkipChecks(skipSlot, retValSlot);
+
+            // End label for method-wide local variable scope
+            target.visitLabel(methodEndLabel);
         }
 
         /**
@@ -643,4 +710,7 @@ public final class PrologueInjector extends ClassVisitor {
 
     record InvokeInfo(int index, int opcode, String owner, String name, String descriptor,
                       boolean isInterface) {}
+
+    record LocalVarInfo(String name, String desc, String sig,
+                        Label start, Label end, int index) {}
 }
