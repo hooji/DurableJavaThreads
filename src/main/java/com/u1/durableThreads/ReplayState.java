@@ -175,6 +175,7 @@ public final class ReplayState {
      */
     public static void activate(int[] resumeIndices) {
         resumeLatch = null;
+        localsLatch = null;
         REPLAY.set(new ReplayData(resumeIndices));
     }
 

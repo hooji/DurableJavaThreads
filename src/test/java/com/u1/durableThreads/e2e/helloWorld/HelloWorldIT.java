@@ -94,6 +94,7 @@ class HelloWorldIT {
             // Exact user output check (lines excluding RESTORE_COMPLETE)
             var userLines = restoreResult.stdout().lines()
                     .filter(l -> !l.equals("RESTORE_COMPLETE") && !l.isBlank())
+                    .filter(l -> !l.startsWith("Listening for transport dt_socket"))
                     .toList();
             assertEquals(java.util.List.of(
                     "RESUMED", "i=6", "i=7", "i=8", "i=9", "i=10", "DONE"),

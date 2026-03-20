@@ -181,6 +181,7 @@ class ReadmeDemoIT {
         // Exact output check: only post-freeze lines
         var userLines = rOut.lines()
                 .filter(l -> !l.isBlank())
+                .filter(l -> !l.startsWith("Listening for transport dt_socket"))
                 .toList();
         assertEquals(List.of(
                 "Resumed!", "i=6", "i=7", "i=8", "i=9", "i=10", "Done!"),
