@@ -264,8 +264,9 @@ public final class JdiHeapWalker {
                 }
             }
         } catch (Exception e) {
-            // Fall back to empty string if we can't read internals
-            System.err.println("[DurableThreads] WARNING: Cannot read StringBuilder content: " + e.getMessage());
+            throw new RuntimeException(
+                    "Cannot read " + className + " content via JDI. "
+                    + "Thread freeze cannot proceed with incomplete state.", e);
         }
 
         Map<String, ObjectRef> fields = new LinkedHashMap<>();

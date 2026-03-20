@@ -223,7 +223,7 @@ final class ThreadRestorer {
                     // locals are set in Phase 2 when the thread is at localsReady().
                     tr.suspend();
                     try {
-                        setLocalsViaJdi(vm, tr, snapshot, restoredHeap, heapRestorer);
+                        setLocalsViaJdi(vm, tr, snapshot, restoredHeap, heapRestorer, false);
                     } finally {
                         tr.resume();
                     }
@@ -248,8 +248,9 @@ final class ThreadRestorer {
 
                     tr2.suspend();
                     try {
-                        // Set local variables — now they're in scope
-                        setLocalsViaJdi(vm, tr2, snapshot, restoredHeap, heapRestorer);
+                        // Set local variables — now they're in scope.
+                        // Phase 2 requires ALL locals to be set; failure is fatal.
+                        setLocalsViaJdi(vm, tr2, snapshot, restoredHeap, heapRestorer, true);
 
                         // Release locals latch
                         ReplayState.releaseLocalsReady();
@@ -362,10 +363,16 @@ final class ThreadRestorer {
      * JDI stack downward. We skip JDI frames that belong to ReplayState,
      * CountDownLatch, or other infrastructure.</p>
      */
+    /**
+     * @param requireAllLocals if true (Phase 2), any local that cannot be set
+     *        is a fatal error. If false (Phase 1), out-of-scope locals are
+     *        silently skipped (they'll be set in Phase 2).
+     */
     private static void setLocalsViaJdi(VirtualMachine vm, ThreadReference threadRef,
                                         ThreadSnapshot snapshot,
                                         Map<Long, Object> restoredHeap,
-                                        HeapRestorer heapRestorer) {
+                                        HeapRestorer heapRestorer,
+                                        boolean requireAllLocals) {
         try {
             List<StackFrame> jdiFrames = threadRef.frames();
             List<FrameSnapshot> snapshotFrames = snapshot.frames();
@@ -373,6 +380,7 @@ final class ThreadRestorer {
             // Match JDI frames to snapshot frames.
             // JDI is top-to-bottom, snapshot is bottom-to-top.
             int snapshotIdx = snapshotFrames.size() - 1; // start from top (deepest)
+            int topFrameIdx = snapshotIdx; // the deepest (top) frame index
 
             for (int jdiIdx = 0; jdiIdx < jdiFrames.size() && snapshotIdx >= 0; jdiIdx++) {
                 StackFrame jdiFrame = jdiFrames.get(jdiIdx);
@@ -393,9 +401,13 @@ final class ThreadRestorer {
                 // Match by class name and method name
                 if (jdiClassName.equals(snapFrame.className())
                         && jdiMethodName.equals(snapFrame.methodName())) {
-
+                    // Only require all locals for the top frame (where localsReady()
+                    // executes in original code). Intermediate frames are still inside
+                    // resume stub code where non-parameter locals are out of scope.
+                    boolean requireForFrame = requireAllLocals
+                            && snapshotIdx == topFrameIdx;
                     setFrameLocals(vm, threadRef, jdiFrame, snapFrame,
-                            restoredHeap, heapRestorer);
+                            restoredHeap, heapRestorer, requireForFrame);
                     snapshotIdx--;
                 }
                 // If no match, skip this JDI frame (it's infrastructure / reflection)
@@ -412,7 +424,8 @@ final class ThreadRestorer {
     private static void setFrameLocals(VirtualMachine vm, ThreadReference threadRef,
                                        StackFrame jdiFrame, FrameSnapshot snapFrame,
                                        Map<Long, Object> restoredHeap,
-                                       HeapRestorer heapRestorer) {
+                                       HeapRestorer heapRestorer,
+                                       boolean requireAllLocals) {
         Method method = jdiFrame.location().method();
 
         List<com.sun.jdi.LocalVariable> jdiLocals;
@@ -448,12 +461,18 @@ final class ThreadRestorer {
                         + method.declaringType().name() + "." + method.name()
                         + ": " + e.getMessage(), e);
             } catch (IllegalArgumentException e) {
-                // In the two-phase approach, locals should be in scope at localsReady().
-                // If this still happens, log it for debugging.
-                System.err.println("[DurableThreads] WARNING: Cannot set local '"
-                        + snapLocal.name() + "' in "
-                        + method.declaringType().name() + "." + method.name()
-                        + " — not in scope at current BCP: " + e.getMessage());
+                if (requireAllLocals) {
+                    // Phase 2: all locals must be in scope. Failure means the
+                    // restored thread would run with incorrect state.
+                    throw new RuntimeException(
+                            "Cannot set local '" + snapLocal.name() + "' in "
+                            + method.declaringType().name() + "." + method.name()
+                            + " — not in scope at current BCP. "
+                            + "Thread restore cannot proceed with incomplete state.",
+                            e);
+                }
+                // Phase 1: non-parameter locals may not be in scope yet
+                // (they'll be set in Phase 2 at localsReady()).
             } catch (Exception e) {
                 throw new RuntimeException(
                         "Failed to set local '" + snapLocal.name() + "' in "
