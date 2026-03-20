@@ -631,28 +631,6 @@ final class ThreadRestorer {
         return null;
     }
 
-    private static void deactivateReplayViaJdi(ThreadReference threadRef,
-                                               ReferenceType replayStateType) {
-        try {
-            Method deactivateMethod = replayStateType.methodsByName("deactivate").get(0);
-            threadRef.invokeMethod(threadRef, deactivateMethod,
-                    Collections.emptyList(), ObjectReference.INVOKE_SINGLE_THREADED);
-        } catch (Exception e) {
-            System.err.println("[DurableThreads] Failed to deactivate replay via JDI: " + e);
-        }
-    }
-
-    private static void releaseResumePointViaJdi(ThreadReference threadRef,
-                                                  ReferenceType replayStateType) {
-        try {
-            Method releaseMethod = replayStateType.methodsByName("releaseResumePoint").get(0);
-            threadRef.invokeMethod(threadRef, releaseMethod,
-                    Collections.emptyList(), ObjectReference.INVOKE_SINGLE_THREADED);
-        } catch (Exception e) {
-            System.err.println("[DurableThreads] Failed to release resume point via JDI: " + e);
-        }
-    }
-
     /**
      * Force-load all classes referenced in the snapshot frames.
      * This triggers the agent's ClassFileTransformer which populates
