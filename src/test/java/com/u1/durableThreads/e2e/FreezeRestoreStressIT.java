@@ -46,6 +46,19 @@ class FreezeRestoreStressIT {
                         + "\nStderr:\n" + result.stderr());
     }
 
+    /**
+     * Extract the "user output" lines from restore stdout — lines printed by
+     * the restored thread, excluding the RestoreProgram infrastructure lines.
+     */
+    private static java.util.List<String> extractUserOutput(String stdout) {
+        return stdout.lines()
+                .filter(line -> !line.startsWith("SNAPSHOT_LOADED="))
+                .filter(line -> !line.startsWith("FRAME_COUNT="))
+                .filter(line -> !line.equals("RESTORE_COMPLETE"))
+                .filter(line -> !line.isBlank())
+                .toList();
+    }
+
     // ===================================================================
     // Basic freeze/restore — most likely to expose JDI timing races
     // ===================================================================
@@ -71,8 +84,13 @@ class FreezeRestoreStressIT {
                     new String[]{snapshotFile.toString()}, 60);
 
             assertRestoreSucceeded(restoreResult);
-            assertTrue(restoreResult.stdout().contains("AFTER_FREEZE=42"),
-                    "Rep " + info.getCurrentRepetition() + ": counter should be 42. Stdout:\n"
+
+            // Exact output: only post-freeze lines, no replay
+            var userLines = extractUserOutput(restoreResult.stdout());
+            assertEquals(java.util.List.of("AFTER_FREEZE=42", "MESSAGE=hello-from-freeze"),
+                    userLines,
+                    "Rep " + info.getCurrentRepetition()
+                            + ": restore should produce only post-freeze lines. Got:\n"
                             + restoreResult.stdout());
         } finally {
             Files.deleteIfExists(snapshotFile);
@@ -103,6 +121,16 @@ class FreezeRestoreStressIT {
                     new String[]{snapshotFile.toString()}, 60);
 
             assertRestoreSucceeded(restoreResult);
+
+            // Exact output check for deep chain
+            var userLines = extractUserOutput(restoreResult.stdout());
+            assertEquals(java.util.List.of(
+                    "INNER_AFTER=117", "MIDDLE_AFTER=117",
+                    "OUTER_AFTER=117", "DEEP_RESULT=1217"),
+                    userLines,
+                    "Rep " + info.getCurrentRepetition()
+                            + ": deep chain restore should produce only post-freeze lines. Got:\n"
+                            + restoreResult.stdout());
         } finally {
             Files.deleteIfExists(snapshotFile);
         }
@@ -132,6 +160,19 @@ class FreezeRestoreStressIT {
                     new String[]{snapshotFile.toString()}, 60);
 
             assertRestoreSucceeded(restoreResult);
+
+            // Exact output check for loop
+            var userLines = extractUserOutput(restoreResult.stdout());
+            assertEquals(java.util.List.of(
+                    "AFTER_FREEZE i=4 sum=10",
+                    "ITERATION i=5 sum=15", "ITERATION i=6 sum=21",
+                    "ITERATION i=7 sum=28", "ITERATION i=8 sum=36",
+                    "ITERATION i=9 sum=45",
+                    "FINAL_SUM=45", "LOOP_RESULT=45"),
+                    userLines,
+                    "Rep " + info.getCurrentRepetition()
+                            + ": loop restore should continue from i=5, no replay. Got:\n"
+                            + restoreResult.stdout());
         } finally {
             Files.deleteIfExists(snapshotFile);
         }
@@ -164,6 +205,12 @@ class FreezeRestoreStressIT {
             assertTrue(restoreResult.stdout().contains("AFTER_FREEZE primitiveLocal=99"),
                     "Rep " + info.getCurrentRepetition() + ": primitiveLocal should be 99. Stdout:\n"
                             + restoreResult.stdout());
+
+            // Restored thread must NOT replay pre-freeze output
+            assertFalse(restoreResult.stdout().contains("BEFORE_FREEZE"),
+                    "Rep " + info.getCurrentRepetition()
+                            + ": restore must not replay pre-freeze. Stdout:\n"
+                            + restoreResult.stdout());
         } finally {
             Files.deleteIfExists(snapshotFile);
         }
@@ -193,6 +240,17 @@ class FreezeRestoreStressIT {
                     new String[]{snapshotFile.toString()}, 60);
 
             assertRestoreSucceeded(restoreResult);
+
+            // Exact output check for return values
+            var userLines = extractUserOutput(restoreResult.stdout());
+            assertEquals(java.util.List.of(
+                    "AFTER_FREEZE v1=15 v2=45 v3=43",
+                    "AFTER_COMPUTE v4=21 v5=121",
+                    "CHAIN_RESULT=245"),
+                    userLines,
+                    "Rep " + info.getCurrentRepetition()
+                            + ": return value restore should produce only post-freeze lines. Got:\n"
+                            + restoreResult.stdout());
         } finally {
             Files.deleteIfExists(snapshotFile);
         }

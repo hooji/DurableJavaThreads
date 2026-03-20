@@ -6,6 +6,7 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.*;
 import java.util.*;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
@@ -168,6 +169,23 @@ class ReadmeDemoIT {
         for (int i = 6; i <= 10; i++) {
             assertTrue(rOut.contains("i=" + i), "Restored thread should print i=" + i);
         }
+
+        // Restored thread must NOT replay pre-freeze output
+        for (int i = 0; i <= 4; i++) {
+            assertFalse(rOut.contains("i=" + i),
+                    "Restore must not replay i=" + i + ". Stdout:\n" + rOut);
+        }
+        assertFalse(rOut.contains("About to freeze!"),
+                "Restore must not replay 'About to freeze!'. Stdout:\n" + rOut);
+
+        // Exact output check: only post-freeze lines
+        var userLines = rOut.lines()
+                .filter(l -> !l.isBlank())
+                .toList();
+        assertEquals(List.of(
+                "Resumed!", "i=6", "i=7", "i=8", "i=9", "i=10", "Done!"),
+                userLines,
+                "Restore output should be exactly the post-freeze lines. Got:\n" + rOut);
     }
 
     private static String findAgentJar() {

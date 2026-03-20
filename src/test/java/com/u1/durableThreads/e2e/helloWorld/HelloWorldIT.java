@@ -74,6 +74,32 @@ class HelloWorldIT {
                     "Restore should not fail. Stderr:\n" + restoreResult.stderr());
             assertTrue(restoreResult.stdout().contains("RESTORE_COMPLETE"),
                     "Restore should complete. Stdout:\n" + restoreResult.stdout());
+
+            // Restored thread should resume from i=6 through i=10, then DONE
+            assertTrue(restoreResult.stdout().contains("RESUMED"),
+                    "Restored thread should print RESUMED. Stdout:\n" + restoreResult.stdout());
+            assertTrue(restoreResult.stdout().contains("DONE"),
+                    "Restored thread should print DONE. Stdout:\n" + restoreResult.stdout());
+            for (int i = 6; i <= 10; i++) {
+                assertTrue(restoreResult.stdout().contains("i=" + i),
+                        "Restored thread should print i=" + i + ". Stdout:\n" + restoreResult.stdout());
+            }
+
+            // Restored thread must NOT replay pre-freeze output
+            for (int i = 0; i <= 4; i++) {
+                assertFalse(restoreResult.stdout().contains("i=" + i),
+                        "Restore must not replay i=" + i + ". Stdout:\n" + restoreResult.stdout());
+            }
+
+            // Exact user output check (lines excluding RESTORE_COMPLETE)
+            var userLines = restoreResult.stdout().lines()
+                    .filter(l -> !l.equals("RESTORE_COMPLETE") && !l.isBlank())
+                    .toList();
+            assertEquals(java.util.List.of(
+                    "RESUMED", "i=6", "i=7", "i=8", "i=9", "i=10", "DONE"),
+                    userLines,
+                    "Restore output should be exactly the post-freeze lines. Got:\n"
+                            + restoreResult.stdout());
         } finally {
             Files.deleteIfExists(snapshotFile);
         }

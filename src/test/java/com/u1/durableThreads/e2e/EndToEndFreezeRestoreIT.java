@@ -38,6 +38,20 @@ class EndToEndFreezeRestoreIT {
                 "Restore should complete. Stdout:\n" + restoreResult.stdout());
     }
 
+    /**
+     * Extract the "user output" lines from restore stdout — lines printed by
+     * the restored thread, excluding the RestoreProgram infrastructure lines
+     * (SNAPSHOT_LOADED, FRAME_COUNT, RESTORE_COMPLETE).
+     */
+    private static java.util.List<String> extractUserOutput(String stdout) {
+        return stdout.lines()
+                .filter(line -> !line.startsWith("SNAPSHOT_LOADED="))
+                .filter(line -> !line.startsWith("FRAME_COUNT="))
+                .filter(line -> !line.equals("RESTORE_COMPLETE"))
+                .filter(line -> !line.isBlank())
+                .toList();
+    }
+
     // ===================================================================
     // Basic tests
     // ===================================================================
@@ -125,11 +139,20 @@ class EndToEndFreezeRestoreIT {
 
             assertTrue(restoreResult.stdout().contains("SNAPSHOT_LOADED=true"),
                     "Should load snapshot in second JVM. Stdout:\n" + restoreResult.stdout());
+            assertRestoreSucceeded(restoreResult);
 
-            // NOTE: Full replay execution (AFTER_FREEZE=42) requires completing the
-            // ThreadRestorer's JDI-based local variable setting and replay mechanism.
-            // That work is tracked separately. For now, we verify the snapshot
-            // survives serialization across JVM boundaries.
+            // Restored thread should produce post-freeze output with correct values
+            assertTrue(restoreResult.stdout().contains("AFTER_FREEZE=42"),
+                    "Restored thread should output counter=42. Stdout:\n" + restoreResult.stdout());
+            assertTrue(restoreResult.stdout().contains("MESSAGE=hello-from-freeze"),
+                    "Restored thread should output message. Stdout:\n" + restoreResult.stdout());
+
+            // Restored thread must NOT replay pre-freeze output
+            var userLines = extractUserOutput(restoreResult.stdout());
+            assertEquals(java.util.List.of("AFTER_FREEZE=42", "MESSAGE=hello-from-freeze"),
+                    userLines,
+                    "Restore output should be exactly the post-freeze lines, no replay. Got:\n"
+                            + restoreResult.stdout());
         } finally {
             Files.deleteIfExists(snapshotFile);
         }
@@ -227,9 +250,20 @@ class EndToEndFreezeRestoreIT {
             assertRestoreSucceeded(restoreResult);
 
             // Verify the snapshot has multiple frames (at least 3: outer, middle, inner)
-            // The FRAME_COUNT line tells us
             assertTrue(restoreResult.stdout().contains("FRAME_COUNT="),
                     "Should report frame count. Stdout:\n" + restoreResult.stdout());
+
+            // Restored thread should produce post-freeze output with correct values
+            // innerMethod: computed(37) + 80 = 117; middleMethod: 117 + 100 = 217; outerMethod: 217 + 1000 = 1217
+            var userLines = extractUserOutput(restoreResult.stdout());
+            assertEquals(java.util.List.of(
+                    "INNER_AFTER=117",
+                    "MIDDLE_AFTER=117",
+                    "OUTER_AFTER=117",
+                    "DEEP_RESULT=1217"),
+                    userLines,
+                    "Restore should produce only post-freeze output with correct values. Got:\n"
+                            + restoreResult.stdout());
         } finally {
             Files.deleteIfExists(snapshotFile);
         }
@@ -278,6 +312,22 @@ class EndToEndFreezeRestoreIT {
             assertTrue(restoreResult.stdout().contains("SNAPSHOT_LOADED=true"),
                     "Should load loop snapshot. Stdout:\n" + restoreResult.stdout());
             assertRestoreSucceeded(restoreResult);
+
+            // Restored thread should continue from i=4 (after freeze), then loop i=5..9
+            // Expected: AFTER_FREEZE, ITERATION i=5..9, FINAL_SUM=45, LOOP_RESULT=45
+            var userLines = extractUserOutput(restoreResult.stdout());
+            assertEquals(java.util.List.of(
+                    "AFTER_FREEZE i=4 sum=10",
+                    "ITERATION i=5 sum=15",
+                    "ITERATION i=6 sum=21",
+                    "ITERATION i=7 sum=28",
+                    "ITERATION i=8 sum=36",
+                    "ITERATION i=9 sum=45",
+                    "FINAL_SUM=45",
+                    "LOOP_RESULT=45"),
+                    userLines,
+                    "Restore should continue loop from i=5, no replay of i=0..4. Got:\n"
+                            + restoreResult.stdout());
         } finally {
             Files.deleteIfExists(snapshotFile);
         }
@@ -324,6 +374,17 @@ class EndToEndFreezeRestoreIT {
             assertTrue(restoreResult.stdout().contains("SNAPSHOT_LOADED=true"),
                     "Should load return-value snapshot. Stdout:\n" + restoreResult.stdout());
             assertRestoreSucceeded(restoreResult);
+
+            // Restored thread should have preserved v1=15, v2=45, v3=43,
+            // then compute v4=21, v5=121, CHAIN_RESULT=245
+            var userLines = extractUserOutput(restoreResult.stdout());
+            assertEquals(java.util.List.of(
+                    "AFTER_FREEZE v1=15 v2=45 v3=43",
+                    "AFTER_COMPUTE v4=21 v5=121",
+                    "CHAIN_RESULT=245"),
+                    userLines,
+                    "Restore should produce only post-freeze output with correct values. Got:\n"
+                            + restoreResult.stdout());
         } finally {
             Files.deleteIfExists(snapshotFile);
         }
@@ -382,8 +443,11 @@ class EndToEndFreezeRestoreIT {
             assertTrue(restoreResult.stdout().contains("AFTER_FREEZE primitiveLocal=99"),
                     "Primitive local should survive. Stdout:\n" + restoreResult.stdout());
 
+            // Restored thread must NOT replay pre-freeze output
+            assertFalse(restoreResult.stdout().contains("BEFORE_FREEZE"),
+                    "Restore must not replay pre-freeze output. Stdout:\n" + restoreResult.stdout());
+
             // Verify object locals — report what we got for debugging
-            // Full heap object restoration depends on JDI ObjectReference resolution
             String stdout = restoreResult.stdout();
             System.out.println("=== HEAP RESTORE OBJECT STATE ===");
             for (String line : stdout.split("\n")) {
@@ -444,6 +508,10 @@ class EndToEndFreezeRestoreIT {
             assertTrue(restoreResult.stdout().contains("SNAPSHOT_LOADED=true"),
                     "Should load fib snapshot. Stdout:\n" + restoreResult.stdout());
             assertRestoreSucceeded(restoreResult);
+
+            // Restored thread must NOT replay the freeze-time output
+            assertFalse(restoreResult.stdout().contains("FREEZING at n=5"),
+                    "Restore must not replay pre-freeze output. Stdout:\n" + restoreResult.stdout());
         } finally {
             Files.deleteIfExists(snapshotFile);
         }
@@ -488,6 +556,16 @@ class EndToEndFreezeRestoreIT {
             assertTrue(restoreResult.stdout().contains("SNAPSHOT_LOADED=true"),
                     "Should load try-catch snapshot");
             assertRestoreSucceeded(restoreResult);
+
+            // Restored thread should continue in try block, execute finally
+            var userLines = extractUserOutput(restoreResult.stdout());
+            assertEquals(java.util.List.of(
+                    "TRY_AFTER",
+                    "FINALLY_EXECUTED",
+                    "TRYCATCH_RESULT=before-after-end-finally"),
+                    userLines,
+                    "Restore should continue in try block without replaying TRY_BEFORE. Got:\n"
+                            + restoreResult.stdout());
         } finally {
             Files.deleteIfExists(snapshotFile);
         }
@@ -532,6 +610,16 @@ class EndToEndFreezeRestoreIT {
             assertTrue(restoreResult.stdout().contains("SNAPSHOT_LOADED=true"),
                     "Should load nested loop snapshot");
             assertRestoreSucceeded(restoreResult);
+
+            // Restored thread should continue from (i=2, j=3), complete all 25 iterations
+            var userLines = extractUserOutput(restoreResult.stdout());
+            assertEquals(java.util.List.of(
+                    "AFTER_FREEZE i=2 j=3 total=13",
+                    "TOTAL_ITERATIONS=25",
+                    "FROZE_AT_TOTAL=13"),
+                    userLines,
+                    "Restore should continue nested loop without replaying pre-freeze output. Got:\n"
+                            + restoreResult.stdout());
         } finally {
             Files.deleteIfExists(snapshotFile);
         }
@@ -577,10 +665,15 @@ class EndToEndFreezeRestoreIT {
                     "Should load many-locals snapshot");
             assertRestoreSucceeded(restoreResult);
 
-            // Verify the restored thread produced AFTER_FREEZE output
-            // (actual local values depend on JDI local-setting success)
-            assertTrue(restoreResult.stdout().contains("AFTER_FREEZE"),
-                    "Restored thread should reach post-freeze code. Stdout:\n" + restoreResult.stdout());
+            // Restored thread should have all typed locals with correct values
+            // result = 10 + 11 + 12 + 30 + 15 + 5 + 1 + 33 + 33 = 150
+            var userLines = extractUserOutput(restoreResult.stdout());
+            assertEquals(java.util.List.of(
+                    "AFTER_FREEZE a=10 b=11 c=12 d=30 g=true h=33 j=33",
+                    "MANY_LOCALS_RESULT=150"),
+                    userLines,
+                    "Restore should have correct typed locals, no replay. Got:\n"
+                            + restoreResult.stdout());
         } finally {
             Files.deleteIfExists(snapshotFile);
         }
