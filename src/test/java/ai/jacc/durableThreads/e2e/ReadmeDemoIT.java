@@ -104,8 +104,7 @@ class ReadmeDemoIT {
                 java,
                 "-javaagent:" + agentJar,
                 "-agentlib:jdwp=transport=dt_socket,server=y,suspend=n",
-                "-Djdk.attach.allowAttachSelf=true",
-                "--add-modules", "jdk.jdi,jdk.attach",
+                "--add-modules", "jdk.jdi",
                 "-cp", classpath,
                 "-D_JAVA_OPTIONS=",
                 "FreezeDemo");
@@ -145,8 +144,7 @@ class ReadmeDemoIT {
                 java,
                 "-javaagent:" + agentJar,
                 "-agentlib:jdwp=transport=dt_socket,server=y,suspend=n",
-                "-Djdk.attach.allowAttachSelf=true",
-                "--add-modules", "jdk.jdi,jdk.attach",
+                "--add-modules", "jdk.jdi",
                 "-cp", classpath,
                 "-D_JAVA_OPTIONS=",
                 "RestoreDemo");

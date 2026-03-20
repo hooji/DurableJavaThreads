@@ -51,13 +51,11 @@ public final class ChildJvm {
         } else if (jdwpPort < 0) {
             // Auto-assigned port — JDWP picks an ephemeral port, library discovers it
             cmd.add("-agentlib:jdwp=transport=dt_socket,server=y,suspend=n");
-            // Attach API needed for port discovery
-            cmd.add("-Djdk.attach.allowAttachSelf=true");
         }
 
-        // Add JDI module (and jdk.attach for auto-discovery when no explicit port)
+        // Add JDI module
         cmd.add("--add-modules");
-        cmd.add(jdwpPort < 0 ? "jdk.jdi,jdk.attach" : "jdk.jdi");
+        cmd.add("jdk.jdi");
 
         // Classpath
         cmd.add("-cp");

@@ -6,8 +6,12 @@ import com.sun.jdi.connect.Connector;
 
 import java.io.IOException;
 import java.net.ServerSocket;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.*;
 
 /**
  * Utilities for connecting to the local JVM via JDI (Java Debug Interface).
@@ -39,8 +43,8 @@ public final class JdiHelper {
      *   <li>Agent's cached port (detected eagerly at startup)</li>
      *   <li>System property {@code durable.jdwp.port}</li>
      *   <li>Parsed from JVM command-line arguments</li>
-     *   <li>Attach API (optional fallback for {@code address=...:0})</li>
-     *   <li>Ephemeral port scan with JDWP handshake + nonce verification</li>
+     *   <li>Listening ports from /proc/net/tcp with nonce verification</li>
+     *   <li>Ephemeral port scan with nonce verification (fallback)</li>
      *   <li>Default: {@value #DEFAULT_JDWP_PORT}</li>
      * </ol>
      *
@@ -69,10 +73,10 @@ public final class JdiHelper {
             return argPort;
         }
 
-        // Fallback: Attach API (only needed for address=...:0, requires jdk.attach)
-        int attachPort = detectPortViaAttachApi();
-        if (attachPort > 0) {
-            return attachPort;
+        // Scan listening ports from /proc/net/tcp with nonce verification
+        int procPort = detectPortFromProc();
+        if (procPort > 0) {
+            return procPort;
         }
 
         // Scan nearby ephemeral ports for JDWP with nonce verification
@@ -86,7 +90,9 @@ public final class JdiHelper {
     }
 
     /**
-     * Same as {@link #detectJdwpPort()} but returns -1 instead of the default port.
+     * Same as {@link #detectJdwpPort()} but returns -1 instead of the default port,
+     * and skips JDI-based discovery (unsafe during premain — the JVM isn't fully
+     * initialized and JDI connect to self would deadlock).
      * Used during premain to avoid caching an incorrect default.
      */
     public static int detectJdwpPortNoDefault() {
@@ -104,43 +110,73 @@ public final class JdiHelper {
         int argPort = detectPortFromArguments();
         if (argPort > 0) return argPort;
 
-        int attachPort = detectPortViaAttachApi();
-        if (attachPort > 0) return attachPort;
+        // Do NOT call detectPortFromProc() or discoverJdwpPort() here — they
+        // use JDI connect which deadlocks during premain. Port discovery via
+        // /proc/net/tcp will happen lazily at first freeze/restore.
 
-        int discoveredPort = discoverJdwpPort();
-        if (discoveredPort > 0) return discoveredPort;
-
-        return -1; // Don't fall back to default
+        return -1;
     }
 
     /**
-     * Use the Attach API to query the JDWP agent for its actual listening address.
-     * This is only needed when {@code address=...:0} is used (OS-assigned port).
+     * Discover the JDWP port by reading listening TCP ports from {@code /proc/net/tcp}
+     * and {@code /proc/net/tcp6}, then verifying each via JDI nonce check.
      *
-     * <p>This method is optional — if {@code jdk.attach} is not on the module path,
-     * it silently returns -1 and the default port is used instead.</p>
+     * <p>This is fast because a typical process has very few listening ports.
+     * No Attach API or {@code allowAttachSelf} flag needed.</p>
+     *
+     * @return the verified JDWP port, or -1 if not found
      */
-    private static int detectPortViaAttachApi() {
-        try {
-            String pid = String.valueOf(ProcessHandle.current().pid());
-            com.sun.tools.attach.VirtualMachine attachVm = com.sun.tools.attach.VirtualMachine.attach(pid);
-            try {
-                String address = attachVm.getAgentProperties().getProperty("sun.jdwp.listenerAddress");
-                if (address != null) {
-                    // Format: "dt_socket:127.0.0.1:50728" or "dt_socket:50728"
-                    int lastColon = address.lastIndexOf(':');
-                    if (lastColon >= 0) {
-                        return Integer.parseInt(address.substring(lastColon + 1).trim());
-                    }
-                }
-            } finally {
-                attachVm.detach();
+    private static int detectPortFromProc() {
+        if (!isJdwpOnCommandLine()) {
+            return -1;
+        }
+
+        String expectedNonce = ai.jacc.durableThreads.DurableAgent.jdwpDiscoveryNonce;
+        if (expectedNonce == null || expectedNonce.isEmpty()) {
+            return -1;
+        }
+
+        List<Integer> listeningPorts = getListeningPorts();
+        for (int port : listeningPorts) {
+            if (connectAndVerifyNonce(port, expectedNonce)) {
+                return port;
             }
-        } catch (Throwable e) {
-            // Attach API not available (jdk.attach not loaded) or failed — return -1.
-            // Catching Throwable covers NoClassDefFoundError when the module is absent.
         }
         return -1;
+    }
+
+    /**
+     * Parse all TCP ports in LISTEN state from {@code /proc/net/tcp} and
+     * {@code /proc/net/tcp6}.
+     *
+     * <p>Each line in these files has the format:
+     * {@code sl  local_address  rem_address  st ...}
+     * where {@code local_address} is {@code hex_ip:hex_port} and
+     * {@code st} is {@code 0A} for LISTEN.</p>
+     */
+    private static List<Integer> getListeningPorts() {
+        List<Integer> ports = new ArrayList<>();
+        for (String procFile : new String[]{"/proc/net/tcp", "/proc/net/tcp6"}) {
+            try {
+                List<String> lines = Files.readAllLines(Path.of(procFile));
+                for (int i = 1; i < lines.size(); i++) { // skip header
+                    String[] fields = lines.get(i).trim().split("\\s+");
+                    if (fields.length >= 4 && "0A".equals(fields[3])) { // 0A = LISTEN
+                        String localAddr = fields[1]; // e.g. "0100007F:AF48"
+                        int colonIdx = localAddr.indexOf(':');
+                        if (colonIdx >= 0) {
+                            int port = Integer.parseInt(localAddr.substring(colonIdx + 1), 16);
+                            if (port > 0 && !ports.contains(port)) {
+                                ports.add(port);
+                            }
+                        }
+                    }
+                }
+            } catch (Exception ignored) {
+                // /proc/net/tcp not available (non-Linux) — skip
+            }
+        }
+        return ports;
     }
 
     /**
@@ -263,35 +299,41 @@ public final class JdiHelper {
      * single-debugger-at-a-time constraint.</p>
      */
     private static boolean connectAndVerifyNonce(int port, String expectedNonce) {
-        VirtualMachine vm = null;
+        // Use a hard timeout via Future — JDI's built-in timeout doesn't reliably
+        // abort when a non-JDWP port accepts TCP but never sends the handshake.
+        ExecutorService executor = Executors.newSingleThreadExecutor(r -> {
+            Thread t = new Thread(r, "jdwp-probe-" + port);
+            t.setDaemon(true);
+            return t;
+        });
         try {
-            vm = jdiConnect(port, PROBE_TIMEOUT_MS);
-
-            List<ReferenceType> types = vm.classesByName("ai.jacc.durableThreads.DurableAgent");
-            if (types.isEmpty()) {
+            Future<VirtualMachine> future = executor.submit(() -> {
+                VirtualMachine vm = jdiConnect(port, PROBE_TIMEOUT_MS);
+                List<ReferenceType> types = vm.classesByName("ai.jacc.durableThreads.DurableAgent");
+                if (types.isEmpty()) { vm.dispose(); return null; }
+                Field nonceField = types.get(0).fieldByName("jdwpDiscoveryNonce");
+                if (nonceField == null) { vm.dispose(); return null; }
+                Value val = types.get(0).getValue(nonceField);
+                if (val instanceof StringReference sr && expectedNonce.equals(sr.value())) {
+                    return vm; // Nonce matches — return the connection
+                }
                 vm.dispose();
-                return false; // Not our JVM — DurableAgent not loaded
-            }
+                return null;
+            });
 
-            Field nonceField = types.get(0).fieldByName("jdwpDiscoveryNonce");
-            if (nonceField == null) {
-                vm.dispose();
-                return false;
-            }
-
-            Value val = types.get(0).getValue(nonceField);
-            if (val instanceof StringReference sr && expectedNonce.equals(sr.value())) {
-                // This is our JVM! Cache the connection for later use.
+            VirtualMachine vm = future.get(PROBE_TIMEOUT_MS + 500, TimeUnit.MILLISECONDS);
+            if (vm != null) {
                 cachedVm = vm;
                 return true;
             }
-            vm.dispose();
+            return false;
+        } catch (TimeoutException e) {
+            // Hard timeout — JDI connect hung on a non-JDWP port
             return false;
         } catch (Exception e) {
-            if (vm != null) {
-                try { vm.dispose(); } catch (Exception ignored) {}
-            }
-            return false; // Not JDWP, or connection failed
+            return false;
+        } finally {
+            executor.shutdownNow();
         }
     }
 
