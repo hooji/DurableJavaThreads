@@ -132,23 +132,18 @@ public final class DurableTransformer implements ClassFileTransformer {
 
             // === PRIMARY (exact): raw bytecode scan ===
             // Scans ALL user invokes in the instrumented bytecode (stubs + original).
-            List<Integer> allOffsets;
-            try {
-                allOffsets = RawBytecodeScanner.scanInvokeOffsets(
-                        instrumented, method.name, method.desc);
-            } catch (Exception e) {
-                System.err.println("[DurableThreads] Raw bytecode scanner failed for "
-                        + className.replace('/', '.') + "." + method.name + ": " + e);
-                allOffsets = List.of();
-            }
+            List<Integer> allOffsets = RawBytecodeScanner.scanInvokeOffsets(
+                    instrumented, method.name, method.desc);
 
             // The last `originalCount` entries are the original-code invokes.
             // Everything before them are resume-stub re-invokes.
             if (allOffsets.size() < originalCount) {
-                System.err.println("[DurableThreads] BUG: scanner found " + allOffsets.size()
+                throw new RuntimeException(
+                        "[DurableThreads] BUG: scanner found " + allOffsets.size()
                         + " invokes but PrologueInjector expects " + originalCount
-                        + " for " + className.replace('/', '.') + "." + method.name);
-                continue;
+                        + " for " + className.replace('/', '.') + "." + method.name
+                        + ". This indicates an inconsistency between the injector "
+                        + "and scanner invoke filtering.");
             }
             List<Integer> offsets = allOffsets.subList(
                     allOffsets.size() - originalCount, allOffsets.size());

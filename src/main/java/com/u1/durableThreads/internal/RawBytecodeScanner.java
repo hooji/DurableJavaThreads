@@ -84,7 +84,11 @@ public final class RawBytecodeScanner {
                 case 16: pos += 2; break; // MethodType
                 case 17: case 18: pos += 4; break; // Dynamic, InvokeDynamic
                 case 19: case 20: pos += 2; break; // Module, Package
-                default: return; // Unknown tag — bail
+                default:
+                    throw new RuntimeException(
+                            "Unknown constant pool tag " + tag + " at CP index " + i
+                            + " (pos=" + (pos - 1) + "). "
+                            + "The class file may use a newer format than this scanner supports.");
             }
         }
 

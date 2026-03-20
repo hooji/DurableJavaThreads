@@ -279,6 +279,15 @@ final class ThreadFreezer {
                 String invokeKey = InvokeRegistry.key(className, methodName, methodSig);
                 int invokeIndex = InvokeRegistry.getInvokeIndex(invokeKey, bcp);
 
+                if (invokeIndex < 0) {
+                    throw new RuntimeException(
+                            "Cannot determine invoke index for "
+                            + className.replace('/', '.') + "." + methodName
+                            + " at BCP " + bcp + ". "
+                            + "InvokeRegistry has no matching offset. "
+                            + "This frame cannot be frozen.");
+                }
+
                 // Capture local variables
                 List<com.u1.durableThreads.snapshot.LocalVariable> locals = captureLocals(jdiFrame, heapWalker);
 
