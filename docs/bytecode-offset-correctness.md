@@ -83,7 +83,7 @@ should be counted). They filter identically:
 This filtering is enforced by `RawBytecodeScanner.isUserInvoke()`, which checks:
 ```java
 if (opcode == Opcodes.INVOKESPECIAL) return false;  // <init>, super calls
-if (owner.equals("com/u1/durableThreads/ReplayState")) return false;
+if (owner.equals("ai/jacc/durableThreads/ReplayState")) return false;
 ```
 
 `PrologueInjector` counts invokes in the original code stream (its

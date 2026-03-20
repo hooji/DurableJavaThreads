@@ -4,9 +4,9 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-    <groupId>com.u1</groupId>
+    <groupId>ai.jacc</groupId>
     <artifactId>durable-threads</artifactId>
-    <version>0.4.0</version>
+    <version>1.0.0</version>
     <packaging>jar</packaging>
 
     <name>Durable Threads</name>
@@ -104,7 +104,7 @@
                 <configuration>
                     <archive>
                         <manifestEntries>
-                            <Premain-Class>com.u1.durableThreads.DurableAgent</Premain-Class>
+                            <Premain-Class>ai.jacc.durableThreads.DurableAgent</Premain-Class>
                             <Can-Retransform-Classes>false</Can-Retransform-Classes>
                             <Can-Redefine-Classes>false</Can-Redefine-Classes>
                         </manifestEntries>
@@ -126,17 +126,17 @@
                             <relocations>
                                 <relocation>
                                     <pattern>org.objectweb.asm</pattern>
-                                    <shadedPattern>com.u1.durableThreads.shaded.asm</shadedPattern>
+                                    <shadedPattern>ai.jacc.durableThreads.shaded.asm</shadedPattern>
                                 </relocation>
                                 <relocation>
                                     <pattern>org.objenesis</pattern>
-                                    <shadedPattern>com.u1.durableThreads.shaded.objenesis</shadedPattern>
+                                    <shadedPattern>ai.jacc.durableThreads.shaded.objenesis</shadedPattern>
                                 </relocation>
                             </relocations>
                             <transformers>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
                                     <manifestEntries>
-                                        <Premain-Class>com.u1.durableThreads.DurableAgent</Premain-Class>
+                                        <Premain-Class>ai.jacc.durableThreads.DurableAgent</Premain-Class>
                                         <Can-Retransform-Classes>false</Can-Retransform-Classes>
                                         <Can-Redefine-Classes>false</Can-Redefine-Classes>
                                     </manifestEntries>
