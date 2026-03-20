@@ -57,7 +57,7 @@ Both JVMs must be started with the agent and JDWP enabled:
 % javac -g -cp durable-threads-1.0.0.jar FreezeDemo.java RestoreDemo.java
 
 % java -javaagent:durable-threads-1.0.0.jar \
-       -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=127.0.0.1:44892 \
+       -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=44892 \
        --add-modules jdk.jdi \
        -cp .:durable-threads-1.0.0.jar \
        FreezeDemo
@@ -70,7 +70,7 @@ i=5
 About to freeze!
 
 % java -javaagent:durable-threads-1.0.0.jar \
-       -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=127.0.0.1:44892 \
+       -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=44892 \
        --add-modules jdk.jdi \
        -cp .:durable-threads-1.0.0.jar \
        RestoreDemo
@@ -254,7 +254,7 @@ src/main/java/ai/jacc/durableThreads/
 ## Requirements
 
 - **Java 21+** — uses modern language features and JDI APIs
-- **JDWP** — the JVM must be started with `-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=127.0.0.1:44892`. The library connects to this port by default; override with `-Ddurable.jdwp.port=PORT` if needed
+- **JDWP** — the JVM must be started with `-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=44892`. The library connects to this port by default; override with `-Ddurable.jdwp.port=PORT` if needed
 - **jdk.jdi module** — add `--add-modules jdk.jdi` to the command line
 
 ## License

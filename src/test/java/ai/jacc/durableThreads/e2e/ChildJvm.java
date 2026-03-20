@@ -47,7 +47,7 @@ public final class ChildJvm {
 
         // JDWP (required for freeze/restore)
         if (jdwpPort > 0) {
-            cmd.add("-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=127.0.0.1:" + jdwpPort);
+            cmd.add("-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=" + jdwpPort);
         }
 
         // Add JDI module

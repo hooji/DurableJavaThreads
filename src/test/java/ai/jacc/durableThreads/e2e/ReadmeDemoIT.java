@@ -103,7 +103,7 @@ class ReadmeDemoIT {
         ProcessBuilder freezePb = new ProcessBuilder(
                 java,
                 "-javaagent:" + agentJar,
-                "-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=127.0.0.1:44892",
+                "-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=44892",
                 "--add-modules", "jdk.jdi",
                 "-cp", classpath,
                 "FreezeDemo");
@@ -142,7 +142,7 @@ class ReadmeDemoIT {
         ProcessBuilder restorePb = new ProcessBuilder(
                 java,
                 "-javaagent:" + agentJar,
-                "-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=127.0.0.1:44892",
+                "-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=44892",
                 "--add-modules", "jdk.jdi",
                 "-cp", classpath,
                 "RestoreDemo");
