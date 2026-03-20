@@ -100,6 +100,45 @@ public final class Durable {
     }
 
     /**
+     * Restore a frozen thread from a snapshot, optionally starting it.
+     *
+     * @param snapshot the captured thread state
+     * @param startThread if {@code true}, the thread is started before returning
+     * @return the restored Thread
+     * @throws com.u1.durableThreads.exception.BytecodeMismatchException if bytecode has changed
+     * @throws AgentNotLoadedException if the durable agent is not loaded
+     */
+    public static Thread restore(ThreadSnapshot snapshot, boolean startThread) {
+        Thread thread = restore(snapshot);
+        if (startThread) {
+            thread.start();
+        }
+        return thread;
+    }
+
+    /**
+     * Restore a frozen thread from a snapshot, optionally starting it and
+     * waiting for it to finish.
+     *
+     * @param snapshot the captured thread state
+     * @param startThread if {@code true}, the thread is started
+     * @param waitForThreadToFinish if {@code true} (and {@code startThread} is also
+     *        {@code true}), blocks until the restored thread completes
+     * @return the restored Thread
+     * @throws com.u1.durableThreads.exception.BytecodeMismatchException if bytecode has changed
+     * @throws AgentNotLoadedException if the durable agent is not loaded
+     * @throws InterruptedException if the current thread is interrupted while waiting
+     */
+    public static Thread restore(ThreadSnapshot snapshot, boolean startThread,
+                                 boolean waitForThreadToFinish) throws InterruptedException {
+        Thread thread = restore(snapshot, startThread);
+        if (startThread && waitForThreadToFinish) {
+            thread.join();
+        }
+        return thread;
+    }
+
+    /**
      * Restore a frozen thread from a snapshot file.
      *
      * <p>Deserializes the {@link ThreadSnapshot} from the file and restores it.</p>
@@ -112,6 +151,39 @@ public final class Durable {
      */
     public static Thread restore(String filePath) {
         return restore(Path.of(filePath));
+    }
+
+    /**
+     * Restore a frozen thread from a snapshot file, optionally starting it.
+     *
+     * @param filePath the file containing the serialized snapshot
+     * @param startThread if {@code true}, the thread is started before returning
+     * @return the restored Thread
+     * @throws com.u1.durableThreads.exception.BytecodeMismatchException if bytecode has changed
+     * @throws AgentNotLoadedException if the durable agent is not loaded
+     * @throws UncheckedIOException if the file cannot be read
+     */
+    public static Thread restore(String filePath, boolean startThread) {
+        return restore(Path.of(filePath), startThread);
+    }
+
+    /**
+     * Restore a frozen thread from a snapshot file, optionally starting it and
+     * waiting for it to finish.
+     *
+     * @param filePath the file containing the serialized snapshot
+     * @param startThread if {@code true}, the thread is started
+     * @param waitForThreadToFinish if {@code true} (and {@code startThread} is also
+     *        {@code true}), blocks until the restored thread completes
+     * @return the restored Thread
+     * @throws com.u1.durableThreads.exception.BytecodeMismatchException if bytecode has changed
+     * @throws AgentNotLoadedException if the durable agent is not loaded
+     * @throws UncheckedIOException if the file cannot be read
+     * @throws InterruptedException if the current thread is interrupted while waiting
+     */
+    public static Thread restore(String filePath, boolean startThread,
+                                 boolean waitForThreadToFinish) throws InterruptedException {
+        return restore(Path.of(filePath), startThread, waitForThreadToFinish);
     }
 
     /**
@@ -137,5 +209,46 @@ public final class Durable {
                     "Failed to deserialize snapshot from " + path
                     + ": snapshot class not found", e);
         }
+    }
+
+    /**
+     * Restore a frozen thread from a snapshot file, optionally starting it.
+     *
+     * @param path the file containing the serialized snapshot
+     * @param startThread if {@code true}, the thread is started before returning
+     * @return the restored Thread
+     * @throws com.u1.durableThreads.exception.BytecodeMismatchException if bytecode has changed
+     * @throws AgentNotLoadedException if the durable agent is not loaded
+     * @throws UncheckedIOException if the file cannot be read
+     */
+    public static Thread restore(Path path, boolean startThread) {
+        Thread thread = restore(path);
+        if (startThread) {
+            thread.start();
+        }
+        return thread;
+    }
+
+    /**
+     * Restore a frozen thread from a snapshot file, optionally starting it and
+     * waiting for it to finish.
+     *
+     * @param path the file containing the serialized snapshot
+     * @param startThread if {@code true}, the thread is started
+     * @param waitForThreadToFinish if {@code true} (and {@code startThread} is also
+     *        {@code true}), blocks until the restored thread completes
+     * @return the restored Thread
+     * @throws com.u1.durableThreads.exception.BytecodeMismatchException if bytecode has changed
+     * @throws AgentNotLoadedException if the durable agent is not loaded
+     * @throws UncheckedIOException if the file cannot be read
+     * @throws InterruptedException if the current thread is interrupted while waiting
+     */
+    public static Thread restore(Path path, boolean startThread,
+                                 boolean waitForThreadToFinish) throws InterruptedException {
+        Thread thread = restore(path, startThread);
+        if (startThread && waitForThreadToFinish) {
+            thread.join();
+        }
+        return thread;
     }
 }

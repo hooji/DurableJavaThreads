@@ -45,9 +45,7 @@ import com.u1.durableThreads.Durable;
 
 public class RestoreDemo {
     public static void main(String[] args) throws Exception {
-        Thread restored = Durable.restore("./snapshot.dat");
-        restored.start();
-        restored.join();
+        Durable.restore("./snapshot.dat", true, true);
         // prints: Resumed!, i=6, i=7, ... i=10, Done!
     }
 }
@@ -121,13 +119,13 @@ Freezes the calling thread, serializing the snapshot to the given file. The orig
 
 Freezes the calling thread. The handler receives the snapshot for custom persistence. The original thread is terminated after the handler returns. Code after `freeze()` only executes in restored threads.
 
-### `Durable.restore(String filePath)` / `Durable.restore(Path path)`
-
-Deserializes a `ThreadSnapshot` from the given file and returns a `Thread` (not yet started) that will replay the call stack and resume from the freeze point when started.
-
-### `Durable.restore(ThreadSnapshot snapshot)`
+### `Durable.restore(String filePath)` / `Durable.restore(Path path)` / `Durable.restore(ThreadSnapshot snapshot)`
 
 Returns a `Thread` (not yet started) that will replay the call stack and resume from the freeze point when started.
+
+All three accept optional boolean parameters:
+- `restore(..., boolean startThread)` — if `true`, starts the thread before returning.
+- `restore(..., boolean startThread, boolean waitForThreadToFinish)` — if both are `true`, blocks until the restored thread completes.
 
 ### `SnapshotFileWriter`
 

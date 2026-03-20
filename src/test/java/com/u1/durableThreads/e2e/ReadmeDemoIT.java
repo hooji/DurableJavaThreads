@@ -73,9 +73,7 @@ class ReadmeDemoIT {
 
                 public class RestoreDemo {
                     public static void main(String[] args) throws Exception {
-                        Thread restored = Durable.restore("./snapshot.dat");
-                        restored.start();
-                        restored.join();
+                        Durable.restore("./snapshot.dat", true, true);
                     }
                 }
                 """);
