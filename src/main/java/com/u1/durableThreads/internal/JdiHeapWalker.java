@@ -151,11 +151,22 @@ public final class JdiHeapWalker {
             "java.util.ArrayDeque"
     );
 
+    /** JDK types whose content can be captured via toString(). */
+    private static final Set<String> TOSTRING_CAPTURABLE = Set.of(
+            "java.lang.StringBuilder", "java.lang.StringBuffer"
+    );
+
     private void captureRegularObject(long snapId, ObjectReference objRef,
                                        ReferenceType refType, String className) {
         // Known JDK collections: capture elements by walking internal storage
         if (CAPTURABLE_COLLECTIONS.contains(className)) {
             captureCollection(snapId, objRef, refType, className);
+            return;
+        }
+
+        // StringBuilder/StringBuffer: capture content via toString()
+        if (TOSTRING_CAPTURABLE.contains(className)) {
+            captureStringBuilder(snapId, objRef, refType, className);
             return;
         }
 
@@ -205,6 +216,62 @@ public final class JdiHeapWalker {
 
         snapshots.add(new ObjectSnapshot(snapId, className,
                 ObjectKind.REGULAR, fields, null, structureHash));
+    }
+
+    /**
+     * Capture a StringBuilder/StringBuffer by invoking toString() via JDI.
+     * Stored as a STRING kind with the actual class name so HeapRestorer
+     * can reconstruct it using the String constructor.
+     */
+    private void captureStringBuilder(long snapId, ObjectReference objRef,
+                                       ReferenceType refType, String className) {
+        String content = "";
+        try {
+            Method toStringMethod = refType.methodsByName("toString", "()Ljava/lang/String;").get(0);
+            // We need to invoke toString() on the suspended thread — but the object
+            // is already fully formed, so we can read its internal state directly.
+            // Instead of invoking methods (which requires a running thread), read
+            // the count and value fields via JDI field access.
+            com.sun.jdi.Field countField = findField(refType, "count");
+            com.sun.jdi.Field valueField = findField(refType, "value");
+            com.sun.jdi.Field coderField = findField(refType, "coder");
+
+            if (valueField != null && countField != null) {
+                Value countVal = objRef.getValue(countField);
+                Value coderVal = coderField != null ? objRef.getValue(coderField) : null;
+                Value valueVal = objRef.getValue(valueField);
+                int count = (countVal instanceof IntegerValue iv) ? iv.value() : 0;
+                int coder = (coderVal instanceof IntegerValue iv) ? iv.value() : 0;
+
+                if (valueVal instanceof ArrayReference arr && count > 0) {
+                    if (coder == 0) {
+                        // LATIN1: each byte is a char
+                        byte[] bytes = new byte[count];
+                        List<Value> vals = arr.getValues(0, count);
+                        for (int i = 0; i < count; i++) {
+                            bytes[i] = (vals.get(i) instanceof ByteValue bv) ? bv.value() : 0;
+                        }
+                        content = new String(bytes, java.nio.charset.StandardCharsets.ISO_8859_1);
+                    } else {
+                        // UTF16: two bytes per char
+                        byte[] bytes = new byte[count * 2];
+                        List<Value> vals = arr.getValues(0, count * 2);
+                        for (int i = 0; i < count * 2; i++) {
+                            bytes[i] = (vals.get(i) instanceof ByteValue bv) ? bv.value() : 0;
+                        }
+                        content = new String(bytes, java.nio.charset.StandardCharsets.UTF_16LE);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            // Fall back to empty string if we can't read internals
+            System.err.println("[DurableThreads] WARNING: Cannot read StringBuilder content: " + e.getMessage());
+        }
+
+        Map<String, ObjectRef> fields = new LinkedHashMap<>();
+        fields.put("value", new PrimitiveRef(content));
+        snapshots.add(new ObjectSnapshot(snapId, className,
+                ObjectKind.STRING, fields, null, null));
     }
 
     /**

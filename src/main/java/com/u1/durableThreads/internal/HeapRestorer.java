@@ -63,9 +63,14 @@ public final class HeapRestorer {
 
         Object obj = switch (snap.kind()) {
             case STRING -> {
-                // Strings are special: extract value directly
+                // Strings and StringBuilder/StringBuffer: extract value directly
                 ObjectRef valueRef = snap.fields().get("value");
-                yield (valueRef instanceof PrimitiveRef p) ? p.value() : "";
+                String content = (valueRef instanceof PrimitiveRef p && p.value() instanceof String s) ? s : "";
+                yield switch (snap.className()) {
+                    case "java.lang.StringBuilder" -> new StringBuilder(content);
+                    case "java.lang.StringBuffer" -> new StringBuffer(content);
+                    default -> content; // java.lang.String
+                };
             }
             case ARRAY -> {
                 Class<?> componentType = resolveArrayComponentType(snap.className());
