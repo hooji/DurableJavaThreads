@@ -127,7 +127,7 @@ class FreezeRestoreStressIT {
             var userLines = extractUserOutput(restoreResult.stdout());
             assertEquals(java.util.List.of(
                     "INNER_AFTER=117", "MIDDLE_AFTER=117",
-                    "OUTER_AFTER=117", "DEEP_RESULT=1217"),
+                    "OUTER_AFTER=217", "DEEP_RESULT=1217"),
                     userLines,
                     "Rep " + info.getCurrentRepetition()
                             + ": deep chain restore should produce only post-freeze lines. Got:\n"

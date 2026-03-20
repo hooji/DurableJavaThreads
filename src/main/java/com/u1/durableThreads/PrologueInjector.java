@@ -247,6 +247,7 @@ public final class PrologueInjector extends ClassVisitor {
         }
 
         private void emitFullPrologue(int skipSlot) {
+            int retValSlot = skipSlot + 1; // Object slot for boxed return values
             Label originalCode = new Label();
 
             // --- PROLOGUE ---
@@ -254,6 +255,10 @@ public final class PrologueInjector extends ClassVisitor {
             // __skip = -1
             target.visitInsn(Opcodes.ICONST_M1);
             target.visitVarInsn(Opcodes.ISTORE, skipSlot);
+
+            // __retVal = null (boxed return value from resume stub)
+            target.visitInsn(Opcodes.ACONST_NULL);
+            target.visitVarInsn(Opcodes.ASTORE, retValSlot);
 
             // Normal execution: skip straight to original code
             target.visitMethodInsn(Opcodes.INVOKESTATIC,
@@ -273,12 +278,12 @@ public final class PrologueInjector extends ClassVisitor {
             // --- RESUME STUBS ---
             for (int i = 0; i < invokeInfos.size(); i++) {
                 target.visitLabel(resumeLabels[i]);
-                emitResumeStub(i, invokeInfos.get(i), skipSlot, originalCode);
+                emitResumeStub(i, invokeInfos.get(i), skipSlot, retValSlot, originalCode);
             }
 
             // --- ORIGINAL CODE with inline skip checks ---
             target.visitLabel(originalCode);
-            emitOriginalCodeWithSkipChecks(skipSlot);
+            emitOriginalCodeWithSkipChecks(skipSlot, retValSlot);
         }
 
         /**
@@ -289,9 +294,14 @@ public final class PrologueInjector extends ClassVisitor {
          * to the original code. The original code re-executes but ALL invokes
          * from index 0 through __skip are skipped (no side effects). When the
          * target invoke is reached, localsReady() blocks for JDI to set locals.</p>
+         *
+         * <p>For non-deepest frames, the resume stub re-invokes the inner method
+         * and boxes its return value into {@code retValSlot}. The skip path in
+         * the original code then unboxes it instead of pushing a dummy default,
+         * preserving return value propagation across the call chain.</p>
          */
         private void emitResumeStub(int invokeIndex, InvokeInfo info,
-                                    int skipSlot, Label originalCode) {
+                                    int skipSlot, int retValSlot, Label originalCode) {
             Label notLastFrame = new Label();
 
             target.visitMethodInsn(Opcodes.INVOKESTATIC,
@@ -305,7 +315,7 @@ public final class PrologueInjector extends ClassVisitor {
             target.visitVarInsn(Opcodes.ISTORE, skipSlot);
             target.visitJumpInsn(Opcodes.GOTO, originalCode);
 
-            // Not deepest: advance, re-invoke, set __skip, goto originalCode
+            // Not deepest: advance, re-invoke, box return value, set __skip, goto originalCode
             target.visitLabel(notLastFrame);
             target.visitMethodInsn(Opcodes.INVOKESTATIC,
                     "com/u1/durableThreads/ReplayState", "advanceFrame", "()V", false);
@@ -317,7 +327,9 @@ public final class PrologueInjector extends ClassVisitor {
                 pushDummyArguments(info);
                 target.visitMethodInsn(info.opcode, info.owner, info.name,
                         info.descriptor, info.isInterface);
-                popValue(Type.getReturnType(info.descriptor));
+                // Box the return value and save it for the skip path
+                boxReturnValue(Type.getReturnType(info.descriptor));
+                target.visitVarInsn(Opcodes.ASTORE, retValSlot);
             }
 
             emitIntConst(invokeIndex);
@@ -336,10 +348,10 @@ public final class PrologueInjector extends ClassVisitor {
          * the skip check also calls {@code localsReady()} to block until the JDI
          * worker sets local variables. At this point, all locals are in scope.</p>
          */
-        private void emitOriginalCodeWithSkipChecks(int skipSlot) {
+        private void emitOriginalCodeWithSkipChecks(int skipSlot, int retValSlot) {
             for (Runnable op : bufferedOps) {
                 if (op instanceof InvokeMarker marker) {
-                    emitInvokeWithSkipCheck(skipSlot, marker.index, marker.opcode,
+                    emitInvokeWithSkipCheck(skipSlot, retValSlot, marker.index, marker.opcode,
                             marker.owner, marker.name, marker.descriptor, marker.isInterface);
                 } else if (op instanceof InvokeDynamicMarker marker) {
                     emitInvokeDynamicWithSkipCheck(skipSlot, marker.index,
@@ -360,17 +372,19 @@ public final class PrologueInjector extends ClassVisitor {
          *   if (__skip != index) goto afterSync       // only sync at target invoke
          *   __skip = -1
          *   localsReady()                              // block for JDI to set locals
+         *   unbox __retVal → push actual return        // preserve return value from resume stub
+         *   goto postInvoke
          * afterSync:
-         *   push dummy return
+         *   push dummy return                          // non-target skipped invoke: dummy is fine
          *   goto postInvoke
          * doInvoke:
          *   invoke
          * postInvoke:
          * </pre>
          */
-        private void emitInvokeWithSkipCheck(int skipSlot, int index, int opcode,
-                                              String owner, String name, String desc,
-                                              boolean isInterface) {
+        private void emitInvokeWithSkipCheck(int skipSlot, int retValSlot, int index,
+                                              int opcode, String owner, String name,
+                                              String desc, boolean isInterface) {
             Label postInvoke = new Label();
             Label doInvoke = new Label();
             Label afterSync = new Label();
@@ -394,8 +408,12 @@ public final class PrologueInjector extends ClassVisitor {
             target.visitMethodInsn(Opcodes.INVOKESTATIC,
                     "com/u1/durableThreads/ReplayState", "localsReady", "()V", false);
 
+            // Unbox the return value saved by the resume stub
+            unboxReturnValue(Type.getReturnType(desc), retValSlot);
+            target.visitJumpInsn(Opcodes.GOTO, postInvoke);
+
             target.visitLabel(afterSync);
-            // Push dummy return value
+            // Non-target skipped invoke: dummy return is fine (locals overwritten by JDI later)
             pushDummyReturnValue(desc);
             target.visitJumpInsn(Opcodes.GOTO, postInvoke);
 
@@ -487,6 +505,96 @@ public final class PrologueInjector extends ClassVisitor {
                 case Type.VOID -> {}
                 case Type.LONG, Type.DOUBLE -> target.visitInsn(Opcodes.POP2);
                 default -> target.visitInsn(Opcodes.POP);
+            }
+        }
+
+        /**
+         * Box the return value on top of the operand stack into an Object.
+         * For void returns, pushes null.
+         */
+        private void boxReturnValue(Type retType) {
+            switch (retType.getSort()) {
+                case Type.VOID -> target.visitInsn(Opcodes.ACONST_NULL);
+                case Type.BOOLEAN -> target.visitMethodInsn(Opcodes.INVOKESTATIC,
+                        "java/lang/Boolean", "valueOf", "(Z)Ljava/lang/Boolean;", false);
+                case Type.BYTE -> target.visitMethodInsn(Opcodes.INVOKESTATIC,
+                        "java/lang/Byte", "valueOf", "(B)Ljava/lang/Byte;", false);
+                case Type.CHAR -> target.visitMethodInsn(Opcodes.INVOKESTATIC,
+                        "java/lang/Character", "valueOf", "(C)Ljava/lang/Character;", false);
+                case Type.SHORT -> target.visitMethodInsn(Opcodes.INVOKESTATIC,
+                        "java/lang/Short", "valueOf", "(S)Ljava/lang/Short;", false);
+                case Type.INT -> target.visitMethodInsn(Opcodes.INVOKESTATIC,
+                        "java/lang/Integer", "valueOf", "(I)Ljava/lang/Integer;", false);
+                case Type.LONG -> target.visitMethodInsn(Opcodes.INVOKESTATIC,
+                        "java/lang/Long", "valueOf", "(J)Ljava/lang/Long;", false);
+                case Type.FLOAT -> target.visitMethodInsn(Opcodes.INVOKESTATIC,
+                        "java/lang/Float", "valueOf", "(F)Ljava/lang/Float;", false);
+                case Type.DOUBLE -> target.visitMethodInsn(Opcodes.INVOKESTATIC,
+                        "java/lang/Double", "valueOf", "(D)Ljava/lang/Double;", false);
+                default -> {} // OBJECT and ARRAY are already references
+            }
+        }
+
+        /**
+         * Load the boxed return value from retValSlot and unbox it to the expected type.
+         * For void returns, does nothing (the boxed null is ignored).
+         */
+        private void unboxReturnValue(Type retType, int retValSlot) {
+            switch (retType.getSort()) {
+                case Type.VOID -> {} // nothing to push
+                case Type.BOOLEAN -> {
+                    target.visitVarInsn(Opcodes.ALOAD, retValSlot);
+                    target.visitTypeInsn(Opcodes.CHECKCAST, "java/lang/Boolean");
+                    target.visitMethodInsn(Opcodes.INVOKEVIRTUAL,
+                            "java/lang/Boolean", "booleanValue", "()Z", false);
+                }
+                case Type.BYTE -> {
+                    target.visitVarInsn(Opcodes.ALOAD, retValSlot);
+                    target.visitTypeInsn(Opcodes.CHECKCAST, "java/lang/Byte");
+                    target.visitMethodInsn(Opcodes.INVOKEVIRTUAL,
+                            "java/lang/Byte", "byteValue", "()B", false);
+                }
+                case Type.CHAR -> {
+                    target.visitVarInsn(Opcodes.ALOAD, retValSlot);
+                    target.visitTypeInsn(Opcodes.CHECKCAST, "java/lang/Character");
+                    target.visitMethodInsn(Opcodes.INVOKEVIRTUAL,
+                            "java/lang/Character", "charValue", "()C", false);
+                }
+                case Type.SHORT -> {
+                    target.visitVarInsn(Opcodes.ALOAD, retValSlot);
+                    target.visitTypeInsn(Opcodes.CHECKCAST, "java/lang/Short");
+                    target.visitMethodInsn(Opcodes.INVOKEVIRTUAL,
+                            "java/lang/Short", "shortValue", "()S", false);
+                }
+                case Type.INT -> {
+                    target.visitVarInsn(Opcodes.ALOAD, retValSlot);
+                    target.visitTypeInsn(Opcodes.CHECKCAST, "java/lang/Integer");
+                    target.visitMethodInsn(Opcodes.INVOKEVIRTUAL,
+                            "java/lang/Integer", "intValue", "()I", false);
+                }
+                case Type.LONG -> {
+                    target.visitVarInsn(Opcodes.ALOAD, retValSlot);
+                    target.visitTypeInsn(Opcodes.CHECKCAST, "java/lang/Long");
+                    target.visitMethodInsn(Opcodes.INVOKEVIRTUAL,
+                            "java/lang/Long", "longValue", "()J", false);
+                }
+                case Type.FLOAT -> {
+                    target.visitVarInsn(Opcodes.ALOAD, retValSlot);
+                    target.visitTypeInsn(Opcodes.CHECKCAST, "java/lang/Float");
+                    target.visitMethodInsn(Opcodes.INVOKEVIRTUAL,
+                            "java/lang/Float", "floatValue", "()F", false);
+                }
+                case Type.DOUBLE -> {
+                    target.visitVarInsn(Opcodes.ALOAD, retValSlot);
+                    target.visitTypeInsn(Opcodes.CHECKCAST, "java/lang/Double");
+                    target.visitMethodInsn(Opcodes.INVOKEVIRTUAL,
+                            "java/lang/Double", "doubleValue", "()D", false);
+                }
+                default -> {
+                    // OBJECT or ARRAY — load and cast
+                    target.visitVarInsn(Opcodes.ALOAD, retValSlot);
+                    target.visitTypeInsn(Opcodes.CHECKCAST, retType.getInternalName());
+                }
             }
         }
 

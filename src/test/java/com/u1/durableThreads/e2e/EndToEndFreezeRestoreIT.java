@@ -260,7 +260,7 @@ class EndToEndFreezeRestoreIT {
             assertEquals(java.util.List.of(
                     "INNER_AFTER=117",
                     "MIDDLE_AFTER=117",
-                    "OUTER_AFTER=117",
+                    "OUTER_AFTER=217",
                     "DEEP_RESULT=1217"),
                     userLines,
                     "Restore should produce only post-freeze output with correct values. Got:\n"
@@ -667,11 +667,12 @@ class EndToEndFreezeRestoreIT {
             assertRestoreSucceeded(restoreResult);
 
             // Restored thread should have all typed locals with correct values
-            // result = 10 + 11 + 12 + 30 + 15 + 5 + 1 + 33 + 33 = 150
+            // j = d + (long)e = 30 + 15 = 45
+            // result = 10 + 11 + 12 + 30 + 15 + 5 + 1 + 33 + 45 = 162
             var userLines = extractUserOutput(restoreResult.stdout());
             assertEquals(java.util.List.of(
-                    "AFTER_FREEZE a=10 b=11 c=12 d=30 g=true h=33 j=33",
-                    "MANY_LOCALS_RESULT=150"),
+                    "AFTER_FREEZE a=10 b=11 c=12 d=30 g=true h=33 j=45",
+                    "MANY_LOCALS_RESULT=162"),
                     userLines,
                     "Restore should have correct typed locals, no replay. Got:\n"
                             + restoreResult.stdout());
