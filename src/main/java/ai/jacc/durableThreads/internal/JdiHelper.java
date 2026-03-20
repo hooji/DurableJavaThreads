@@ -4,7 +4,9 @@ import com.sun.jdi.*;
 import com.sun.jdi.connect.AttachingConnector;
 import com.sun.jdi.connect.Connector;
 
+import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.net.ServerSocket;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -43,7 +45,7 @@ public final class JdiHelper {
      *   <li>Agent's cached port (detected eagerly at startup)</li>
      *   <li>System property {@code durable.jdwp.port}</li>
      *   <li>Parsed from JVM command-line arguments</li>
-     *   <li>Listening ports from /proc/net/tcp with nonce verification</li>
+     *   <li>Platform-specific listening port enumeration with nonce verification</li>
      *   <li>Ephemeral port scan with nonce verification (fallback)</li>
      *   <li>Default: {@value #DEFAULT_JDWP_PORT}</li>
      * </ol>
@@ -73,10 +75,10 @@ public final class JdiHelper {
             return argPort;
         }
 
-        // Scan listening ports from /proc/net/tcp with nonce verification
-        int procPort = detectPortFromProc();
-        if (procPort > 0) {
-            return procPort;
+        // Scan listening ports (platform-specific) with nonce verification
+        int listenPort = detectPortFromListeningSockets();
+        if (listenPort > 0) {
+            return listenPort;
         }
 
         // Scan nearby ephemeral ports for JDWP with nonce verification
@@ -110,23 +112,30 @@ public final class JdiHelper {
         int argPort = detectPortFromArguments();
         if (argPort > 0) return argPort;
 
-        // Do NOT call detectPortFromProc() or discoverJdwpPort() here — they
-        // use JDI connect which deadlocks during premain. Port discovery via
-        // /proc/net/tcp will happen lazily at first freeze/restore.
+        // Do NOT call detectPortFromListeningSockets() or discoverJdwpPort() here —
+        // they use JDI connect which deadlocks during premain. Port discovery
+        // will happen lazily at first freeze/restore.
 
         return -1;
     }
 
     /**
-     * Discover the JDWP port by reading listening TCP ports from {@code /proc/net/tcp}
-     * and {@code /proc/net/tcp6}, then verifying each via JDI nonce check.
+     * Discover the JDWP port by enumerating listening TCP ports on this machine,
+     * then verifying each via JDI nonce check.
+     *
+     * <p>Platform-specific enumeration:</p>
+     * <ul>
+     *   <li><b>Linux:</b> reads {@code /proc/net/tcp} and {@code /proc/net/tcp6} (no subprocess)</li>
+     *   <li><b>macOS:</b> runs {@code lsof -iTCP -sTCP:LISTEN -nP -p <pid>}</li>
+     *   <li><b>Windows:</b> runs {@code netstat -ano} and filters by PID</li>
+     * </ul>
      *
      * <p>This is fast because a typical process has very few listening ports.
      * No Attach API or {@code allowAttachSelf} flag needed.</p>
      *
      * @return the verified JDWP port, or -1 if not found
      */
-    private static int detectPortFromProc() {
+    private static int detectPortFromListeningSockets() {
         if (!isJdwpOnCommandLine()) {
             return -1;
         }
@@ -145,24 +154,37 @@ public final class JdiHelper {
         return -1;
     }
 
+    // --- Platform-specific listening port enumeration ---
+
     /**
-     * Parse all TCP ports in LISTEN state from {@code /proc/net/tcp} and
-     * {@code /proc/net/tcp6}.
-     *
-     * <p>Each line in these files has the format:
-     * {@code sl  local_address  rem_address  st ...}
-     * where {@code local_address} is {@code hex_ip:hex_port} and
-     * {@code st} is {@code 0A} for LISTEN.</p>
+     * Get all TCP ports in LISTEN state, using platform-specific mechanisms.
      */
     private static List<Integer> getListeningPorts() {
+        String os = System.getProperty("os.name", "").toLowerCase();
+        if (os.contains("linux")) {
+            return getListeningPortsLinux();
+        } else if (os.contains("mac") || os.contains("darwin")) {
+            return getListeningPortsMacOS();
+        } else if (os.contains("win")) {
+            return getListeningPortsWindows();
+        }
+        return List.of(); // Unknown OS — fall through to ephemeral scan
+    }
+
+    /**
+     * Linux: parse {@code /proc/net/tcp} and {@code /proc/net/tcp6}.
+     * Each line: {@code sl local_address rem_address st ...}
+     * where local_address is {@code hex_ip:hex_port} and st {@code 0A} = LISTEN.
+     */
+    private static List<Integer> getListeningPortsLinux() {
         List<Integer> ports = new ArrayList<>();
         for (String procFile : new String[]{"/proc/net/tcp", "/proc/net/tcp6"}) {
             try {
                 List<String> lines = Files.readAllLines(Path.of(procFile));
                 for (int i = 1; i < lines.size(); i++) { // skip header
                     String[] fields = lines.get(i).trim().split("\\s+");
-                    if (fields.length >= 4 && "0A".equals(fields[3])) { // 0A = LISTEN
-                        String localAddr = fields[1]; // e.g. "0100007F:AF48"
+                    if (fields.length >= 4 && "0A".equals(fields[3])) {
+                        String localAddr = fields[1];
                         int colonIdx = localAddr.indexOf(':');
                         if (colonIdx >= 0) {
                             int port = Integer.parseInt(localAddr.substring(colonIdx + 1), 16);
@@ -173,8 +195,81 @@ public final class JdiHelper {
                     }
                 }
             } catch (Exception ignored) {
-                // /proc/net/tcp not available (non-Linux) — skip
             }
+        }
+        return ports;
+    }
+
+    /**
+     * macOS: run {@code lsof -iTCP -sTCP:LISTEN -nP -p <pid>} and parse output.
+     * Output lines look like: {@code java 1234 user 5u IPv6 0x... TCP *:43567 (LISTEN)}
+     */
+    private static List<Integer> getListeningPortsMacOS() {
+        List<Integer> ports = new ArrayList<>();
+        long pid = ProcessHandle.current().pid();
+        try {
+            Process proc = new ProcessBuilder("lsof", "-iTCP", "-sTCP:LISTEN", "-nP",
+                    "-p", String.valueOf(pid)).redirectErrorStream(true).start();
+            try (var reader = new BufferedReader(new InputStreamReader(proc.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    // Find "TCP *:PORT" or "TCP 127.0.0.1:PORT"
+                    int tcpIdx = line.indexOf("TCP ");
+                    if (tcpIdx < 0) continue;
+                    String afterTcp = line.substring(tcpIdx + 4);
+                    int colonIdx = afterTcp.indexOf(':');
+                    if (colonIdx < 0) continue;
+                    int spaceIdx = afterTcp.indexOf(' ', colonIdx);
+                    String portStr = spaceIdx < 0
+                            ? afterTcp.substring(colonIdx + 1)
+                            : afterTcp.substring(colonIdx + 1, spaceIdx);
+                    try {
+                        int port = Integer.parseInt(portStr.trim());
+                        if (port > 0 && !ports.contains(port)) {
+                            ports.add(port);
+                        }
+                    } catch (NumberFormatException ignored) {
+                    }
+                }
+            }
+            proc.waitFor(5, TimeUnit.SECONDS);
+        } catch (Exception ignored) {
+        }
+        return ports;
+    }
+
+    /**
+     * Windows: run {@code netstat -ano} and filter for LISTENING lines matching our PID.
+     * Output lines look like: {@code TCP 0.0.0.0:43567 0.0.0.0:0 LISTENING 1234}
+     */
+    private static List<Integer> getListeningPortsWindows() {
+        List<Integer> ports = new ArrayList<>();
+        String pid = String.valueOf(ProcessHandle.current().pid());
+        try {
+            Process proc = new ProcessBuilder("netstat", "-ano")
+                    .redirectErrorStream(true).start();
+            try (var reader = new BufferedReader(new InputStreamReader(proc.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    String trimmed = line.trim();
+                    if (!trimmed.contains("LISTENING")) continue;
+                    String[] fields = trimmed.split("\\s+");
+                    // fields: [TCP, local_addr, foreign_addr, LISTENING, pid]
+                    if (fields.length < 5 || !fields[4].equals(pid)) continue;
+                    String localAddr = fields[1]; // e.g. "0.0.0.0:43567" or "[::]:43567"
+                    int colonIdx = localAddr.lastIndexOf(':');
+                    if (colonIdx < 0) continue;
+                    try {
+                        int port = Integer.parseInt(localAddr.substring(colonIdx + 1).trim());
+                        if (port > 0 && !ports.contains(port)) {
+                            ports.add(port);
+                        }
+                    } catch (NumberFormatException ignored) {
+                    }
+                }
+            }
+            proc.waitFor(5, TimeUnit.SECONDS);
+        } catch (Exception ignored) {
         }
         return ports;
     }

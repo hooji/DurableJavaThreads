@@ -256,7 +256,7 @@ src/main/java/ai/jacc/durableThreads/
 ## Requirements
 
 - **Java 21+** — uses modern language features and JDI APIs
-- **JDWP** — the JVM must be started with `-agentlib:jdwp=transport=dt_socket,server=y,suspend=n`. The library auto-discovers the JDWP port (on Linux, via `/proc/net/tcp`). You can also specify a fixed port with `address=PORT`
+- **JDWP** — the JVM must be started with `-agentlib:jdwp=transport=dt_socket,server=y,suspend=n`. The library auto-discovers the JDWP port on Linux (`/proc/net/tcp`), macOS (`lsof`), and Windows (`netstat`). You can also specify a fixed port with `address=PORT`
 - **jdk.jdi module** — add `--add-modules jdk.jdi` to the command line
 
 ## License
