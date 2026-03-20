@@ -62,8 +62,9 @@ public final class DurableAgent {
             if (port > 0) {
                 cachedJdwpPort = port;
             }
-        } catch (Exception ignored) {
-            // Detection will be retried lazily at freeze/restore time
+        } catch (Throwable ignored) {
+            // Detection will be retried lazily at freeze/restore time.
+            // Catching Throwable covers NoClassDefFoundError if jdk.attach is absent.
         }
     }
 }

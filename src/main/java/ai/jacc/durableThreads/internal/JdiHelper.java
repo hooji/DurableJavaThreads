@@ -14,14 +14,26 @@ public final class JdiHelper {
     private JdiHelper() {}
 
     /**
-     * Auto-detect the JDWP port that this JVM is actually listening on.
+     * Default JDWP port. When no explicit port is detected from command-line
+     * arguments, the library assumes JDWP is listening on this port. Users
+     * can override by passing a different port in their {@code -agentlib:jdwp}
+     * argument, or by setting the system property {@code durable.jdwp.port}.
+     */
+    public static final int DEFAULT_JDWP_PORT = 44892;
+
+    /**
+     * Detect the JDWP port this JVM is listening on.
      *
-     * <p>When the JVM is started with {@code address=127.0.0.1:0}, the OS
-     * assigns a random port. The command-line argument still says "0", so
-     * we use the Attach API to read the actual listening address from the
-     * JDWP agent's properties ({@code sun.jdwp.listenerAddress}).</p>
+     * <p>Resolution order:</p>
+     * <ol>
+     *   <li>Agent's cached port (detected eagerly at startup)</li>
+     *   <li>System property {@code durable.jdwp.port}</li>
+     *   <li>Parsed from JVM command-line arguments</li>
+     *   <li>Attach API (optional fallback for {@code address=...:0})</li>
+     *   <li>Default: {@value #DEFAULT_JDWP_PORT}</li>
+     * </ol>
      *
-     * @return the JDWP port, or -1 if not found
+     * @return the JDWP port (always positive)
      */
     public static int detectJdwpPort() {
         // Check the agent's cached port first (detected eagerly at startup)
@@ -30,24 +42,38 @@ public final class JdiHelper {
             return cached;
         }
 
-        // First try parsing command-line arguments (fast, works for fixed ports)
+        // Check system property override
+        String propPort = System.getProperty("durable.jdwp.port");
+        if (propPort != null) {
+            try {
+                int port = Integer.parseInt(propPort.trim());
+                if (port > 0) return port;
+            } catch (NumberFormatException ignored) {
+            }
+        }
+
+        // Parse from command-line arguments (works for any fixed port)
         int argPort = detectPortFromArguments();
         if (argPort > 0) {
             return argPort;
         }
 
-        // If port was 0 (OS-assigned), use the Attach API to find the actual port
+        // Fallback: Attach API (only needed for address=...:0, requires jdk.attach)
         int attachPort = detectPortViaAttachApi();
         if (attachPort > 0) {
             return attachPort;
         }
 
-        return -1;
+        // Default port — assumes JDWP was started with address=127.0.0.1:44892
+        return DEFAULT_JDWP_PORT;
     }
 
     /**
      * Use the Attach API to query the JDWP agent for its actual listening address.
-     * This is the only reliable way to get the port when {@code address=...:0} is used.
+     * This is only needed when {@code address=...:0} is used (OS-assigned port).
+     *
+     * <p>This method is optional — if {@code jdk.attach} is not on the module path,
+     * it silently returns -1 and the default port is used instead.</p>
      */
     private static int detectPortViaAttachApi() {
         try {
@@ -65,8 +91,9 @@ public final class JdiHelper {
             } finally {
                 attachVm.detach();
             }
-        } catch (Exception e) {
-            // Attach API not available or failed — return -1
+        } catch (Throwable e) {
+            // Attach API not available (jdk.attach not loaded) or failed — return -1.
+            // Catching Throwable covers NoClassDefFoundError when the module is absent.
         }
         return -1;
     }
