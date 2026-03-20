@@ -269,7 +269,9 @@ final class ThreadRestorer {
                     // Clean up the heap bridge
                     HeapObjectBridge.clear();
                 } finally {
-                    vm.dispose();
+                    // Do NOT call vm.dispose() — disconnecting causes JDWP to
+                    // re-listen and print a confusing "Listening..." message.
+                    // The connection is cleaned up automatically when the JVM exits.
                 }
             } catch (Exception e) {
                 System.err.println("[DurableThreads] JDI restore failed: " + e.getMessage());

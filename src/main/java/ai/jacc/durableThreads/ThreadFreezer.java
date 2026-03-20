@@ -157,13 +157,15 @@ final class ThreadFreezer {
             }
 
         } finally {
-            vm.dispose();
+            // Do NOT call vm.dispose() — disconnecting causes JDWP to re-listen
+            // and print a confusing "Listening for transport..." message on stderr.
+            // The connection is cleaned up automatically when the JVM exits.
         }
 
         // Terminate the target thread AFTER all JDI housekeeping is complete.
         // This is critical: if the target is the main thread, killing it may
-        // terminate the JVM. We must ensure vm.dispose() and the handler have
-        // both finished before that can happen.
+        // terminate the JVM. We must ensure the handler has finished before
+        // that can happen.
         //
         // Install a per-thread handler to silently swallow the ThreadFrozenError
         // that terminates this specific thread. We scope it narrowly — only this
