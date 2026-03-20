@@ -178,12 +178,17 @@ final class ThreadRestorer {
     }
 
     /**
-     * Configure JDI worker that waits for the replay thread to block inside
-     * {@link ReplayState#resumePoint()}, then suspends it via JDI, sets local
-     * variables in all frames, deactivates replay mode, releases the latch,
-     * and resumes the thread.
+     * Configure two-phase JDI worker for thread restoration.
      *
-     * <p>No breakpoints needed — the latch provides deterministic synchronization.</p>
+     * <p><b>Phase 1</b>: Wait for replay thread to block at {@code resumePoint()}.
+     * Deactivate replay mode and release the resume latch. The thread wakes,
+     * sets {@code __skip}, and re-executes original code (skipping all invokes
+     * up to the target).</p>
+     *
+     * <p><b>Phase 2</b>: Wait for replay thread to block at {@code localsReady()}.
+     * At this point the thread is in the original code section where all local
+     * variables are in scope. Set locals via JDI, then release the locals latch.
+     * The thread resumes past the freeze point with correct local variable values.</p>
      */
     private static void configureJdiRestore(Thread replayThread, String threadName,
                                             ThreadSnapshot snapshot,
@@ -200,9 +205,10 @@ final class ThreadRestorer {
 
                 VirtualMachine vm = JdiHelper.connect(port);
                 try {
-                    // Wait for the replay thread to reach resumePoint() and block on the latch.
-                    // We poll the thread state until it's WAITING (blocked on CountDownLatch.await).
-                    ThreadReference tr = waitForThreadWaiting(vm, threadName, 30_000);
+                    // === PHASE 1: Deactivate replay mode ===
+                    // Wait for thread to reach resumePoint()
+                    ThreadReference tr = waitForThreadAtMethod(vm, threadName,
+                            "resumePoint", "ReplayState", 30_000);
                     if (tr == null) {
                         throw new RuntimeException(
                                 "Timeout waiting for replay thread '" + threadName
@@ -210,24 +216,36 @@ final class ThreadRestorer {
                                 + "during replay prologue execution.");
                     }
 
-                    // Suspend the thread so we can safely modify its locals
-                    tr.suspend();
-                    try {
-                        // Set local variables in all frames
-                        setLocalsViaJdi(vm, tr, snapshot, restoredHeap, heapRestorer);
+                    // Deactivate replay mode and release resume latch.
+                    // Thread will wake, set __skip in resume stub, goto original code,
+                    // skip all invokes up to target, then block at localsReady().
+                    ReplayState.deactivate();
+                    ReplayState.releaseResumePoint();
 
-                        // Deactivate replay mode and release latch.
-                        // We call these directly (same JVM, shared statics)
-                        // rather than via JDI invokeMethod, which requires
-                        // event-suspended threads.
-                        ReplayState.deactivate();
-                        ReplayState.releaseResumePoint();
+                    // === PHASE 2: Set local variables ===
+                    // Wait for thread to reach localsReady() in the original code section.
+                    // At this point locals are in scope and can be set via JDI.
+                    ThreadReference tr2 = waitForThreadAtMethod(vm, threadName,
+                            "localsReady", "ReplayState", 30_000);
+                    if (tr2 == null) {
+                        throw new RuntimeException(
+                                "Timeout waiting for replay thread '" + threadName
+                                + "' to reach localsReady(). The thread may have failed "
+                                + "during original code re-execution.");
+                    }
+
+                    tr2.suspend();
+                    try {
+                        // Set local variables — now they're in scope
+                        setLocalsViaJdi(vm, tr2, snapshot, restoredHeap, heapRestorer);
+
+                        // Release locals latch
+                        ReplayState.releaseLocalsReady();
 
                         // Clean up the heap bridge
                         HeapObjectBridge.clear();
                     } finally {
-                        // Resume the thread — it wakes from the latch and continues
-                        tr.resume();
+                        tr2.resume();
                     }
                 } finally {
                     vm.dispose();
@@ -237,7 +255,9 @@ final class ThreadRestorer {
                 e.printStackTrace(System.err);
                 ReplayState.signalRestoreError(
                         "JDI restore worker failed: " + e.getMessage());
+                // Release both latches so the thread doesn't hang
                 ReplayState.releaseResumePoint();
+                ReplayState.releaseLocalsReady();
             }
         }, "durable-restore-jdi-worker");
         jdiWorker.setDaemon(true);
@@ -245,15 +265,20 @@ final class ThreadRestorer {
     }
 
     /**
-     * Poll JDI until the named thread is WAITING inside {@code resumePoint()}.
+     * Poll JDI until the named thread is WAITING inside the specified method.
      *
      * <p>Simply checking for WAITING status is racy — the thread could be
-     * WAITING in some other location (e.g., class loading, lock acquisition)
-     * before reaching resumePoint(). We verify the thread is actually blocked
-     * inside ReplayState.resumePoint() by inspecting its top stack frames.</p>
+     * WAITING in some other location (e.g., class loading, lock acquisition).
+     * We verify the thread is actually blocked inside the target method by
+     * inspecting its top stack frames.</p>
+     *
+     * @param targetMethodName the method name to look for (e.g. "resumePoint", "localsReady")
+     * @param targetClassName  partial class name match (e.g. "ReplayState")
      */
-    private static ThreadReference waitForThreadWaiting(VirtualMachine vm, String threadName,
-                                                         long timeoutMs) {
+    private static ThreadReference waitForThreadAtMethod(VirtualMachine vm, String threadName,
+                                                          String targetMethodName,
+                                                          String targetClassName,
+                                                          long timeoutMs) {
         long deadline = System.currentTimeMillis() + timeoutMs;
         while (System.currentTimeMillis() < deadline) {
             for (ThreadReference tr : vm.allThreads()) {
@@ -261,8 +286,7 @@ final class ThreadRestorer {
                     int status = tr.status();
                     if (status == ThreadReference.THREAD_STATUS_WAIT
                             || status == ThreadReference.THREAD_STATUS_SLEEPING) {
-                        // Verify the thread is actually inside resumePoint()
-                        if (isAtResumePoint(tr)) {
+                        if (isAtMethod(tr, targetMethodName, targetClassName)) {
                             return tr;
                         }
                     }
@@ -279,26 +303,23 @@ final class ThreadRestorer {
     }
 
     /**
-     * Check if a thread is blocked inside ReplayState.resumePoint() by
-     * inspecting its stack frames. We look for "resumePoint" in the top
-     * few frames to confirm the thread has reached the latch.
+     * Check if a thread is blocked inside the specified method by inspecting
+     * its top stack frames. Looks for the target method in the call stack,
+     * allowing for CountDownLatch internals above it.
      */
-    private static boolean isAtResumePoint(ThreadReference tr) {
+    private static boolean isAtMethod(ThreadReference tr, String targetMethodName,
+                                       String targetClassName) {
         try {
-            // Temporarily suspend to read frames safely
             tr.suspend();
             try {
-                List<StackFrame> frames = tr.frames(0, Math.min(5, tr.frameCount()));
+                List<StackFrame> frames = tr.frames(0, Math.min(10, tr.frameCount()));
+                // Look for the target method in the stack. It may have
+                // CountDownLatch.await / AbstractQueuedSynchronizer frames above it.
                 for (StackFrame frame : frames) {
                     String methodName = frame.location().method().name();
                     String className = frame.location().declaringType().name();
-                    if (methodName.equals("resumePoint")
-                            && className.contains("ReplayState")) {
-                        return true;
-                    }
-                    // CountDownLatch.await is called from within resumePoint
-                    if (methodName.equals("await")
-                            && className.contains("CountDownLatch")) {
+                    if (methodName.equals(targetMethodName)
+                            && className.contains(targetClassName)) {
                         return true;
                     }
                 }
@@ -314,19 +335,20 @@ final class ThreadRestorer {
     /**
      * Set local variables in each frame via JDI.
      *
-     * <p>The JDI call stack at the breakpoint looks like:</p>
+     * <p>In Phase 2, the JDI call stack looks like:</p>
      * <pre>
-     * JDI frame 0:   resumePoint()
-     * JDI frame 1:   deepest user method (in resume stub)
-     * JDI frame 2:   next method up (in resume stub)
+     * JDI frame 0:   localsReady() [or CountDownLatch internals]
+     * JDI frame 1:   deepest user method (in original code section, at skip-check)
+     * JDI frame 2:   next method up (called from original code)
      * ...
-     * JDI frame K:   bottom user method (in resume stub)
+     * JDI frame K:   bottom user method
      * JDI frame K+1: invokeBottomFrame / reflection / Thread.run
      * </pre>
      *
      * <p>The snapshot frames are ordered [bottom, ..., top] (indices 0..N-1).
      * We match them by className + methodName, working from the top of the
-     * JDI stack downward.</p>
+     * JDI stack downward. We skip JDI frames that belong to ReplayState,
+     * CountDownLatch, or other infrastructure.</p>
      */
     private static void setLocalsViaJdi(VirtualMachine vm, ThreadReference threadRef,
                                         ThreadSnapshot snapshot,
@@ -338,14 +360,21 @@ final class ThreadRestorer {
 
             // Match JDI frames to snapshot frames.
             // JDI is top-to-bottom, snapshot is bottom-to-top.
-            // Start from JDI frame 1 (skip resumePoint at index 0).
             int snapshotIdx = snapshotFrames.size() - 1; // start from top (deepest)
 
-            for (int jdiIdx = 1; jdiIdx < jdiFrames.size() && snapshotIdx >= 0; jdiIdx++) {
+            for (int jdiIdx = 0; jdiIdx < jdiFrames.size() && snapshotIdx >= 0; jdiIdx++) {
                 StackFrame jdiFrame = jdiFrames.get(jdiIdx);
                 Location loc = jdiFrame.location();
                 String jdiClassName = loc.declaringType().name().replace('.', '/');
                 String jdiMethodName = loc.method().name();
+
+                // Skip infrastructure frames (ReplayState, CountDownLatch, JDK, etc.)
+                if (jdiClassName.startsWith("com/u1/durableThreads/ReplayState")
+                        || jdiClassName.startsWith("java/")
+                        || jdiClassName.startsWith("jdk/")
+                        || jdiClassName.startsWith("sun/")) {
+                    continue;
+                }
 
                 FrameSnapshot snapFrame = snapshotFrames.get(snapshotIdx);
 
@@ -407,10 +436,12 @@ final class ThreadRestorer {
                         + method.declaringType().name() + "." + method.name()
                         + ": " + e.getMessage(), e);
             } catch (IllegalArgumentException e) {
-                // Expected: during replay the frame is at the resume stub's BCP,
-                // not the original code location. Some locals may not be "valid"
-                // at the stub's bytecode position. JDI will set them after the
-                // frame advances past the prologue. Skip silently.
+                // In the two-phase approach, locals should be in scope at localsReady().
+                // If this still happens, log it for debugging.
+                System.err.println("[DurableThreads] WARNING: Cannot set local '"
+                        + snapLocal.name() + "' in "
+                        + method.declaringType().name() + "." + method.name()
+                        + " — not in scope at current BCP: " + e.getMessage());
             } catch (Exception e) {
                 throw new RuntimeException(
                         "Failed to set local '" + snapLocal.name() + "' in "

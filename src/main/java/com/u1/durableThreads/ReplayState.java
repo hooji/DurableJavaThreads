@@ -15,9 +15,15 @@ public final class ReplayState {
 
     /**
      * Latch that the replay thread blocks on inside {@link #resumePoint()}.
-     * The JDI worker counts it down after setting locals and deactivating replay.
+     * The JDI worker counts it down after deactivating replay mode (Phase 1).
      */
     private static volatile CountDownLatch resumeLatch;
+
+    /**
+     * Latch that the replay thread blocks on inside {@link #localsReady()}.
+     * The JDI worker counts it down after setting local variables via JDI (Phase 2).
+     */
+    private static volatile CountDownLatch localsLatch;
 
     /**
      * If the JDI worker encounters a fatal error, it stores the message here
@@ -112,12 +118,50 @@ public final class ReplayState {
     }
 
     /**
-     * Release the latch, allowing the replay thread to continue past
-     * {@link #resumePoint()}. Called by the JDI worker after setting locals
-     * and deactivating replay mode.
+     * Release the resume latch, allowing the replay thread to continue past
+     * {@link #resumePoint()}. Called by the JDI worker after deactivating
+     * replay mode (Phase 1).
      */
     public static void releaseResumePoint() {
         CountDownLatch latch = resumeLatch;
+        if (latch != null) {
+            latch.countDown();
+        }
+    }
+
+    /**
+     * Called at the target invoke during replay. After the resume stub sets
+     * {@code __skip} and jumps to original code, all invokes up to the target
+     * are skipped. When the target invoke is reached, this method blocks until
+     * the JDI worker has set local variables (Phase 2).
+     *
+     * <p>At this point the thread is executing in the original code section,
+     * so all local variables are in scope and can be set via JDI.</p>
+     */
+    public static void localsReady() {
+        CountDownLatch latch = localsLatch;
+        if (latch != null) {
+            try {
+                latch.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+        // Check if the JDI worker signalled a restore failure
+        String error = restoreError;
+        if (error != null) {
+            restoreError = null;
+            throw new RuntimeException("Thread restore failed (Phase 2): " + error);
+        }
+    }
+
+    /**
+     * Release the locals latch, allowing the replay thread to continue past
+     * {@link #localsReady()}. Called by the JDI worker after setting local
+     * variables via JDI (Phase 2).
+     */
+    public static void releaseLocalsReady() {
+        CountDownLatch latch = localsLatch;
         if (latch != null) {
             latch.countDown();
         }
@@ -135,15 +179,20 @@ public final class ReplayState {
     }
 
     /**
-     * Activate replay mode with a blocking resume point.
-     * The replay thread will block inside {@link #resumePoint()} until
-     * {@link #releaseResumePoint()} is called by the JDI worker.
+     * Activate replay mode with blocking latches for two-phase restore.
+     * <ul>
+     *   <li>Phase 1: The replay thread blocks inside {@link #resumePoint()} until
+     *       the JDI worker deactivates replay and calls {@link #releaseResumePoint()}.</li>
+     *   <li>Phase 2: The replay thread blocks inside {@link #localsReady()} until
+     *       the JDI worker sets locals and calls {@link #releaseLocalsReady()}.</li>
+     * </ul>
      *
      * @param resumeIndices invoke-index for each frame, bottom (0) to top
      */
     public static void activateWithLatch(int[] resumeIndices) {
         restoreError = null;
         resumeLatch = new CountDownLatch(1);
+        localsLatch = new CountDownLatch(1);
         REPLAY.set(new ReplayData(resumeIndices));
     }
 

@@ -12,26 +12,32 @@ import java.util.List;
  * <pre>
  * METHOD ENTRY:
  *   __skip = -1
- *   if (!isReplayThread()) goto SECTION_0
- *   // ... replay dispatch sets __skip = invokeIndex, goto SECTION_0 ...
+ *   if (!isReplayThread()) goto ORIGINAL_CODE
+ *   switch (currentResumeIndex()):
+ *     case N: goto RESUME_N
  *
- * SECTION_0: (original code, running normally)
- *   ... code that pushes args for invoke 0 ...
- *   // SKIP CHECK (args are on stack):
- *   if (__skip == 0) { pop args; push dummy return; goto POST_INVOKE_0; }
+ * RESUME_N:
+ *   if (isLastFrame) { resumePoint(); } else { advanceFrame(); invoke next; }
+ *   __skip = N
+ *   goto ORIGINAL_CODE
+ *
+ * ORIGINAL_CODE:
+ *   ... original bytecode ...
+ *   if (__skip &gt;= 0) { pop args; skip invoke 0 }
  *   invoke 0
- * POST_INVOKE_0:
- *   ... code that pushes args for invoke 1 ...
- *   if (__skip == 1) { pop args; push dummy return; goto POST_INVOKE_1; }
+ *   POST_INVOKE_0:
+ *   ...
+ *   if (__skip &gt;= 1) { pop args; [if target: __skip=-1, localsReady()] skip invoke 1 }
  *   invoke 1
- * POST_INVOKE_1:
+ *   POST_INVOKE_1:
  *   ...
  * </pre>
  *
- * <p>The skip checks are placed right before each invoke (after args are pushed).
- * When skipping, we pop the invoke's arguments and push a dummy return value.
- * The original code runs normally up to each invoke, so locals are correct
- * at every merge point.</p>
+ * <p>During replay, __skip is set to the target invoke index. ALL invokes from
+ * index 0 through __skip are skipped (no side effects from println, I/O, etc.).
+ * When the target invoke itself is skipped, {@code ReplayState.localsReady()}
+ * is called to block until the JDI worker sets local variables. Then execution
+ * continues past the freeze point with correct locals.</p>
  */
 public final class PrologueInjector extends ClassVisitor {
 
@@ -278,6 +284,11 @@ public final class PrologueInjector extends ClassVisitor {
         /**
          * Resume stub: rebuild call stack (or resumePoint for deepest frame),
          * set __skip = invokeIndex, goto originalCode.
+         *
+         * <p>After resumePoint() returns, the resume stub sets __skip and jumps
+         * to the original code. The original code re-executes but ALL invokes
+         * from index 0 through __skip are skipped (no side effects). When the
+         * target invoke is reached, localsReady() blocks for JDI to set locals.</p>
          */
         private void emitResumeStub(int invokeIndex, InvokeInfo info,
                                     int skipSlot, Label originalCode) {
@@ -316,8 +327,14 @@ public final class PrologueInjector extends ClassVisitor {
 
         /**
          * Emit original code with skip checks inserted right before each invoke.
-         * When skipping: pop the invoke's arguments, push dummy return, goto postInvoke.
-         * The original code runs normally up to each invoke, so locals match at merge points.
+         *
+         * <p>Key change: the skip check uses {@code __skip >= index} instead of
+         * {@code __skip == index}. This skips ALL invokes from index 0 through
+         * the target invoke, preventing re-execution of side effects during replay.</p>
+         *
+         * <p>When the target invoke itself is reached ({@code __skip == index}),
+         * the skip check also calls {@code localsReady()} to block until the JDI
+         * worker sets local variables. At this point, all locals are in scope.</p>
          */
         private void emitOriginalCodeWithSkipChecks(int skipSlot) {
             for (Runnable op : bufferedOps) {
@@ -335,29 +352,50 @@ public final class PrologueInjector extends ClassVisitor {
         }
 
         /**
-         * Emit:
-         *   if (__skip == index) { pop receiver+args; __skip=-1; push dummy return; goto postInvoke; }
+         * Emit skip check + invoke + postInvoke label.
+         *
+         * <pre>
+         *   if (__skip &lt; index) goto doInvoke       // skip if __skip &gt;= index
+         *   pop receiver+args
+         *   if (__skip != index) goto afterSync       // only sync at target invoke
+         *   __skip = -1
+         *   localsReady()                              // block for JDI to set locals
+         * afterSync:
+         *   push dummy return
+         *   goto postInvoke
+         * doInvoke:
          *   invoke
-         *   postInvoke:
+         * postInvoke:
+         * </pre>
          */
         private void emitInvokeWithSkipCheck(int skipSlot, int index, int opcode,
                                               String owner, String name, String desc,
                                               boolean isInterface) {
             Label postInvoke = new Label();
             Label doInvoke = new Label();
+            Label afterSync = new Label();
 
-            // Check if we should skip this invoke
+            // Skip check: if __skip >= index, skip this invoke
             target.visitVarInsn(Opcodes.ILOAD, skipSlot);
             emitIntConst(index);
-            target.visitJumpInsn(Opcodes.IF_ICMPNE, doInvoke);
+            target.visitJumpInsn(Opcodes.IF_ICMPLT, doInvoke); // __skip < index → don't skip
 
-            // SKIP PATH: pop args from stack, reset __skip, push dummy return, goto postInvoke
-            // Pop receiver (for non-static) and all args
+            // SKIP PATH: pop args from stack
             popInvokeArgs(opcode, desc);
-            // Reset __skip
+
+            // Check if this is the target invoke (__skip == index)
+            target.visitVarInsn(Opcodes.ILOAD, skipSlot);
+            emitIntConst(index);
+            target.visitJumpInsn(Opcodes.IF_ICMPNE, afterSync); // __skip != index → skip sync
+
+            // TARGET INVOKE: reset __skip and block for JDI to set locals
             target.visitInsn(Opcodes.ICONST_M1);
             target.visitVarInsn(Opcodes.ISTORE, skipSlot);
-            // Push dummy return
+            target.visitMethodInsn(Opcodes.INVOKESTATIC,
+                    "com/u1/durableThreads/ReplayState", "localsReady", "()V", false);
+
+            target.visitLabel(afterSync);
+            // Push dummy return value
             pushDummyReturnValue(desc);
             target.visitJumpInsn(Opcodes.GOTO, postInvoke);
 
@@ -373,15 +411,28 @@ public final class PrologueInjector extends ClassVisitor {
                                                      Handle bsmHandle, Object[] bsmArgs) {
             Label postInvoke = new Label();
             Label doInvoke = new Label();
+            Label afterSync = new Label();
 
+            // Skip check: if __skip >= index, skip this invoke
             target.visitVarInsn(Opcodes.ILOAD, skipSlot);
             emitIntConst(index);
-            target.visitJumpInsn(Opcodes.IF_ICMPNE, doInvoke);
+            target.visitJumpInsn(Opcodes.IF_ICMPLT, doInvoke);
 
             // SKIP PATH
             popInvokeArgs(Opcodes.INVOKESTATIC, desc); // invokedynamic has no receiver
+
+            // Check if this is the target invoke
+            target.visitVarInsn(Opcodes.ILOAD, skipSlot);
+            emitIntConst(index);
+            target.visitJumpInsn(Opcodes.IF_ICMPNE, afterSync);
+
+            // TARGET: reset __skip and block for locals
             target.visitInsn(Opcodes.ICONST_M1);
             target.visitVarInsn(Opcodes.ISTORE, skipSlot);
+            target.visitMethodInsn(Opcodes.INVOKESTATIC,
+                    "com/u1/durableThreads/ReplayState", "localsReady", "()V", false);
+
+            target.visitLabel(afterSync);
             pushDummyReturnValue(desc);
             target.visitJumpInsn(Opcodes.GOTO, postInvoke);
 
@@ -394,10 +445,8 @@ public final class PrologueInjector extends ClassVisitor {
 
         /**
          * Pop the receiver (for non-static) and all arguments from the stack.
-         * This reverses the argument-pushing that the original code did before the invoke.
          */
         private void popInvokeArgs(int opcode, String desc) {
-            // Build list of types to pop (in reverse order, since stack is LIFO)
             Type[] argTypes = Type.getArgumentTypes(desc);
 
             // Pop arguments (rightmost first, they're on top of stack)
@@ -407,7 +456,7 @@ public final class PrologueInjector extends ClassVisitor {
 
             // Pop receiver for non-static invokes
             if (opcode != Opcodes.INVOKESTATIC && opcode != Opcodes.INVOKEDYNAMIC) {
-                target.visitInsn(Opcodes.POP); // receiver is always a single-slot reference
+                target.visitInsn(Opcodes.POP);
             }
         }
 
