@@ -24,6 +24,12 @@ public final class JdiHelper {
      * @return the JDWP port, or -1 if not found
      */
     public static int detectJdwpPort() {
+        // Check the agent's cached port first (detected eagerly at startup)
+        int cached = ai.jacc.durableThreads.DurableAgent.getCachedJdwpPort();
+        if (cached > 0) {
+            return cached;
+        }
+
         // First try parsing command-line arguments (fast, works for fixed ports)
         int argPort = detectPortFromArguments();
         if (argPort > 0) {

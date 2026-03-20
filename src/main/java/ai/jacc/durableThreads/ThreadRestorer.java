@@ -486,6 +486,12 @@ final class ThreadRestorer {
 
     /**
      * Set local variables in a single JDI frame from a snapshot frame.
+     *
+     * <p>Object references resolved from the heap bridge are protected from
+     * garbage collection via {@link ObjectReference#disableCollection()} while
+     * locals are being set. Without this, the target JVM's GC can collect the
+     * mirrored object between resolution and {@code setValue()}, causing a
+     * {@code ObjectCollectedException}.</p>
      */
     private static void setFrameLocals(VirtualMachine vm, ThreadReference threadRef,
                                        StackFrame jdiFrame, FrameSnapshot snapFrame,
@@ -511,39 +517,76 @@ final class ThreadRestorer {
             jdiLocalsByName.putIfAbsent(jdiLocal.name(), jdiLocal);
         }
 
+        // Pre-resolve all values and pin object references to prevent GC collection.
+        // The target JVM's GC can collect objects between resolve and setValue(),
+        // causing ObjectCollectedException. disableCollection() prevents this.
+        record LocalEntry(com.sun.jdi.LocalVariable jdiLocal,
+                          Value jdiValue, boolean isNull) {}
+        List<LocalEntry> entries = new ArrayList<>();
+        List<ObjectReference> pinnedRefs = new ArrayList<>();
+
         for (ai.jacc.durableThreads.snapshot.LocalVariable snapLocal : snapFrame.locals()) {
             com.sun.jdi.LocalVariable jdiLocal = jdiLocalsByName.get(snapLocal.name());
             if (jdiLocal == null) continue;
 
-            try {
-                Value jdiValue = convertToJdiValue(vm, snapLocal.value(),
-                        restoredHeap, heapRestorer);
-                if (jdiValue != null || snapLocal.value() instanceof NullRef) {
-                    jdiFrame.setValue(jdiLocal, jdiValue);
+            Value jdiValue = convertToJdiValue(vm, snapLocal.value(),
+                    restoredHeap, heapRestorer);
+            boolean isNull = snapLocal.value() instanceof NullRef;
+
+            if (jdiValue instanceof ObjectReference objRef) {
+                try {
+                    objRef.disableCollection();
+                    pinnedRefs.add(objRef);
+                } catch (ObjectCollectedException alreadyGone) {
+                    // Object was collected before we could pin it — re-resolve
+                    jdiValue = convertToJdiValue(vm, snapLocal.value(),
+                            restoredHeap, heapRestorer);
+                    if (jdiValue instanceof ObjectReference retryRef) {
+                        retryRef.disableCollection();
+                        pinnedRefs.add(retryRef);
+                    }
                 }
-            } catch (InvalidTypeException | ClassNotLoadedException e) {
-                throw new RuntimeException(
-                        "Type mismatch setting local '" + snapLocal.name() + "' in "
-                        + method.declaringType().name() + "." + method.name()
-                        + ": " + e.getMessage(), e);
-            } catch (IllegalArgumentException e) {
-                if (requireAllLocals) {
-                    // Phase 2: all locals must be in scope. Failure means the
-                    // restored thread would run with incorrect state.
+            }
+
+            if (jdiValue != null || isNull) {
+                entries.add(new LocalEntry(jdiLocal, jdiValue, isNull));
+            }
+        }
+
+        try {
+            for (LocalEntry entry : entries) {
+                try {
+                    jdiFrame.setValue(entry.jdiLocal(), entry.jdiValue());
+                } catch (InvalidTypeException | ClassNotLoadedException e) {
                     throw new RuntimeException(
-                            "Cannot set local '" + snapLocal.name() + "' in "
+                            "Type mismatch setting local '" + entry.jdiLocal().name() + "' in "
                             + method.declaringType().name() + "." + method.name()
-                            + " — not in scope at current BCP. "
-                            + "Thread restore cannot proceed with incomplete state.",
-                            e);
+                            + ": " + e.getMessage(), e);
+                } catch (IllegalArgumentException e) {
+                    if (requireAllLocals) {
+                        throw new RuntimeException(
+                                "Cannot set local '" + entry.jdiLocal().name() + "' in "
+                                + method.declaringType().name() + "." + method.name()
+                                + " — not in scope at current BCP. "
+                                + "Thread restore cannot proceed with incomplete state.",
+                                e);
+                    }
+                    // Phase 1: non-parameter locals may not be in scope yet
+                } catch (Exception e) {
+                    throw new RuntimeException(
+                            "Failed to set local '" + entry.jdiLocal().name() + "' in "
+                            + method.declaringType().name() + "." + method.name()
+                            + ": " + e.getMessage(), e);
                 }
-                // Phase 1: non-parameter locals may not be in scope yet
-                // (they'll be set in Phase 2 at localsReady()).
-            } catch (Exception e) {
-                throw new RuntimeException(
-                        "Failed to set local '" + snapLocal.name() + "' in "
-                        + method.declaringType().name() + "." + method.name()
-                        + ": " + e.getMessage(), e);
+            }
+        } finally {
+            // Re-enable GC on all pinned references
+            for (ObjectReference ref : pinnedRefs) {
+                try {
+                    ref.enableCollection();
+                } catch (ObjectCollectedException ignored) {
+                    // already collected after setValue — harmless
+                }
             }
         }
     }

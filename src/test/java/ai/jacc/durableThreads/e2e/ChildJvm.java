@@ -42,17 +42,19 @@ public final class ChildJvm {
         List<String> cmd = new ArrayList<>();
         cmd.add(java);
 
-        // Agent
+        // Agent (auto-starts JDWP via Attach API)
         cmd.add("-javaagent:" + agentJar);
 
-        // JDWP (required for freeze/restore)
+        // JDWP — if an explicit port is requested, pass it directly;
+        // otherwise the agent's premain will auto-start JDWP on a random port.
         if (jdwpPort > 0) {
             cmd.add("-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=127.0.0.1:" + jdwpPort);
         }
 
-        // Add modules for JDI access
+        // Add modules for JDI and Attach API access
         cmd.add("--add-modules");
-        cmd.add("jdk.jdi");
+        cmd.add("jdk.jdi,jdk.attach");
+        cmd.add("-Djdk.attach.allowAttachSelf=true");
 
         // Classpath
         cmd.add("-cp");
