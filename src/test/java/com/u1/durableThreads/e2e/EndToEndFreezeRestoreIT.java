@@ -715,4 +715,172 @@ class EndToEndFreezeRestoreIT {
             }
         }
     }
+
+    // ===================================================================
+    // Bytecode offset stress tests
+    // ===================================================================
+
+    @Test
+    @DisplayName("E2E: Switch statement freeze (tableswitch/lookupswitch padding)")
+    void switchFreezeAndRestore() throws Exception {
+        Path snapshotFile = Files.createTempFile("durable-switch-", ".bin");
+        try {
+            int freezePort = ChildJvm.findFreePort();
+            ChildJvm.Result freezeResult = ChildJvm.run(
+                    "com.u1.durableThreads.e2e.SwitchFreezeProgram",
+                    classpath, freezePort,
+                    new String[]{snapshotFile.toString()}, 60);
+
+            System.out.println("=== SWITCH FREEZE STDOUT ===\n" + freezeResult.stdout());
+            if (!freezeResult.stderr().isBlank()) {
+                System.out.println("=== SWITCH FREEZE STDERR ===\n" + freezeResult.stderr());
+            }
+
+            assertTrue(freezeResult.stdout().contains("FREEZE_COMPLETE"),
+                    "Switch freeze should complete. Stdout:\n" + freezeResult.stdout());
+            // mode=3 → computeStep(40)=80, transform(80)=160, lookupswitch default → computeStep(5)=10
+            // acc=80+10=90, finalStep(90)=97
+            assertTrue(freezeResult.stdout().contains("BEFORE_FREEZE acc=90 post=97"),
+                    "Should capture correct pre-freeze state. Stdout:\n" + freezeResult.stdout());
+            assertFalse(freezeResult.stdout().contains("AFTER_FREEZE"),
+                    "Original thread should not continue past freeze");
+            assertTrue(Files.size(snapshotFile) > 100);
+
+            // Restore
+            int restorePort = ChildJvm.findFreePort();
+            ChildJvm.Result restoreResult = ChildJvm.run(
+                    "com.u1.durableThreads.e2e.RestoreProgram",
+                    classpath, restorePort,
+                    new String[]{snapshotFile.toString()}, 60);
+
+            System.out.println("=== SWITCH RESTORE STDOUT ===\n" + restoreResult.stdout());
+            if (!restoreResult.stderr().isBlank()) {
+                System.out.println("=== SWITCH RESTORE STDERR ===\n" + restoreResult.stderr());
+            }
+
+            assertRestoreSucceeded(restoreResult);
+
+            // afterFreeze = 97 + 90 + 1000 = 1187
+            var userLines = extractUserOutput(restoreResult.stdout());
+            assertEquals(java.util.List.of(
+                    "AFTER_FREEZE=1187",
+                    "SWITCH_RESULT=1187"),
+                    userLines,
+                    "Restore should compute correct result after switch. Got:\n"
+                            + restoreResult.stdout());
+        } finally {
+            Files.deleteIfExists(snapshotFile);
+        }
+    }
+
+    @Test
+    @DisplayName("E2E: Mixed invoke types (virtual, static, interface, invokedynamic)")
+    void mixedInvokesFreezeAndRestore() throws Exception {
+        Path snapshotFile = Files.createTempFile("durable-mixed-", ".bin");
+        try {
+            int freezePort = ChildJvm.findFreePort();
+            ChildJvm.Result freezeResult = ChildJvm.run(
+                    "com.u1.durableThreads.e2e.MixedInvokesFreezeProgram",
+                    classpath, freezePort,
+                    new String[]{snapshotFile.toString()}, 60);
+
+            System.out.println("=== MIXED FREEZE STDOUT ===\n" + freezeResult.stdout());
+            if (!freezeResult.stderr().isBlank()) {
+                System.out.println("=== MIXED FREEZE STDERR ===\n" + freezeResult.stderr());
+            }
+
+            assertTrue(freezeResult.stdout().contains("FREEZE_COMPLETE"),
+                    "Mixed invokes freeze should complete. Stdout:\n" + freezeResult.stdout());
+            // a=15, b=30, c=35, label="result-30-end" (length=14), d=13
+            assertTrue(freezeResult.stdout().contains("BEFORE_FREEZE a=15 b=30 c=35 d=13"),
+                    "Should capture correct pre-freeze state. Stdout:\n" + freezeResult.stdout());
+            assertFalse(freezeResult.stdout().contains("AFTER_FREEZE"),
+                    "Original thread should not continue past freeze");
+            assertTrue(Files.size(snapshotFile) > 100);
+
+            // Restore
+            int restorePort = ChildJvm.findFreePort();
+            ChildJvm.Result restoreResult = ChildJvm.run(
+                    "com.u1.durableThreads.e2e.RestoreProgram",
+                    classpath, restorePort,
+                    new String[]{snapshotFile.toString()}, 60);
+
+            System.out.println("=== MIXED RESTORE STDOUT ===\n" + restoreResult.stdout());
+            if (!restoreResult.stderr().isBlank()) {
+                System.out.println("=== MIXED RESTORE STDERR ===\n" + restoreResult.stderr());
+            }
+
+            assertRestoreSucceeded(restoreResult);
+
+            // total = 15 + 30 + 35 + 14 = 94
+            var userLines = extractUserOutput(restoreResult.stdout());
+            assertEquals(java.util.List.of(
+                    "AFTER_FREEZE a=15 b=30 c=35 d=13",
+                    "LABEL=result-30-end",
+                    "SB=val=15",
+                    "MIXED_RESULT=93"),
+                    userLines,
+                    "Restore should preserve all typed locals and objects. Got:\n"
+                            + restoreResult.stdout());
+        } finally {
+            Files.deleteIfExists(snapshotFile);
+        }
+    }
+
+    @Test
+    @DisplayName("E2E: Complex control flow with many invokes")
+    void complexControlFlowFreezeAndRestore() throws Exception {
+        Path snapshotFile = Files.createTempFile("durable-complex-", ".bin");
+        try {
+            int freezePort = ChildJvm.findFreePort();
+            ChildJvm.Result freezeResult = ChildJvm.run(
+                    "com.u1.durableThreads.e2e.ComplexControlFlowFreezeProgram",
+                    classpath, freezePort,
+                    new String[]{snapshotFile.toString()}, 60);
+
+            System.out.println("=== COMPLEX FREEZE STDOUT ===\n" + freezeResult.stdout());
+            if (!freezeResult.stderr().isBlank()) {
+                System.out.println("=== COMPLEX FREEZE STDERR ===\n" + freezeResult.stderr());
+            }
+
+            assertTrue(freezeResult.stdout().contains("FREEZE_COMPLETE"),
+                    "Complex flow freeze should complete. Stdout:\n" + freezeResult.stdout());
+            // value=84, a=168
+            assertTrue(freezeResult.stdout().contains("BEFORE_FREEZE value=84 a=168"),
+                    "Should capture correct pre-freeze state. Stdout:\n" + freezeResult.stdout());
+            assertFalse(freezeResult.stdout().contains("AFTER_FREEZE"),
+                    "Original thread should not continue past freeze");
+            assertTrue(Files.size(snapshotFile) > 100);
+
+            // Restore
+            int restorePort = ChildJvm.findFreePort();
+            ChildJvm.Result restoreResult = ChildJvm.run(
+                    "com.u1.durableThreads.e2e.RestoreProgram",
+                    classpath, restorePort,
+                    new String[]{snapshotFile.toString()}, 60);
+
+            System.out.println("=== COMPLEX RESTORE STDOUT ===\n" + restoreResult.stdout());
+            if (!restoreResult.stderr().isBlank()) {
+                System.out.println("=== COMPLEX RESTORE STDERR ===\n" + restoreResult.stderr());
+            }
+
+            assertRestoreSucceeded(restoreResult);
+
+            // helperResult = 168 + 100 = 268
+            // Note: 'total' in complexMethod (intermediate frame) is NOT restored —
+            // non-parameter locals are out of scope in the resume stub bytecode.
+            // So total = 0 (default) + helperResult = 268.
+            var userLines = extractUserOutput(restoreResult.stdout());
+            assertEquals(java.util.List.of(
+                    "HELPER_AFTER a=168 afterFreeze=268",
+                    "SB_AFTER=try-helper",
+                    "AFTER_FREEZE total=268",
+                    "COMPLEX_RESULT=268"),
+                    userLines,
+                    "Restore should preserve state across complex control flow. Got:\n"
+                            + restoreResult.stdout());
+        } finally {
+            Files.deleteIfExists(snapshotFile);
+        }
+    }
 }
