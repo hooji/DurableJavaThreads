@@ -146,6 +146,10 @@ public final class ReplayState {
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
+            // Recreate the latch so the NEXT frame's localsReady() call blocks.
+            // Each frame in the restored call stack hits localsReady() exactly once
+            // as the stack unwinds (deepest first, then progressively shallower).
+            localsLatch = new CountDownLatch(1);
         }
         // Check if the JDI worker signalled a restore failure
         String error = restoreError;

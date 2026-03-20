@@ -867,15 +867,15 @@ class EndToEndFreezeRestoreIT {
             assertRestoreSucceeded(restoreResult);
 
             // helperResult = 168 + 100 = 268
-            // Note: 'total' in complexMethod (intermediate frame) is NOT restored —
-            // non-parameter locals are out of scope in the resume stub bytecode.
-            // So total = 0 (default) + helperResult = 268.
+            // With per-frame localsReady(), 'total' in the intermediate frame
+            // complexMethod IS correctly restored to 84.
+            // So total = 84 + helperResult = 84 + 268 = 352.
             var userLines = extractUserOutput(restoreResult.stdout());
             assertEquals(java.util.List.of(
                     "HELPER_AFTER a=168 afterFreeze=268",
                     "SB_AFTER=try-helper",
-                    "AFTER_FREEZE total=268",
-                    "COMPLEX_RESULT=268"),
+                    "AFTER_FREEZE total=352",
+                    "COMPLEX_RESULT=352"),
                     userLines,
                     "Restore should preserve state across complex control flow. Got:\n"
                             + restoreResult.stdout());

@@ -234,32 +234,40 @@ final class ThreadRestorer {
                     ReplayState.deactivate();
                     ReplayState.releaseResumePoint();
 
-                    // === PHASE 2: Set local variables ===
-                    // Wait for thread to reach localsReady() in the original code section.
-                    // At this point locals are in scope and can be set via JDI.
-                    ThreadReference tr2 = waitForThreadAtMethod(vm, threadName,
-                            "localsReady", "ReplayState", 30_000);
-                    if (tr2 == null) {
-                        throw new RuntimeException(
-                                "Timeout waiting for replay thread '" + threadName
-                                + "' to reach localsReady(). The thread may have failed "
-                                + "during original code re-execution.");
+                    // === PHASE 2: Set local variables per-frame ===
+                    // Each frame in the restored call stack hits localsReady() exactly
+                    // once as the stack unwinds: deepest frame first, then progressively
+                    // shallower. We loop once per frame, waiting for each localsReady(),
+                    // setting ALL locals (including non-parameter locals that are now in
+                    // scope), then releasing the latch so the next frame can proceed.
+                    int frameCount = snapshot.frames().size();
+                    for (int f = 0; f < frameCount; f++) {
+                        // Snapshot frames are [bottom..top], so deepest = frameCount-1
+                        int snapshotFrameIdx = frameCount - 1 - f;
+
+                        ThreadReference tr2 = waitForThreadAtMethod(vm, threadName,
+                                "localsReady", "ReplayState", 30_000);
+                        if (tr2 == null) {
+                            throw new RuntimeException(
+                                    "Timeout waiting for replay thread '" + threadName
+                                    + "' to reach localsReady() for frame " + f
+                                    + " (" + snapshot.frames().get(snapshotFrameIdx).className()
+                                    + "." + snapshot.frames().get(snapshotFrameIdx).methodName()
+                                    + "). The thread may have failed during re-execution.");
+                        }
+
+                        tr2.suspend();
+                        try {
+                            setLocalsForSingleFrame(vm, tr2, snapshot,
+                                    restoredHeap, heapRestorer, snapshotFrameIdx);
+                            ReplayState.releaseLocalsReady();
+                        } finally {
+                            tr2.resume();
+                        }
                     }
 
-                    tr2.suspend();
-                    try {
-                        // Set local variables — now they're in scope.
-                        // Phase 2 requires ALL locals to be set; failure is fatal.
-                        setLocalsViaJdi(vm, tr2, snapshot, restoredHeap, heapRestorer, true);
-
-                        // Release locals latch
-                        ReplayState.releaseLocalsReady();
-
-                        // Clean up the heap bridge
-                        HeapObjectBridge.clear();
-                    } finally {
-                        tr2.resume();
-                    }
+                    // Clean up the heap bridge
+                    HeapObjectBridge.clear();
                 } finally {
                     vm.dispose();
                 }
@@ -412,6 +420,64 @@ final class ThreadRestorer {
                 }
                 // If no match, skip this JDI frame (it's infrastructure / reflection)
             }
+
+        } catch (IncompatibleThreadStateException e) {
+            throw new RuntimeException("Thread not suspended for local variable setting", e);
+        }
+    }
+
+    /**
+     * Set locals for the single user frame that is currently blocked at localsReady().
+     * Walks the JDI stack to find the first user frame (skipping ReplayState and JDK
+     * infrastructure), verifies it matches the expected snapshot frame, and sets ALL
+     * its local variables.
+     *
+     * @param snapshotFrameIdx index into snapshot.frames() for the expected frame
+     */
+    private static void setLocalsForSingleFrame(VirtualMachine vm, ThreadReference threadRef,
+                                                 ThreadSnapshot snapshot,
+                                                 Map<Long, Object> restoredHeap,
+                                                 HeapRestorer heapRestorer,
+                                                 int snapshotFrameIdx) {
+        try {
+            List<StackFrame> jdiFrames = threadRef.frames();
+            FrameSnapshot snapFrame = snapshot.frames().get(snapshotFrameIdx);
+
+            for (StackFrame jdiFrame : jdiFrames) {
+                Location loc = jdiFrame.location();
+                String jdiClassName = loc.declaringType().name().replace('.', '/');
+                String jdiMethodName = loc.method().name();
+
+                // Skip infrastructure frames
+                if (jdiClassName.startsWith("com/u1/durableThreads/ReplayState")
+                        || jdiClassName.startsWith("java/")
+                        || jdiClassName.startsWith("jdk/")
+                        || jdiClassName.startsWith("sun/")) {
+                    continue;
+                }
+
+                // First user frame — verify it matches the expected snapshot frame
+                if (jdiClassName.equals(snapFrame.className())
+                        && jdiMethodName.equals(snapFrame.methodName())) {
+                    setFrameLocals(vm, threadRef, jdiFrame, snapFrame,
+                            restoredHeap, heapRestorer, true);
+                    return;
+                }
+
+                // First user frame doesn't match — something went wrong
+                throw new RuntimeException(
+                        "[DurableThreads] Frame mismatch at localsReady(): expected "
+                        + snapFrame.className().replace('/', '.') + "."
+                        + snapFrame.methodName() + " but found "
+                        + jdiClassName.replace('/', '.') + "." + jdiMethodName
+                        + ". The call stack structure may have changed between "
+                        + "freeze and restore.");
+            }
+
+            throw new RuntimeException(
+                    "[DurableThreads] No user frame found in JDI stack at localsReady() "
+                    + "for expected frame " + snapFrame.className().replace('/', '.')
+                    + "." + snapFrame.methodName());
 
         } catch (IncompatibleThreadStateException e) {
             throw new RuntimeException("Thread not suspended for local variable setting", e);
