@@ -4,6 +4,9 @@ import com.sun.jdi.*;
 import com.sun.jdi.connect.AttachingConnector;
 import com.sun.jdi.connect.Connector;
 
+import java.io.IOException;
+import java.net.ServerSocket;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -12,6 +15,13 @@ import java.util.Map;
 public final class JdiHelper {
 
     private JdiHelper() {}
+
+    /**
+     * Cached JDI connection discovered during port scanning.
+     * Once we find and verify the JDWP port, we keep the connection open
+     * so it can be reused for freeze/restore without reconnecting.
+     */
+    private static volatile VirtualMachine cachedVm;
 
     /**
      * Default JDWP port. When no explicit port is detected from command-line
@@ -30,6 +40,7 @@ public final class JdiHelper {
      *   <li>System property {@code durable.jdwp.port}</li>
      *   <li>Parsed from JVM command-line arguments</li>
      *   <li>Attach API (optional fallback for {@code address=...:0})</li>
+     *   <li>Ephemeral port scan with JDWP handshake + nonce verification</li>
      *   <li>Default: {@value #DEFAULT_JDWP_PORT}</li>
      * </ol>
      *
@@ -64,8 +75,42 @@ public final class JdiHelper {
             return attachPort;
         }
 
+        // Scan nearby ephemeral ports for JDWP with nonce verification
+        int discoveredPort = discoverJdwpPort();
+        if (discoveredPort > 0) {
+            return discoveredPort;
+        }
+
         // Default port — assumes JDWP was started with address=127.0.0.1:44892
         return DEFAULT_JDWP_PORT;
+    }
+
+    /**
+     * Same as {@link #detectJdwpPort()} but returns -1 instead of the default port.
+     * Used during premain to avoid caching an incorrect default.
+     */
+    public static int detectJdwpPortNoDefault() {
+        int cached = ai.jacc.durableThreads.DurableAgent.getCachedJdwpPort();
+        if (cached > 0) return cached;
+
+        String propPort = System.getProperty("durable.jdwp.port");
+        if (propPort != null) {
+            try {
+                int port = Integer.parseInt(propPort.trim());
+                if (port > 0) return port;
+            } catch (NumberFormatException ignored) {}
+        }
+
+        int argPort = detectPortFromArguments();
+        if (argPort > 0) return argPort;
+
+        int attachPort = detectPortViaAttachApi();
+        if (attachPort > 0) return attachPort;
+
+        int discoveredPort = discoverJdwpPort();
+        if (discoveredPort > 0) return discoveredPort;
+
+        return -1; // Don't fall back to default
     }
 
     /**
@@ -125,18 +170,169 @@ public final class JdiHelper {
         return -1;
     }
 
+    // --- JDWP port discovery via ephemeral port scanning ---
+
+    /** Socket connect/handshake timeout for JDI port probes (ms). */
+    private static final int PROBE_TIMEOUT_MS = 200;
+
+    /**
+     * Discover the JDWP port by scanning nearby ephemeral ports.
+     *
+     * <p>Strategy:</p>
+     * <ol>
+     *   <li>Allocate and immediately release an ephemeral port ("probe port") to
+     *       get a reference point in the OS's ephemeral range. Since the OS assigns
+     *       ephemeral ports roughly sequentially, JDWP's port (allocated earlier at
+     *       JVM startup) will be nearby — typically just below the probe port.</li>
+     *   <li>Scan ports near the probe. For each open port, attempt a full JDI
+     *       connection and verify the nonce stored in
+     *       {@code DurableAgent.jdwpDiscoveryNonce} to confirm it belongs to THIS JVM.</li>
+     * </ol>
+     *
+     * @return the discovered JDWP port, or -1 if not found
+     */
+    /**
+     * Maximum number of ports to scan in each direction from the probe port.
+     * This is a last-resort fallback after the Attach API fails.
+     */
+    private static final int SCAN_RANGE = 200;
+
+    private static int discoverJdwpPort() {
+        // Only scan if JDWP is actually on the command line
+        if (!isJdwpOnCommandLine()) {
+            return -1;
+        }
+
+        String expectedNonce = ai.jacc.durableThreads.DurableAgent.jdwpDiscoveryNonce;
+        if (expectedNonce == null || expectedNonce.isEmpty()) {
+            return -1;
+        }
+
+        // Allocate a probe port as a reference point in the ephemeral range.
+        int probePort;
+        try (ServerSocket ss = new ServerSocket(0)) {
+            probePort = ss.getLocalPort();
+        } catch (IOException e) {
+            return -1;
+        }
+
+        // Scan nearby ports via JDI connect + nonce verification.
+        // Closed ports fail instantly. Open non-JDWP ports time out after PROBE_TIMEOUT_MS.
+        // Our JDWP port: handshake succeeds, nonce matches, connection CACHED.
+        //
+        // NOTE: Do NOT pre-probe with raw TCP or JDWP handshake — JDWP re-listens on
+        // a NEW port after each debugger disconnect, so probes "consume" the port.
+
+        for (int port = probePort - 1; port >= Math.max(1, probePort - SCAN_RANGE); port--) {
+            if (connectAndVerifyNonce(port, expectedNonce)) {
+                return port;
+            }
+        }
+        for (int port = probePort; port <= Math.min(65535, probePort + SCAN_RANGE); port++) {
+            if (connectAndVerifyNonce(port, expectedNonce)) {
+                return port;
+            }
+        }
+
+        return -1;
+    }
+
+    /**
+     * Check if JDWP appears on the JVM command line.
+     * This avoids expensive port scanning when JDWP is not configured.
+     */
+    private static boolean isJdwpOnCommandLine() {
+        try {
+            var args = java.lang.management.ManagementFactory.getRuntimeMXBean().getInputArguments();
+            for (String arg : args) {
+                if (arg.contains("jdwp")) {
+                    return true;
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return false;
+    }
+
+    /**
+     * Connect to a port via JDI and verify that it belongs to THIS JVM by reading
+     * the nonce from {@code DurableAgent.jdwpDiscoveryNonce}.
+     *
+     * <p>If verified, the JDI connection is cached for later reuse by {@link #connect(int)}
+     * — this avoids reconnecting and eliminates the double-connection problem with JDWP's
+     * single-debugger-at-a-time constraint.</p>
+     */
+    private static boolean connectAndVerifyNonce(int port, String expectedNonce) {
+        VirtualMachine vm = null;
+        try {
+            vm = jdiConnect(port, PROBE_TIMEOUT_MS);
+
+            List<ReferenceType> types = vm.classesByName("ai.jacc.durableThreads.DurableAgent");
+            if (types.isEmpty()) {
+                vm.dispose();
+                return false; // Not our JVM — DurableAgent not loaded
+            }
+
+            Field nonceField = types.get(0).fieldByName("jdwpDiscoveryNonce");
+            if (nonceField == null) {
+                vm.dispose();
+                return false;
+            }
+
+            Value val = types.get(0).getValue(nonceField);
+            if (val instanceof StringReference sr && expectedNonce.equals(sr.value())) {
+                // This is our JVM! Cache the connection for later use.
+                cachedVm = vm;
+                return true;
+            }
+            vm.dispose();
+            return false;
+        } catch (Exception e) {
+            if (vm != null) {
+                try { vm.dispose(); } catch (Exception ignored) {}
+            }
+            return false; // Not JDWP, or connection failed
+        }
+    }
+
     /**
      * Connect to the local JVM via JDI socket attach.
+     *
+     * <p>If a cached connection exists (from port auto-discovery), it is returned
+     * and the cache is cleared. Otherwise, a new connection is established.</p>
      *
      * @param port the JDWP port
      * @return the VirtualMachine connection
      */
     public static VirtualMachine connect(int port) {
+        // Return cached connection from discovery if available
+        VirtualMachine cached = cachedVm;
+        if (cached != null) {
+            cachedVm = null; // Clear cache — caller takes ownership
+            return cached;
+        }
+
+        return jdiConnect(port, 0);
+    }
+
+    /**
+     * Low-level JDI socket attach with optional timeout.
+     *
+     * @param port      JDWP port
+     * @param timeoutMs connection timeout in ms, or 0 for no timeout
+     */
+    private static VirtualMachine jdiConnect(int port, int timeoutMs) {
         try {
             AttachingConnector connector = findSocketAttachConnector();
             Map<String, Connector.Argument> arguments = connector.defaultArguments();
             arguments.get("hostname").setValue("127.0.0.1");
             arguments.get("port").setValue(String.valueOf(port));
+            if (timeoutMs > 0) {
+                Connector.Argument timeoutArg = arguments.get("timeout");
+                if (timeoutArg != null) {
+                    timeoutArg.setValue(String.valueOf(timeoutMs));
+                }
+            }
             return connector.attach(arguments);
         } catch (Exception e) {
             throw new RuntimeException("Failed to connect to JVM via JDI on port " + port, e);

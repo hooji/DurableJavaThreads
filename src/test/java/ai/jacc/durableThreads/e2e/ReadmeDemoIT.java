@@ -103,9 +103,11 @@ class ReadmeDemoIT {
         ProcessBuilder freezePb = new ProcessBuilder(
                 java,
                 "-javaagent:" + agentJar,
-                "-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=44892",
-                "--add-modules", "jdk.jdi",
+                "-agentlib:jdwp=transport=dt_socket,server=y,suspend=n",
+                "-Djdk.attach.allowAttachSelf=true",
+                "--add-modules", "jdk.jdi,jdk.attach",
                 "-cp", classpath,
+                "-D_JAVA_OPTIONS=",
                 "FreezeDemo");
         freezePb.directory(tempDir.toFile());
         freezePb.environment().remove("JAVA_TOOL_OPTIONS");
@@ -142,9 +144,11 @@ class ReadmeDemoIT {
         ProcessBuilder restorePb = new ProcessBuilder(
                 java,
                 "-javaagent:" + agentJar,
-                "-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=44892",
-                "--add-modules", "jdk.jdi",
+                "-agentlib:jdwp=transport=dt_socket,server=y,suspend=n",
+                "-Djdk.attach.allowAttachSelf=true",
+                "--add-modules", "jdk.jdi,jdk.attach",
                 "-cp", classpath,
+                "-D_JAVA_OPTIONS=",
                 "RestoreDemo");
         restorePb.directory(tempDir.toFile());
         restorePb.environment().remove("JAVA_TOOL_OPTIONS");

@@ -57,8 +57,9 @@ Both JVMs must be started with the agent and JDWP enabled:
 % javac -g -cp durable-threads-1.0.0.jar FreezeDemo.java RestoreDemo.java
 
 % java -javaagent:durable-threads-1.0.0.jar \
-       -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=44892 \
-       --add-modules jdk.jdi \
+       -agentlib:jdwp=transport=dt_socket,server=y,suspend=n \
+       -Djdk.attach.allowAttachSelf=true \
+       --add-modules jdk.jdi,jdk.attach \
        -cp .:durable-threads-1.0.0.jar \
        FreezeDemo
 i=0
@@ -70,8 +71,9 @@ i=5
 About to freeze!
 
 % java -javaagent:durable-threads-1.0.0.jar \
-       -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=44892 \
-       --add-modules jdk.jdi \
+       -agentlib:jdwp=transport=dt_socket,server=y,suspend=n \
+       -Djdk.attach.allowAttachSelf=true \
+       --add-modules jdk.jdi,jdk.attach \
        -cp .:durable-threads-1.0.0.jar \
        RestoreDemo
 Resumed!
@@ -82,6 +84,8 @@ i=9
 i=10
 Done!
 ```
+
+The library automatically discovers the JDWP port — no need to specify an explicit `address=PORT`. If you prefer a fixed port, you can use `address=44892` (or any port) and drop the `-Djdk.attach.allowAttachSelf` and `jdk.attach` module.
 
 The loop variable `i` was 5 when the thread froze. The restored thread resumes from the line after `freeze()` with `i == 5` and continues the loop to completion.
 
@@ -254,8 +258,8 @@ src/main/java/ai/jacc/durableThreads/
 ## Requirements
 
 - **Java 21+** — uses modern language features and JDI APIs
-- **JDWP** — the JVM must be started with `-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=44892`. The library connects to this port by default; override with `-Ddurable.jdwp.port=PORT` if needed
-- **jdk.jdi module** — add `--add-modules jdk.jdi` to the command line
+- **JDWP** — the JVM must be started with `-agentlib:jdwp=transport=dt_socket,server=y,suspend=n`. The library auto-discovers the JDWP port via the Attach API (requires `-Djdk.attach.allowAttachSelf=true` and `--add-modules jdk.jdi,jdk.attach`). Alternatively, specify a fixed port with `address=PORT` and use just `--add-modules jdk.jdi`
+- **jdk.jdi module** — always required. Add `jdk.attach` as well if using auto-discovery (recommended)
 
 ## License
 

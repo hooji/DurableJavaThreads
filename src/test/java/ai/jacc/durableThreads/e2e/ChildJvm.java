@@ -28,7 +28,7 @@ public final class ChildJvm {
      *
      * @param mainClass     the class with a main(String[]) method
      * @param classpath     classpath entries (typically includes the agent jar and test classes)
-     * @param jdwpPort      JDWP port (0 to disable JDWP)
+     * @param jdwpPort      JDWP port: positive = specific port, 0 = no JDWP, negative = auto-assigned port
      * @param args          arguments to the main method
      * @param timeoutSec    max seconds to wait for the process
      * @return the process result
@@ -48,11 +48,16 @@ public final class ChildJvm {
         // JDWP (required for freeze/restore)
         if (jdwpPort > 0) {
             cmd.add("-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=" + jdwpPort);
+        } else if (jdwpPort < 0) {
+            // Auto-assigned port — JDWP picks an ephemeral port, library discovers it
+            cmd.add("-agentlib:jdwp=transport=dt_socket,server=y,suspend=n");
+            // Attach API needed for port discovery
+            cmd.add("-Djdk.attach.allowAttachSelf=true");
         }
 
-        // Add JDI module
+        // Add JDI module (and jdk.attach for auto-discovery when no explicit port)
         cmd.add("--add-modules");
-        cmd.add("jdk.jdi");
+        cmd.add(jdwpPort < 0 ? "jdk.jdi,jdk.attach" : "jdk.jdi");
 
         // Classpath
         cmd.add("-cp");

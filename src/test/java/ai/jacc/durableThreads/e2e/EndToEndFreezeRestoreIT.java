@@ -58,6 +58,46 @@ class EndToEndFreezeRestoreIT {
     // ===================================================================
 
     @Test
+    @DisplayName("JDWP port auto-discovery: freeze/restore with no explicit address")
+    void autoDiscoveryFreezeAndRestore() throws Exception {
+        Path snapshotFile = Files.createTempFile("durable-autodiscovery-", ".bin");
+        try {
+            // Step 1: Freeze with auto-assigned JDWP port (jdwpPort = -1)
+            ChildJvm.Result freezeResult = ChildJvm.run(
+                    "ai.jacc.durableThreads.e2e.FreezeProgram",
+                    classpath, -1,
+                    new String[]{snapshotFile.toString()}, 60);
+
+            System.out.println("=== AUTO-DISCOVERY FREEZE STDOUT ===\n" + freezeResult.stdout());
+            if (!freezeResult.stderr().isBlank()) {
+                System.out.println("=== AUTO-DISCOVERY FREEZE STDERR ===\n" + freezeResult.stderr());
+            }
+
+            assertTrue(freezeResult.stdout().contains("FREEZE_COMPLETE"),
+                    "Freeze with auto-discovered port should complete. Stdout:\n" + freezeResult.stdout()
+                            + "\nStderr:\n" + freezeResult.stderr());
+            assertTrue(Files.size(snapshotFile) > 100, "Snapshot file should have content");
+
+            // Step 2: Restore in a NEW JVM with auto-assigned JDWP port
+            ChildJvm.Result restoreResult = ChildJvm.run(
+                    "ai.jacc.durableThreads.e2e.RestoreProgram",
+                    classpath, -1,
+                    new String[]{snapshotFile.toString()}, 60);
+
+            System.out.println("=== AUTO-DISCOVERY RESTORE STDOUT ===\n" + restoreResult.stdout());
+            if (!restoreResult.stderr().isBlank()) {
+                System.out.println("=== AUTO-DISCOVERY RESTORE STDERR ===\n" + restoreResult.stderr());
+            }
+
+            assertRestoreSucceeded(restoreResult);
+            assertTrue(restoreResult.stdout().contains("AFTER_FREEZE=42"),
+                    "Restored thread should output counter=42. Stdout:\n" + restoreResult.stdout());
+        } finally {
+            Files.deleteIfExists(snapshotFile);
+        }
+    }
+
+    @Test
     @DisplayName("Agent loads successfully in child JVM")
     void agentLoads() throws Exception {
         ChildJvm.Result result = ChildJvm.run(

@@ -19,12 +19,23 @@ public final class DurableAgent {
     private static volatile int cachedJdwpPort = -1;
 
     /**
+     * Nonce set at premain time, used by JDWP port discovery to verify that
+     * a candidate JDWP connection belongs to THIS JVM (not another JVM on
+     * the same host). Read via JDI as a static field — no method invocation
+     * needed.
+     */
+    public static volatile String jdwpDiscoveryNonce = "";
+
+    /**
      * Called by the JVM when the agent is loaded at startup via -javaagent.
      */
     public static void premain(String agentArgs, Instrumentation inst) {
         instrumentation = inst;
         inst.addTransformer(new DurableTransformer());
         loaded = true;
+
+        // Set nonce before port detection so discovery can verify it
+        jdwpDiscoveryNonce = java.util.UUID.randomUUID().toString();
         eagerlyDetectJdwpPort();
     }
 
@@ -44,21 +55,17 @@ public final class DurableAgent {
 
     /**
      * Get the JDWP port detected at startup, or -1 if not yet detected.
-     * If the port was auto-assigned (address=...0), the Attach API is used
-     * to resolve the actual port during premain.
      */
     public static int getCachedJdwpPort() {
         return cachedJdwpPort;
     }
 
     /**
-     * Eagerly detect and cache the JDWP port at startup. This avoids
-     * repeated Attach API calls during freeze/restore and provides
-     * an early, clear error if JDWP isn't configured.
+     * Eagerly detect and cache the JDWP port at startup.
      */
     private static void eagerlyDetectJdwpPort() {
         try {
-            int port = ai.jacc.durableThreads.internal.JdiHelper.detectJdwpPort();
+            int port = ai.jacc.durableThreads.internal.JdiHelper.detectJdwpPortNoDefault();
             if (port > 0) {
                 cachedJdwpPort = port;
             }
