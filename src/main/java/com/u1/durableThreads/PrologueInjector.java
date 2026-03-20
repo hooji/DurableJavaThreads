@@ -508,29 +508,35 @@ public final class PrologueInjector extends ClassVisitor {
             }
         }
 
+        private static final String RS = "com/u1/durableThreads/ReplayState";
+
         /**
          * Box the return value on top of the operand stack into an Object.
          * For void returns, pushes null.
+         *
+         * <p>All calls go through ReplayState helpers so that RawBytecodeScanner
+         * filters them out (it excludes ReplayState invokes). Using direct
+         * java.lang.Integer.valueOf() etc. would corrupt the invoke index mapping.</p>
          */
         private void boxReturnValue(Type retType) {
             switch (retType.getSort()) {
                 case Type.VOID -> target.visitInsn(Opcodes.ACONST_NULL);
                 case Type.BOOLEAN -> target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                        "java/lang/Boolean", "valueOf", "(Z)Ljava/lang/Boolean;", false);
+                        RS, "boxBoolean", "(Z)Ljava/lang/Object;", false);
                 case Type.BYTE -> target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                        "java/lang/Byte", "valueOf", "(B)Ljava/lang/Byte;", false);
+                        RS, "boxByte", "(B)Ljava/lang/Object;", false);
                 case Type.CHAR -> target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                        "java/lang/Character", "valueOf", "(C)Ljava/lang/Character;", false);
+                        RS, "boxChar", "(C)Ljava/lang/Object;", false);
                 case Type.SHORT -> target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                        "java/lang/Short", "valueOf", "(S)Ljava/lang/Short;", false);
+                        RS, "boxShort", "(S)Ljava/lang/Object;", false);
                 case Type.INT -> target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                        "java/lang/Integer", "valueOf", "(I)Ljava/lang/Integer;", false);
+                        RS, "boxInt", "(I)Ljava/lang/Object;", false);
                 case Type.LONG -> target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                        "java/lang/Long", "valueOf", "(J)Ljava/lang/Long;", false);
+                        RS, "boxLong", "(J)Ljava/lang/Object;", false);
                 case Type.FLOAT -> target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                        "java/lang/Float", "valueOf", "(F)Ljava/lang/Float;", false);
+                        RS, "boxFloat", "(F)Ljava/lang/Object;", false);
                 case Type.DOUBLE -> target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                        "java/lang/Double", "valueOf", "(D)Ljava/lang/Double;", false);
+                        RS, "boxDouble", "(D)Ljava/lang/Object;", false);
                 default -> {} // OBJECT and ARRAY are already references
             }
         }
@@ -538,60 +544,55 @@ public final class PrologueInjector extends ClassVisitor {
         /**
          * Load the boxed return value from retValSlot and unbox it to the expected type.
          * For void returns, does nothing (the boxed null is ignored).
+         *
+         * <p>All calls go through ReplayState helpers so that RawBytecodeScanner
+         * filters them out.</p>
          */
         private void unboxReturnValue(Type retType, int retValSlot) {
             switch (retType.getSort()) {
                 case Type.VOID -> {} // nothing to push
                 case Type.BOOLEAN -> {
                     target.visitVarInsn(Opcodes.ALOAD, retValSlot);
-                    target.visitTypeInsn(Opcodes.CHECKCAST, "java/lang/Boolean");
-                    target.visitMethodInsn(Opcodes.INVOKEVIRTUAL,
-                            "java/lang/Boolean", "booleanValue", "()Z", false);
+                    target.visitMethodInsn(Opcodes.INVOKESTATIC,
+                            RS, "unboxBoolean", "(Ljava/lang/Object;)Z", false);
                 }
                 case Type.BYTE -> {
                     target.visitVarInsn(Opcodes.ALOAD, retValSlot);
-                    target.visitTypeInsn(Opcodes.CHECKCAST, "java/lang/Byte");
-                    target.visitMethodInsn(Opcodes.INVOKEVIRTUAL,
-                            "java/lang/Byte", "byteValue", "()B", false);
+                    target.visitMethodInsn(Opcodes.INVOKESTATIC,
+                            RS, "unboxByte", "(Ljava/lang/Object;)B", false);
                 }
                 case Type.CHAR -> {
                     target.visitVarInsn(Opcodes.ALOAD, retValSlot);
-                    target.visitTypeInsn(Opcodes.CHECKCAST, "java/lang/Character");
-                    target.visitMethodInsn(Opcodes.INVOKEVIRTUAL,
-                            "java/lang/Character", "charValue", "()C", false);
+                    target.visitMethodInsn(Opcodes.INVOKESTATIC,
+                            RS, "unboxChar", "(Ljava/lang/Object;)C", false);
                 }
                 case Type.SHORT -> {
                     target.visitVarInsn(Opcodes.ALOAD, retValSlot);
-                    target.visitTypeInsn(Opcodes.CHECKCAST, "java/lang/Short");
-                    target.visitMethodInsn(Opcodes.INVOKEVIRTUAL,
-                            "java/lang/Short", "shortValue", "()S", false);
+                    target.visitMethodInsn(Opcodes.INVOKESTATIC,
+                            RS, "unboxShort", "(Ljava/lang/Object;)S", false);
                 }
                 case Type.INT -> {
                     target.visitVarInsn(Opcodes.ALOAD, retValSlot);
-                    target.visitTypeInsn(Opcodes.CHECKCAST, "java/lang/Integer");
-                    target.visitMethodInsn(Opcodes.INVOKEVIRTUAL,
-                            "java/lang/Integer", "intValue", "()I", false);
+                    target.visitMethodInsn(Opcodes.INVOKESTATIC,
+                            RS, "unboxInt", "(Ljava/lang/Object;)I", false);
                 }
                 case Type.LONG -> {
                     target.visitVarInsn(Opcodes.ALOAD, retValSlot);
-                    target.visitTypeInsn(Opcodes.CHECKCAST, "java/lang/Long");
-                    target.visitMethodInsn(Opcodes.INVOKEVIRTUAL,
-                            "java/lang/Long", "longValue", "()J", false);
+                    target.visitMethodInsn(Opcodes.INVOKESTATIC,
+                            RS, "unboxLong", "(Ljava/lang/Object;)J", false);
                 }
                 case Type.FLOAT -> {
                     target.visitVarInsn(Opcodes.ALOAD, retValSlot);
-                    target.visitTypeInsn(Opcodes.CHECKCAST, "java/lang/Float");
-                    target.visitMethodInsn(Opcodes.INVOKEVIRTUAL,
-                            "java/lang/Float", "floatValue", "()F", false);
+                    target.visitMethodInsn(Opcodes.INVOKESTATIC,
+                            RS, "unboxFloat", "(Ljava/lang/Object;)F", false);
                 }
                 case Type.DOUBLE -> {
                     target.visitVarInsn(Opcodes.ALOAD, retValSlot);
-                    target.visitTypeInsn(Opcodes.CHECKCAST, "java/lang/Double");
-                    target.visitMethodInsn(Opcodes.INVOKEVIRTUAL,
-                            "java/lang/Double", "doubleValue", "()D", false);
+                    target.visitMethodInsn(Opcodes.INVOKESTATIC,
+                            RS, "unboxDouble", "(Ljava/lang/Object;)D", false);
                 }
                 default -> {
-                    // OBJECT or ARRAY — load and cast
+                    // OBJECT or ARRAY — load and cast to expected type
                     target.visitVarInsn(Opcodes.ALOAD, retValSlot);
                     target.visitTypeInsn(Opcodes.CHECKCAST, retType.getInternalName());
                 }

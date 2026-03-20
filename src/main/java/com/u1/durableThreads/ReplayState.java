@@ -214,6 +214,30 @@ public final class ReplayState {
         REPLAY.remove();
     }
 
+    // --- Boxing/unboxing helpers ---
+    // These MUST live in ReplayState so that RawBytecodeScanner filters them out.
+    // If boxing/unboxing were done via direct calls to java.lang.Integer.valueOf() etc.
+    // in the injected skip-check code, the scanner would count them as original-code
+    // invokes, corrupting the invoke index mapping between freeze and restore.
+
+    public static Object boxBoolean(boolean v) { return Boolean.valueOf(v); }
+    public static Object boxByte(byte v) { return Byte.valueOf(v); }
+    public static Object boxChar(char v) { return Character.valueOf(v); }
+    public static Object boxShort(short v) { return Short.valueOf(v); }
+    public static Object boxInt(int v) { return Integer.valueOf(v); }
+    public static Object boxLong(long v) { return Long.valueOf(v); }
+    public static Object boxFloat(float v) { return Float.valueOf(v); }
+    public static Object boxDouble(double v) { return Double.valueOf(v); }
+
+    public static boolean unboxBoolean(Object o) { return ((Boolean) o).booleanValue(); }
+    public static byte unboxByte(Object o) { return ((Byte) o).byteValue(); }
+    public static char unboxChar(Object o) { return ((Character) o).charValue(); }
+    public static short unboxShort(Object o) { return ((Short) o).shortValue(); }
+    public static int unboxInt(Object o) { return ((Integer) o).intValue(); }
+    public static long unboxLong(Object o) { return ((Long) o).longValue(); }
+    public static float unboxFloat(Object o) { return ((Float) o).floatValue(); }
+    public static double unboxDouble(Object o) { return ((Double) o).doubleValue(); }
+
     /**
      * Create a dummy (uninitialized) instance of the named class.
      * Used by resume stubs to provide a non-null receiver for virtual/interface calls
