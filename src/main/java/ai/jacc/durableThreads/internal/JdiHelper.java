@@ -30,6 +30,15 @@ public final class JdiHelper {
     private static volatile VirtualMachine cachedVm;
 
     /**
+     * Permanent strong reference to the last JDI connection returned by
+     * {@link #connect(int)}. This prevents the VirtualMachine (and its
+     * underlying socket) from being garbage-collected during JVM shutdown.
+     * Without this, GC closes the socket, JDWP sees a disconnect, re-listens,
+     * and prints a confusing "Listening for transport..." message on stderr.
+     */
+    private static volatile VirtualMachine keepAliveVm;
+
+    /**
      * Default JDWP port. When no explicit port is detected from command-line
      * arguments, the library assumes JDWP is listening on this port. Users
      * can override by passing a different port in their {@code -agentlib:jdwp}
@@ -442,14 +451,22 @@ public final class JdiHelper {
      * @return the VirtualMachine connection
      */
     public static VirtualMachine connect(int port) {
+        VirtualMachine vm;
+
         // Return cached connection from discovery if available
         VirtualMachine cached = cachedVm;
         if (cached != null) {
-            cachedVm = null; // Clear cache — caller takes ownership
-            return cached;
+            cachedVm = null;
+            vm = cached;
+        } else {
+            vm = jdiConnect(port, 0);
         }
 
-        return jdiConnect(port, 0);
+        // Keep a strong static reference so the VM (and its socket) is never
+        // GC'd. Without this, GC during shutdown closes the socket, JDWP
+        // re-listens, and prints a spurious "Listening..." message on stderr.
+        keepAliveVm = vm;
+        return vm;
     }
 
     /**
