@@ -84,7 +84,12 @@ class ReadmeDemoIT {
 
         // --- Compile with javac -g (exactly as README instructs) ---
         String javaHome = System.getProperty("java.home");
-        String javac = Paths.get(javaHome, "bin", "javac").toString();
+        // On Java 8, java.home points to the JRE subdir; javac is in the parent bin/
+        Path javacPath = Paths.get(javaHome, "bin", "javac");
+        if (!Files.exists(javacPath)) {
+            javacPath = Paths.get(javaHome, "..", "bin", "javac").normalize();
+        }
+        String javac = javacPath.toString();
 
         ProcessBuilder compilePb = new ProcessBuilder(
                 javac, "-g", "-cp", agentJar,
