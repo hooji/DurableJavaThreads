@@ -58,7 +58,7 @@ public class SequentialFreezeProgram {
                 Durable.freeze(snapshot -> {
                     try {
                         byte[] bytes = serialize(snapshot);
-                        Path file = Path.of(snapshotDir, "snapshot-" + capturedI + ".bin");
+                        Path file = Paths.get(snapshotDir, "snapshot-" + capturedI + ".bin");
                         Files.write(file, bytes);
                         System.out.println("FREEZE i=" + capturedI
                                 + " sum=" + capturedSum

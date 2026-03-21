@@ -37,7 +37,7 @@ class HelloWorldIT {
                     new String[]{snapshotFile.toString()}, 60);
 
             System.out.println("=== HELLO FREEZE STDOUT ===\n" + freezeResult.stdout());
-            if (!freezeResult.stderr().isBlank()) {
+            if (!freezeResult.stderr().trim().isEmpty()) {
                 System.out.println("=== HELLO FREEZE STDERR ===\n" + freezeResult.stderr());
             }
 
@@ -66,7 +66,7 @@ class HelloWorldIT {
                     new String[]{snapshotFile.toString()}, 60);
 
             System.out.println("=== HELLO RESTORE STDOUT ===\n" + restoreResult.stdout());
-            if (!restoreResult.stderr().isBlank()) {
+            if (!restoreResult.stderr().trim().isEmpty()) {
                 System.out.println("=== HELLO RESTORE STDERR ===\n" + restoreResult.stderr());
             }
 
@@ -93,11 +93,11 @@ class HelloWorldIT {
             }
 
             // Exact user output check (lines excluding RESTORE_COMPLETE)
-            var userLines = restoreResult.stdout().lines()
-                    .filter(l -> !l.equals("RESTORE_COMPLETE") && !l.isBlank())
+            java.util.List<String> userLines = restoreResult.stdout().lines()
+                    .filter(l -> !l.equals("RESTORE_COMPLETE") && !l.trim().isEmpty())
                     .filter(l -> !l.startsWith("Listening for transport dt_socket"))
-                    .toList();
-            assertEquals(java.util.List.of(
+                    .collect(java.util.stream.Collectors.toList());
+            assertEquals(java.util.Arrays.asList(
                     "RESUMED", "i=6", "i=7", "i=8", "i=9", "i=10", "DONE"),
                     userLines,
                     "Restore output should be exactly the post-freeze lines. Got:\n"
