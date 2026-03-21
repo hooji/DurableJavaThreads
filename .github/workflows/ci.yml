@@ -13,8 +13,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ ubuntu-latest ]
-        java: [ '25' ]
+        include:
+          - os: ubuntu-latest
+            java: '8'
+            distribution: temurin
+          - os: ubuntu-latest
+            java: '9'
+            distribution: zulu
+          - os: ubuntu-latest
+            java: '25'
+            distribution: temurin
 
     steps:
       - name: Checkout
@@ -24,7 +32,7 @@ jobs:
         uses: actions/setup-java@v4
         with:
           java-version: ${{ matrix.java }}
-          distribution: temurin
+          distribution: ${{ matrix.distribution }}
 
       - name: Cache Maven packages
         uses: actions/cache@v4
@@ -52,8 +60,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ ubuntu-latest ]
-        java: [ '25' ]
+        include:
+          - os: ubuntu-latest
+            java: '8'
+            distribution: temurin
+          - os: ubuntu-latest
+            java: '9'
+            distribution: zulu
+          - os: ubuntu-latest
+            java: '25'
+            distribution: temurin
 
     steps:
       - name: Checkout
@@ -63,7 +79,7 @@ jobs:
         uses: actions/setup-java@v4
         with:
           java-version: ${{ matrix.java }}
-          distribution: temurin
+          distribution: ${{ matrix.distribution }}
 
       - name: Cache Maven packages
         uses: actions/cache@v4
