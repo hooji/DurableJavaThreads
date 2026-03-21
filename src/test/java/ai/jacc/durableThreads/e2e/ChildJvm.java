@@ -94,9 +94,10 @@ public final class ChildJvm {
             cmd.add("jdk.jdi");
         }
 
-        // Classpath
+        // Classpath — on Java 8, append tools.jar for com.sun.jdi classes
         cmd.add("-cp");
-        cmd.add(classpath);
+        String toolsJar = findToolsJar();
+        cmd.add(toolsJar != null ? classpath + File.pathSeparator + toolsJar : classpath);
 
         // Suppress the proxy env from propagating to child JVMs
         cmd.add("-D_JAVA_OPTIONS=");
@@ -142,7 +143,12 @@ public final class ChildJvm {
         String agentJar = findAgentJar();
         String testClasses = Paths.get("target", "test-classes").toAbsolutePath().toString();
         String mainClasses = Paths.get("target", "classes").toAbsolutePath().toString();
-        return agentJar + File.pathSeparator + testClasses + File.pathSeparator + mainClasses;
+        String cp = agentJar + File.pathSeparator + testClasses + File.pathSeparator + mainClasses;
+        String toolsJar = findToolsJar();
+        if (toolsJar != null) {
+            cp += File.pathSeparator + toolsJar;
+        }
+        return cp;
     }
 
     /**
@@ -160,6 +166,22 @@ public final class ChildJvm {
                 try { ss.close(); } catch (IOException ignored) {}
             }
         }
+    }
+
+    /**
+     * Locate tools.jar for Java 8 JDKs (contains com.sun.jdi classes).
+     * Returns null on Java 9+ where JDI is in the jdk.jdi module.
+     */
+    static String findToolsJar() {
+        if (javaSpecVersion() >= 9) return null;
+        String javaHome = System.getProperty("java.home");
+        // java.home typically points to the JRE inside the JDK, e.g. /usr/lib/jvm/java-8/jre
+        Path toolsJar = Paths.get(javaHome, "..", "lib", "tools.jar").normalize();
+        if (Files.exists(toolsJar)) return toolsJar.toString();
+        // Some layouts have java.home pointing to the JDK root
+        toolsJar = Paths.get(javaHome, "lib", "tools.jar");
+        if (Files.exists(toolsJar)) return toolsJar.toString();
+        return null;
     }
 
     /** Returns the major Java version (8, 9, 10, …, 25). */

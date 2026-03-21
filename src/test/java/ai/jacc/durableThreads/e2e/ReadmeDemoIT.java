@@ -102,6 +102,10 @@ class ReadmeDemoIT {
         // --- Run FreezeDemo (freezes main thread at i==5) ---
         String java = Paths.get(javaHome, "bin", "java").toString();
         String classpath = tempDir.toAbsolutePath() + File.pathSeparator + agentJar;
+        String toolsJar = ChildJvm.findToolsJar();
+        if (toolsJar != null) {
+            classpath += File.pathSeparator + toolsJar;
+        }
 
         List<String> freezeCmd = new ArrayList<>(Arrays.asList(
                 java,
