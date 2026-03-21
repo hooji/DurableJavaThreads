@@ -123,7 +123,7 @@ final class ThreadFreezer {
         // Phase 2: busy spin (should truly never be reached)
         //noinspection InfiniteLoopStatement
         while (true) {
-            Thread.onSpinWait();
+            Thread.yield();
         }
     }
 

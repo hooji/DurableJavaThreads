@@ -230,6 +230,8 @@
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-javadoc-plugin</artifactId>
                         <configuration>
+                            <!-- Override source to avoid conflict: --add-modules is not allowed with source 8 -->
+                            <source>9</source>
                             <additionalOptions>--add-modules jdk.jdi</additionalOptions>
                         </configuration>
                     </plugin>
