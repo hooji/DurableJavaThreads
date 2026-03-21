@@ -25,16 +25,24 @@ public final class ObjectSnapshot implements Serializable {
     private final Map<String, ObjectRef> fields;
     private final ObjectRef[] arrayElements;
     private final byte[] classStructureHash;
+    private final String name;
 
     public ObjectSnapshot(long id, String className, ObjectKind kind,
                           Map<String, ObjectRef> fields, ObjectRef[] arrayElements,
-                          byte[] classStructureHash) {
+                          byte[] classStructureHash, String name) {
         this.id = id;
         this.className = className;
         this.kind = kind;
         this.fields = fields;
         this.arrayElements = arrayElements;
         this.classStructureHash = classStructureHash;
+        this.name = name;
+    }
+
+    public ObjectSnapshot(long id, String className, ObjectKind kind,
+                          Map<String, ObjectRef> fields, ObjectRef[] arrayElements,
+                          byte[] classStructureHash) {
+        this(id, className, kind, fields, arrayElements, classStructureHash, null);
     }
 
     /**
@@ -69,6 +77,14 @@ public final class ObjectSnapshot implements Serializable {
         return classStructureHash;
     }
 
+    /**
+     * The name assigned to this object during freeze, or {@code null} if unnamed.
+     * Named objects can be replaced with live objects during restore.
+     */
+    public String name() {
+        return name;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
@@ -79,12 +95,13 @@ public final class ObjectSnapshot implements Serializable {
                 && kind == that.kind
                 && Objects.equals(fields, that.fields)
                 && Arrays.equals(arrayElements, that.arrayElements)
-                && Arrays.equals(classStructureHash, that.classStructureHash);
+                && Arrays.equals(classStructureHash, that.classStructureHash)
+                && Objects.equals(name, that.name);
     }
 
     @Override
     public int hashCode() {
-        int result = Objects.hash(id, className, kind, fields);
+        int result = Objects.hash(id, className, kind, fields, name);
         result = 31 * result + Arrays.hashCode(arrayElements);
         result = 31 * result + Arrays.hashCode(classStructureHash);
         return result;
@@ -97,6 +114,7 @@ public final class ObjectSnapshot implements Serializable {
                 + ", kind=" + kind
                 + ", fields=" + fields
                 + ", arrayElements=" + Arrays.toString(arrayElements)
-                + ", classStructureHash=" + Arrays.toString(classStructureHash) + "]";
+                + ", classStructureHash=" + Arrays.toString(classStructureHash)
+                + (name != null ? ", name=" + name : "") + "]";
     }
 }

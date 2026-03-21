@@ -33,6 +33,16 @@ final class ThreadFreezer {
      * original thread — only in restored instances.
      */
     static void freeze(Consumer<ThreadSnapshot> handler) {
+        freeze(handler, null);
+    }
+
+    /**
+     * Freeze the calling thread with named heap objects.
+     *
+     * @param handler receives the captured snapshot
+     * @param namedObjects user-assigned names for heap objects (may be null)
+     */
+    static void freeze(Consumer<ThreadSnapshot> handler, Map<String, Object> namedObjects) {
         Thread callerThread = Thread.currentThread();
         Object lock = new Object();
         Throwable[] error = new Throwable[1];
@@ -40,7 +50,7 @@ final class ThreadFreezer {
         // Spawn the freeze worker (Thread B)
         Thread worker = new Thread(() -> {
             try {
-                performFreeze(callerThread, handler);
+                performFreeze(callerThread, handler, namedObjects);
             } catch (Throwable t) {
                 error[0] = t;
             } finally {
@@ -127,7 +137,8 @@ final class ThreadFreezer {
         }
     }
 
-    private static void performFreeze(Thread targetThread, Consumer<ThreadSnapshot> handler) {
+    private static void performFreeze(Thread targetThread, Consumer<ThreadSnapshot> handler,
+                                       Map<String, Object> namedObjects) {
         // Connect to this JVM via JDI
         int port = JdiHelper.detectJdwpPort();
         if (port < 0) {
@@ -150,7 +161,7 @@ final class ThreadFreezer {
             for (int attempt = 0; attempt < maxRetries; attempt++) {
                 threadRef.suspend();
                 try {
-                    snapshot = captureSnapshot(threadRef, targetThread.getName());
+                    snapshot = captureSnapshot(vm, threadRef, targetThread.getName(), namedObjects);
 
                     // Call the handler while the thread is still suspended,
                     // so it can safely write the snapshot without racing.
@@ -245,11 +256,32 @@ final class ThreadFreezer {
         return className.contains("$$Lambda");
     }
 
-    private static ThreadSnapshot captureSnapshot(ThreadReference threadRef, String threadName) {
+    private static ThreadSnapshot captureSnapshot(VirtualMachine vm, ThreadReference threadRef,
+                                                    String threadName,
+                                                    Map<String, Object> namedObjects) {
         try {
             List<StackFrame> jdiFrames = threadRef.frames();
             List<FrameSnapshot> frameSnapshots = new ArrayList<>();
             JdiHeapWalker heapWalker = new JdiHeapWalker();
+
+            // Register named objects with the heap walker so they get named
+            // in the resulting ObjectSnapshots. Build an inverted identity map
+            // (Object → name), then resolve each object to a JDI uniqueID
+            // via HeapObjectBridge.
+            Map<String, Object> effectiveNames = namedObjects != null
+                    ? new HashMap<>(namedObjects) : new HashMap<String, Object>();
+
+            // Auto-name "this" from the immediate caller frame (the topmost
+            // user frame, which is the frame that called freeze()). We do this
+            // only if the user didn't explicitly name "this".
+            if (!effectiveNames.containsKey("this")) {
+                autoNameThis(jdiFrames, heapWalker, effectiveNames);
+            }
+
+            // Resolve named objects to JDI uniqueIDs via HeapObjectBridge
+            if (!effectiveNames.isEmpty()) {
+                registerNamedObjectsViaJdi(vm, heapWalker, effectiveNames);
+            }
 
             // Walk frames bottom to top (JDI gives top to bottom).
             // Filter out JDK and library-internal frames — they can't be replayed
@@ -332,6 +364,132 @@ final class ThreadFreezer {
         }
     }
 
+    /**
+     * Auto-name the "this" reference from the topmost user frame (the frame
+     * that called freeze()). Only applies to instance methods.
+     */
+    private static void autoNameThis(List<StackFrame> jdiFrames,
+                                      JdiHeapWalker heapWalker,
+                                      Map<String, Object> effectiveNames) {
+        // Find the topmost user frame (first non-infrastructure frame from top)
+        for (StackFrame frame : jdiFrames) {
+            String className = frame.location().declaringType().name().replace('.', '/');
+            if (isInfrastructureFrame(className)) continue;
+
+            // Found the user frame that called freeze()
+            Method method = frame.location().method();
+            if (method.isStatic()) return; // no "this" in static methods
+
+            try {
+                ObjectReference thisRef = frame.thisObject();
+                if (thisRef != null) {
+                    heapWalker.registerNamedObject(thisRef.uniqueID(), "this");
+                }
+            } catch (Exception ignored) {
+                // Can't get "this" — might be native or optimized away
+            }
+            return;
+        }
+    }
+
+    /**
+     * Resolve named objects from the user's map to JDI uniqueIDs.
+     *
+     * <p>Strategy: put the named objects into {@link HeapObjectBridge}, then
+     * read them back via JDI to get their {@code ObjectReference.uniqueID()}.
+     * This is the same mechanism used during restore.</p>
+     */
+    private static void registerNamedObjectsViaJdi(VirtualMachine vm,
+                                                     JdiHeapWalker heapWalker,
+                                                     Map<String, Object> namedObjects) {
+        // Use negative IDs as keys to avoid colliding with real snapshot IDs
+        // that HeapObjectBridge might contain from a prior restore
+        long baseKey = -1_000_000;
+        Map<Long, String> keyToName = new HashMap<>();
+
+        for (Map.Entry<String, Object> entry : namedObjects.entrySet()) {
+            if (entry.getValue() == null) continue;
+            long bridgeKey = baseKey--;
+            HeapObjectBridge.put(bridgeKey, entry.getValue());
+            keyToName.put(bridgeKey, entry.getKey());
+        }
+
+        if (keyToName.isEmpty()) return;
+
+        try {
+            // Find HeapObjectBridge.objects via JDI
+            List<ReferenceType> bridgeTypes = vm.classesByName(
+                    "ai.jacc.durableThreads.internal.HeapObjectBridge");
+            if (bridgeTypes.isEmpty()) return;
+
+            ReferenceType bridgeType = bridgeTypes.get(0);
+            com.sun.jdi.Field objectsField = bridgeType.fieldByName("objects");
+            if (objectsField == null) return;
+
+            ObjectReference mapRef = (ObjectReference) bridgeType.getValue(objectsField);
+            if (mapRef == null) return;
+
+            // Walk the ConcurrentHashMap to find our entries
+            ReferenceType mapType = mapRef.referenceType();
+            com.sun.jdi.Field tableField = findFieldInType(mapType, "table");
+            if (tableField == null) return;
+
+            ArrayReference table = (ArrayReference) mapRef.getValue(tableField);
+            if (table == null) return;
+
+            for (int i = 0; i < table.length(); i++) {
+                ObjectReference node = (ObjectReference) table.getValue(i);
+                while (node != null) {
+                    com.sun.jdi.Field keyField = findFieldInType(node.referenceType(), "key");
+                    com.sun.jdi.Field valField = findFieldInType(node.referenceType(), "val");
+                    com.sun.jdi.Field nextField = findFieldInType(node.referenceType(), "next");
+
+                    if (keyField != null && valField != null) {
+                        Value keyVal = node.getValue(keyField);
+                        if (keyVal instanceof StringReference) {
+                            String keyStr = ((StringReference) keyVal).value();
+                            try {
+                                long bridgeKey = Long.parseLong(keyStr);
+                                String name = keyToName.get(bridgeKey);
+                                if (name != null) {
+                                    Value objVal = node.getValue(valField);
+                                    if (objVal instanceof ObjectReference) {
+                                        heapWalker.registerNamedObject(
+                                                ((ObjectReference) objVal).uniqueID(), name);
+                                    }
+                                }
+                            } catch (NumberFormatException ignored) {
+                                // Not one of our keys
+                            }
+                        }
+                    }
+
+                    if (nextField != null) {
+                        Value nextVal = node.getValue(nextField);
+                        node = (nextVal instanceof ObjectReference) ? (ObjectReference) nextVal : null;
+                    } else {
+                        break;
+                    }
+                }
+            }
+        } finally {
+            // Clean up bridge entries
+            for (long key : keyToName.keySet()) {
+                HeapObjectBridge.remove(key);
+            }
+        }
+    }
+
+    /** Find a field by name in a type or its supertypes (for ConcurrentHashMap walking). */
+    private static com.sun.jdi.Field findFieldInType(ReferenceType type, String name) {
+        com.sun.jdi.Field f = type.fieldByName(name);
+        if (f != null) return f;
+        if (type instanceof ClassType && ((ClassType) type).superclass() != null) {
+            return findFieldInType(((ClassType) type).superclass(), name);
+        }
+        return null;
+    }
+
     private static List<ai.jacc.durableThreads.snapshot.LocalVariable> captureLocals(StackFrame frame, JdiHeapWalker heapWalker) {
         List<ai.jacc.durableThreads.snapshot.LocalVariable> result = new ArrayList<>();
         Location location = frame.location();
@@ -345,6 +503,23 @@ final class ThreadFreezer {
                     "No debug info for method " + method.declaringType().name() + "."
                     + method.name() + ". Classes must be compiled with debug info (-g) "
                     + "for thread freeze to capture local variables.", e);
+        }
+
+        // JDI's method.variables() doesn't include the implicit "this" parameter.
+        // Explicitly capture "this" for instance methods.
+        if (!method.isStatic()) {
+            try {
+                ObjectReference thisRef = frame.thisObject();
+                if (thisRef != null) {
+                    ObjectRef thisObjRef = heapWalker.capture(thisRef);
+                    result.add(new ai.jacc.durableThreads.snapshot.LocalVariable(
+                            0, "this",
+                            "L" + method.declaringType().name().replace('.', '/') + ";",
+                            thisObjRef));
+                }
+            } catch (Exception ignored) {
+                // Can't get this — might be native frame
+            }
         }
 
         for (com.sun.jdi.LocalVariable jdiLocal : jdiLocals) {
