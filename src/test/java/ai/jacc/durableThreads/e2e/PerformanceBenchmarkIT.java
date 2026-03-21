@@ -42,12 +42,12 @@ class PerformanceBenchmarkIT {
         System.out.println("=== PERFORMANCE BENCHMARK RESULTS ===");
         System.out.printf("%-30s %10s %12s %14s %10s%n",
                 "Scenario", "Freeze ms", "Restore ms", "Snapshot bytes", "Heap objs");
-        System.out.println("-".repeat(80));
+        System.out.println("--------------------------------------------------------------------------------");
         for (BenchmarkResult r : results) {
             System.out.printf("%-30s %10d %12d %14d %10s%n",
                     r.scenario, r.freezeMs, r.restoreMs, r.snapshotBytes, r.heapSize);
         }
-        System.out.println("=".repeat(80));
+        System.out.println("================================================================================");
         System.out.println();
     }
 

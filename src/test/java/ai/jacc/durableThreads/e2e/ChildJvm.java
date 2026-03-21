@@ -33,7 +33,7 @@ public final class ChildJvm {
         public boolean succeeded() { return exitCode == 0; }
 
         public List<String> stdoutLines() {
-            return stdout.isBlank() ? List.of() : List.of(stdout.split("\n"));
+            return stdout.trim().isEmpty() ? Collections.<String>emptyList() : Arrays.asList(stdout.split("\n"));
         }
 
         @Override
@@ -71,7 +71,7 @@ public final class ChildJvm {
     public static Result run(String mainClass, String classpath, int jdwpPort,
                               String[] args, int timeoutSec) throws Exception {
         String javaHome = System.getProperty("java.home");
-        String java = Path.of(javaHome, "bin", "java").toString();
+        String java = Paths.get(javaHome, "bin", "java").toString();
         String agentJar = findAgentJar();
 
         List<String> cmd = new ArrayList<>();
@@ -112,9 +112,9 @@ public final class ChildJvm {
         Process proc = pb.start();
 
         // Read stdout and stderr in background threads to avoid blocking
-        var stdoutFuture = CompletableFuture.supplyAsync(
+        CompletableFuture<String> stdoutFuture = CompletableFuture.supplyAsync(
                 () -> readStream(proc.getInputStream()));
-        var stderrFuture = CompletableFuture.supplyAsync(
+        CompletableFuture<String> stderrFuture = CompletableFuture.supplyAsync(
                 () -> readStream(proc.getErrorStream()));
 
         boolean finished = proc.waitFor(timeoutSec, TimeUnit.SECONDS);
@@ -138,8 +138,8 @@ public final class ChildJvm {
      */
     public static String buildClasspath() {
         String agentJar = findAgentJar();
-        String testClasses = Path.of("target", "test-classes").toAbsolutePath().toString();
-        String mainClasses = Path.of("target", "classes").toAbsolutePath().toString();
+        String testClasses = Paths.get("target", "test-classes").toAbsolutePath().toString();
+        String mainClasses = Paths.get("target", "classes").toAbsolutePath().toString();
         return agentJar + File.pathSeparator + testClasses + File.pathSeparator + mainClasses;
     }
 
@@ -147,17 +147,25 @@ public final class ChildJvm {
      * Find an available port for JDWP.
      */
     public static int findFreePort() {
-        try (var ss = new java.net.ServerSocket(0)) {
+        java.net.ServerSocket ss = null;
+        try {
+            ss = new java.net.ServerSocket(0);
             return ss.getLocalPort();
         } catch (IOException e) {
             return 15005 + new Random().nextInt(1000);
+        } finally {
+            if (ss != null) {
+                try { ss.close(); } catch (IOException ignored) {}
+            }
         }
     }
 
     private static String findAgentJar() {
         // Look for the shaded jar in target/
-        Path target = Path.of("target");
-        try (var files = Files.list(target)) {
+        Path target = Paths.get("target");
+        java.util.stream.Stream<Path> files = null;
+        try {
+            files = Files.list(target);
             return files
                     .filter(p -> p.getFileName().toString().startsWith("durable-threads-"))
                     .filter(p -> p.getFileName().toString().endsWith(".jar"))
@@ -169,11 +177,14 @@ public final class ChildJvm {
                             "Agent jar not found in target/. Run 'mvn package -DskipTests' first."));
         } catch (IOException e) {
             throw new RuntimeException("Cannot list target/ directory", e);
+        } finally {
+            if (files != null) files.close();
         }
     }
 
     private static String readStream(InputStream is) {
-        try (var reader = new BufferedReader(new InputStreamReader(is))) {
+        BufferedReader reader = new BufferedReader(new InputStreamReader(is));
+        try {
             StringBuilder sb = new StringBuilder();
             String line;
             while ((line = reader.readLine()) != null) {
@@ -182,6 +193,8 @@ public final class ChildJvm {
             return sb.toString();
         } catch (IOException e) {
             return "[error reading stream: " + e.getMessage() + "]";
+        } finally {
+            try { reader.close(); } catch (IOException ignored) {}
         }
     }
 }

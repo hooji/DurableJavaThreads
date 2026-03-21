@@ -64,7 +64,7 @@ class HeapRoundTripTest {
         long personId = ((HeapRef) ref).id();
         ObjectSnapshot personSnap = snapshots.stream()
                 .filter(s -> s.id() == personId)
-                .findFirst().orElseThrow();
+                .findFirst().orElseThrow(() -> new NoSuchElementException());
 
         assertEquals(ObjectKind.REGULAR, personSnap.kind());
         assertEquals(Person.class.getName(), personSnap.className());
@@ -118,7 +118,7 @@ class HeapRoundTripTest {
         long arrId = ((HeapRef) ref).id();
         ObjectSnapshot arraySnap = snapshots.stream()
                 .filter(s -> s.id() == arrId)
-                .findFirst().orElseThrow();
+                .findFirst().orElseThrow(() -> new NoSuchElementException());
         assertEquals(ObjectKind.ARRAY, arraySnap.kind());
         assertEquals(2, arraySnap.arrayElements().length);
     }
