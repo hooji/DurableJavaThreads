@@ -10,7 +10,7 @@ Durable Threads is a pure-Java library that captures the full execution state of
 
 ### Download
 
-Download [`durable-threads-1.0.0.jar`](https://github.com/hooji/DurableJavaThreads/releases/download/v1.0.0/durable-threads-1.0.0.jar) from the [latest release](https://github.com/hooji/DurableJavaThreads/releases/latest). This is a shaded jar that bundles all dependencies (ASM and Objenesis).
+Download [`durable-threads-1.0.1.jar`](https://github.com/hooji/DurableJavaThreads/releases/download/v1.0.0/durable-threads-1.0.1.jar) from the [latest release](https://github.com/hooji/DurableJavaThreads/releases/latest). This is a shaded jar that bundles all dependencies (ASM and Objenesis).
 
 ### Hello World
 
@@ -54,12 +54,12 @@ public class RestoreDemo {
 Both JVMs must be started with the agent and JDWP enabled:
 
 ```bash
-% javac -g -cp durable-threads-1.0.0.jar FreezeDemo.java RestoreDemo.java
+% javac -g -cp durable-threads-1.0.1.jar FreezeDemo.java RestoreDemo.java
 
-% java -javaagent:durable-threads-1.0.0.jar \
+% java -javaagent:durable-threads-1.0.1.jar \
        -agentlib:jdwp=transport=dt_socket,server=y,suspend=n \
        --add-modules jdk.jdi \
-       -cp .:durable-threads-1.0.0.jar \
+       -cp .:durable-threads-1.0.1.jar \
        FreezeDemo
 i=0
 i=1
@@ -69,10 +69,10 @@ i=4
 i=5
 About to freeze!
 
-% java -javaagent:durable-threads-1.0.0.jar \
+% java -javaagent:durable-threads-1.0.1.jar \
        -agentlib:jdwp=transport=dt_socket,server=y,suspend=n \
        --add-modules jdk.jdi \
-       -cp .:durable-threads-1.0.0.jar \
+       -cp .:durable-threads-1.0.1.jar \
        RestoreDemo
 Resumed!
 i=6
@@ -82,6 +82,8 @@ i=9
 i=10
 Done!
 ```
+
+**Note:** The `--add-modules jdk.jdi` argument is required on Java 9 and later. On Java 8, omit it — there is no module system, and JDI classes are available automatically.
 
 The library automatically discovers the JDWP port — no need to specify an explicit `address=PORT`. If you prefer a fixed port, you can add `address=44892` (or any port) to the `-agentlib:jdwp` argument.
 
@@ -198,7 +200,7 @@ cd DurableJavaThreads
 mvn clean package -DskipTests
 ```
 
-This produces `target/durable-threads-1.0.0.jar` — a shaded jar that bundles ASM and Objenesis.
+This produces `target/durable-threads-1.0.1.jar` — a shaded jar that bundles ASM and Objenesis.
 
 ### Running Tests
 
@@ -269,7 +271,7 @@ src/main/java/ai/jacc/durableThreads/
 
 - **Java 8+** — compiled to Java 8 bytecode; works on any JDK 8 or later
 - **JDWP** — the JVM must be started with `-agentlib:jdwp=transport=dt_socket,server=y,suspend=n`. The library auto-discovers the JDWP port on Linux (`/proc/net/tcp`), macOS (`lsof`), and Windows (`netstat`). You can also specify a fixed port with `address=PORT`
-- **jdk.jdi module** — add `--add-modules jdk.jdi` to the command line
+- **jdk.jdi module** (Java 9+ only) — add `--add-modules jdk.jdi` to the command line. On Java 8 this is not needed since JDI classes are on the classpath by default
 
 ## License
 
