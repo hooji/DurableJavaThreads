@@ -3,7 +3,9 @@ package ai.jacc.durableThreads;
 import org.objectweb.asm.*;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * ASM-based bytecode transformer that injects the universal replay prologue.
@@ -692,25 +694,213 @@ public final class PrologueInjector extends ClassVisitor {
 
         // --- Marker types ---
 
-        record InvokeMarker(int index, int opcode, String owner, String name,
-                            String descriptor, boolean isInterface) implements Runnable {
+        static final class InvokeMarker implements Runnable {
+            private final int index;
+            private final int opcode;
+            private final String owner;
+            private final String name;
+            private final String descriptor;
+            private final boolean isInterface;
+
+            InvokeMarker(int index, int opcode, String owner, String name,
+                         String descriptor, boolean isInterface) {
+                this.index = index;
+                this.opcode = opcode;
+                this.owner = owner;
+                this.name = name;
+                this.descriptor = descriptor;
+                this.isInterface = isInterface;
+            }
+
+            public int index() { return index; }
+            public int opcode() { return opcode; }
+            public String owner() { return owner; }
+            public String name() { return name; }
+            public String descriptor() { return descriptor; }
+            public boolean isInterface() { return isInterface; }
+
             @Override public void run() {
                 throw new IllegalStateException("InvokeMarker must be handled");
             }
+
+            @Override
+            public boolean equals(Object o) {
+                if (this == o) return true;
+                if (!(o instanceof InvokeMarker)) return false;
+                InvokeMarker that = (InvokeMarker) o;
+                return index == that.index && opcode == that.opcode
+                        && isInterface == that.isInterface
+                        && Objects.equals(owner, that.owner)
+                        && Objects.equals(name, that.name)
+                        && Objects.equals(descriptor, that.descriptor);
+            }
+
+            @Override
+            public int hashCode() {
+                return Objects.hash(index, opcode, owner, name, descriptor, isInterface);
+            }
+
+            @Override
+            public String toString() {
+                return "InvokeMarker[index=" + index + ", opcode=" + opcode
+                        + ", owner=" + owner + ", name=" + name
+                        + ", descriptor=" + descriptor + ", isInterface=" + isInterface + "]";
+            }
         }
 
-        record InvokeDynamicMarker(int index, String name, String descriptor,
-                                   Handle bootstrapMethodHandle,
-                                   Object[] bootstrapMethodArguments) implements Runnable {
+        static final class InvokeDynamicMarker implements Runnable {
+            private final int index;
+            private final String name;
+            private final String descriptor;
+            private final Handle bootstrapMethodHandle;
+            private final Object[] bootstrapMethodArguments;
+
+            InvokeDynamicMarker(int index, String name, String descriptor,
+                                Handle bootstrapMethodHandle,
+                                Object[] bootstrapMethodArguments) {
+                this.index = index;
+                this.name = name;
+                this.descriptor = descriptor;
+                this.bootstrapMethodHandle = bootstrapMethodHandle;
+                this.bootstrapMethodArguments = bootstrapMethodArguments;
+            }
+
+            public int index() { return index; }
+            public String name() { return name; }
+            public String descriptor() { return descriptor; }
+            public Handle bootstrapMethodHandle() { return bootstrapMethodHandle; }
+            public Object[] bootstrapMethodArguments() { return bootstrapMethodArguments; }
+
             @Override public void run() {
                 throw new IllegalStateException("InvokeDynamicMarker must be handled");
+            }
+
+            @Override
+            public boolean equals(Object o) {
+                if (this == o) return true;
+                if (!(o instanceof InvokeDynamicMarker)) return false;
+                InvokeDynamicMarker that = (InvokeDynamicMarker) o;
+                return index == that.index
+                        && Objects.equals(name, that.name)
+                        && Objects.equals(descriptor, that.descriptor)
+                        && Objects.equals(bootstrapMethodHandle, that.bootstrapMethodHandle)
+                        && Arrays.equals(bootstrapMethodArguments, that.bootstrapMethodArguments);
+            }
+
+            @Override
+            public int hashCode() {
+                int result = Objects.hash(index, name, descriptor, bootstrapMethodHandle);
+                result = 31 * result + Arrays.hashCode(bootstrapMethodArguments);
+                return result;
+            }
+
+            @Override
+            public String toString() {
+                return "InvokeDynamicMarker[index=" + index + ", name=" + name
+                        + ", descriptor=" + descriptor
+                        + ", bootstrapMethodHandle=" + bootstrapMethodHandle
+                        + ", bootstrapMethodArguments=" + Arrays.toString(bootstrapMethodArguments) + "]";
             }
         }
     }
 
-    record InvokeInfo(int index, int opcode, String owner, String name, String descriptor,
-                      boolean isInterface) {}
+    static final class InvokeInfo {
+        private final int index;
+        private final int opcode;
+        private final String owner;
+        private final String name;
+        private final String descriptor;
+        private final boolean isInterface;
 
-    record LocalVarInfo(String name, String desc, String sig,
-                        Label start, Label end, int index) {}
+        InvokeInfo(int index, int opcode, String owner, String name, String descriptor,
+                   boolean isInterface) {
+            this.index = index;
+            this.opcode = opcode;
+            this.owner = owner;
+            this.name = name;
+            this.descriptor = descriptor;
+            this.isInterface = isInterface;
+        }
+
+        public int index() { return index; }
+        public int opcode() { return opcode; }
+        public String owner() { return owner; }
+        public String name() { return name; }
+        public String descriptor() { return descriptor; }
+        public boolean isInterface() { return isInterface; }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (!(o instanceof InvokeInfo)) return false;
+            InvokeInfo that = (InvokeInfo) o;
+            return index == that.index && opcode == that.opcode
+                    && isInterface == that.isInterface
+                    && Objects.equals(owner, that.owner)
+                    && Objects.equals(name, that.name)
+                    && Objects.equals(descriptor, that.descriptor);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(index, opcode, owner, name, descriptor, isInterface);
+        }
+
+        @Override
+        public String toString() {
+            return "InvokeInfo[index=" + index + ", opcode=" + opcode
+                    + ", owner=" + owner + ", name=" + name
+                    + ", descriptor=" + descriptor + ", isInterface=" + isInterface + "]";
+        }
+    }
+
+    static final class LocalVarInfo {
+        private final String name;
+        private final String desc;
+        private final String sig;
+        private final Label start;
+        private final Label end;
+        private final int index;
+
+        LocalVarInfo(String name, String desc, String sig,
+                     Label start, Label end, int index) {
+            this.name = name;
+            this.desc = desc;
+            this.sig = sig;
+            this.start = start;
+            this.end = end;
+            this.index = index;
+        }
+
+        public String name() { return name; }
+        public String desc() { return desc; }
+        public String sig() { return sig; }
+        public Label start() { return start; }
+        public Label end() { return end; }
+        public int index() { return index; }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (!(o instanceof LocalVarInfo)) return false;
+            LocalVarInfo that = (LocalVarInfo) o;
+            return index == that.index
+                    && Objects.equals(name, that.name)
+                    && Objects.equals(desc, that.desc)
+                    && Objects.equals(sig, that.sig)
+                    && Objects.equals(start, that.start)
+                    && Objects.equals(end, that.end);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(name, desc, sig, start, end, index);
+        }
+
+        @Override
+        public String toString() {
+            return "LocalVarInfo[name=" + name + ", desc=" + desc + ", sig=" + sig
+                    + ", start=" + start + ", end=" + end + ", index=" + index + "]";
+        }
+    }
 }

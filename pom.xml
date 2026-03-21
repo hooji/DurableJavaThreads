@@ -27,8 +27,8 @@
     </licenses>
 
     <properties>
-        <maven.compiler.source>21</maven.compiler.source>
-        <maven.compiler.target>21</maven.compiler.target>
+        <maven.compiler.source>1.8</maven.compiler.source>
+        <maven.compiler.target>1.8</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <asm.version>9.9.1</asm.version>
         <objenesis.version>3.5</objenesis.version>
@@ -86,8 +86,8 @@
                 <artifactId>maven-compiler-plugin</artifactId>
                 <version>3.13.0</version>
                 <configuration>
-                    <source>21</source>
-                    <target>21</target>
+                    <source>1.8</source>
+                    <target>1.8</target>
                     <compilerArgs>
                         <arg>--add-modules</arg>
                         <arg>jdk.jdi</arg>
@@ -163,7 +163,7 @@
                 <artifactId>maven-javadoc-plugin</artifactId>
                 <version>3.6.3</version>
                 <configuration>
-                    <source>21</source>
+                    <source>8</source>
                     <additionalOptions>--add-modules jdk.jdi</additionalOptions>
                     <doclint>none</doclint>
                     <quiet>true</quiet>

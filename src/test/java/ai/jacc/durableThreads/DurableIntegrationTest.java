@@ -6,8 +6,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.*;
 import java.time.Instant;
-import java.util.List;
-import java.util.Map;
+import java.util.*;;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -29,8 +28,10 @@ class DurableIntegrationTest {
 
     @Test
     void restoreWithoutAgentThrowsAgentNotLoadedException() {
-        var snapshot = new ThreadSnapshot(
-                Instant.now(), "test-thread", List.of(), List.of());
+        ThreadSnapshot snapshot = new ThreadSnapshot(
+                Instant.now(), "test-thread",
+                Collections.<FrameSnapshot>emptyList(),
+                Collections.<ObjectSnapshot>emptyList());
 
         assertThrows(AgentNotLoadedException.class, () ->
                 Durable.restore(snapshot));

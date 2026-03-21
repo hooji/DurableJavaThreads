@@ -15,11 +15,46 @@ public final class ChildJvm {
     private ChildJvm() {}
 
     /** Result of running a child JVM process. */
-    public record Result(int exitCode, String stdout, String stderr) {
+    public static final class Result {
+        private final int exitCode;
+        private final String stdout;
+        private final String stderr;
+
+        public Result(int exitCode, String stdout, String stderr) {
+            this.exitCode = exitCode;
+            this.stdout = stdout;
+            this.stderr = stderr;
+        }
+
+        public int exitCode() { return exitCode; }
+        public String stdout() { return stdout; }
+        public String stderr() { return stderr; }
+
         public boolean succeeded() { return exitCode == 0; }
 
         public List<String> stdoutLines() {
             return stdout.isBlank() ? List.of() : List.of(stdout.split("\n"));
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (!(o instanceof Result)) return false;
+            Result that = (Result) o;
+            return exitCode == that.exitCode
+                    && Objects.equals(stdout, that.stdout)
+                    && Objects.equals(stderr, that.stderr);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(exitCode, stdout, stderr);
+        }
+
+        @Override
+        public String toString() {
+            return "Result[exitCode=" + exitCode + ", stdout=" + stdout
+                    + ", stderr=" + stderr + "]";
         }
     }
 

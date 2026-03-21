@@ -81,7 +81,7 @@ public final class HeapWalker {
             }
         }
 
-        snapshots.add(new ObjectSnapshot(id, arrayClass.getName(), ObjectKind.ARRAY, Map.of(), elements));
+        snapshots.add(new ObjectSnapshot(id, arrayClass.getName(), ObjectKind.ARRAY, java.util.Collections.<String, ObjectRef>emptyMap(), elements));
     }
 
     private void captureRegularObject(long id, Object obj, Class<?> clazz) {

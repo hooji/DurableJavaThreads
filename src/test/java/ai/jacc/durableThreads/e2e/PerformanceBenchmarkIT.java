@@ -51,8 +51,51 @@ class PerformanceBenchmarkIT {
         System.out.println();
     }
 
-    record BenchmarkResult(String scenario, long freezeMs, long restoreMs,
-                            long snapshotBytes, String heapSize) {}
+    static final class BenchmarkResult {
+        private final String scenario;
+        private final long freezeMs;
+        private final long restoreMs;
+        private final long snapshotBytes;
+        private final String heapSize;
+
+        BenchmarkResult(String scenario, long freezeMs, long restoreMs,
+                        long snapshotBytes, String heapSize) {
+            this.scenario = scenario;
+            this.freezeMs = freezeMs;
+            this.restoreMs = restoreMs;
+            this.snapshotBytes = snapshotBytes;
+            this.heapSize = heapSize;
+        }
+
+        public String scenario() { return scenario; }
+        public long freezeMs() { return freezeMs; }
+        public long restoreMs() { return restoreMs; }
+        public long snapshotBytes() { return snapshotBytes; }
+        public String heapSize() { return heapSize; }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (!(o instanceof BenchmarkResult)) return false;
+            BenchmarkResult that = (BenchmarkResult) o;
+            return freezeMs == that.freezeMs && restoreMs == that.restoreMs
+                    && snapshotBytes == that.snapshotBytes
+                    && Objects.equals(scenario, that.scenario)
+                    && Objects.equals(heapSize, that.heapSize);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(scenario, freezeMs, restoreMs, snapshotBytes, heapSize);
+        }
+
+        @Override
+        public String toString() {
+            return "BenchmarkResult[scenario=" + scenario + ", freezeMs=" + freezeMs
+                    + ", restoreMs=" + restoreMs + ", snapshotBytes=" + snapshotBytes
+                    + ", heapSize=" + heapSize + "]";
+        }
+    }
 
     @Test @Order(1)
     void benchmarkBasicFreezeRestore() throws Exception {

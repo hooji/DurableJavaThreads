@@ -255,9 +255,9 @@ public final class ReplayState {
     public static Object dummyInstance(String className) {
         try {
             Class<?> clazz = Class.forName(className);
-            var unsafeField = sun.misc.Unsafe.class.getDeclaredField("theUnsafe");
+            java.lang.reflect.Field unsafeField = sun.misc.Unsafe.class.getDeclaredField("theUnsafe");
             unsafeField.setAccessible(true);
-            var unsafe = (sun.misc.Unsafe) unsafeField.get(null);
+            sun.misc.Unsafe unsafe = (sun.misc.Unsafe) unsafeField.get(null);
             return unsafe.allocateInstance(clazz);
         } catch (Exception e) {
             throw new RuntimeException(

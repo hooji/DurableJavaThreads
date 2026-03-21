@@ -340,7 +340,7 @@ final class ThreadFreezer {
             int slot = 0;
             try {
                 // Attempt to get the slot via reflection on JDI impl
-                var slotMethod = jdiLocal.getClass().getMethod("slot");
+                java.lang.reflect.Method slotMethod = jdiLocal.getClass().getMethod("slot");
                 slot = (int) slotMethod.invoke(jdiLocal);
             } catch (Exception ignored) {}
             result.add(new ai.jacc.durableThreads.snapshot.LocalVariable(

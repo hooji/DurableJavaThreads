@@ -4,6 +4,7 @@ import org.objectweb.asm.Opcodes;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * Scans raw bytecode bytes to find exact bytecode positions (BCPs) of invoke
@@ -20,7 +21,36 @@ public final class RawBytecodeScanner {
     private RawBytecodeScanner() {}
 
     /** An invoke instruction found in the bytecode. */
-    public record InvokeLocation(int bcp, int opcode) {}
+    public static final class InvokeLocation {
+        private final int bcp;
+        private final int opcode;
+
+        public InvokeLocation(int bcp, int opcode) {
+            this.bcp = bcp;
+            this.opcode = opcode;
+        }
+
+        public int bcp() { return bcp; }
+        public int opcode() { return opcode; }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (!(o instanceof InvokeLocation)) return false;
+            InvokeLocation that = (InvokeLocation) o;
+            return bcp == that.bcp && opcode == that.opcode;
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(bcp, opcode);
+        }
+
+        @Override
+        public String toString() {
+            return "InvokeLocation[bcp=" + bcp + ", opcode=" + opcode + "]";
+        }
+    }
 
     /**
      * Scan a method's bytecode for invoke instructions, returning exact BCPs.

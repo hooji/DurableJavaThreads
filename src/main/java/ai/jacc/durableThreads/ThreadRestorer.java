@@ -16,6 +16,44 @@ final class ThreadRestorer {
 
     private ThreadRestorer() {}
 
+    /** Pre-resolved local variable entry for batch setValue. */
+    static final class LocalEntry {
+        private final com.sun.jdi.LocalVariable jdiLocal;
+        private final Value jdiValue;
+        private final boolean isNull;
+
+        LocalEntry(com.sun.jdi.LocalVariable jdiLocal, Value jdiValue, boolean isNull) {
+            this.jdiLocal = jdiLocal;
+            this.jdiValue = jdiValue;
+            this.isNull = isNull;
+        }
+
+        public com.sun.jdi.LocalVariable jdiLocal() { return jdiLocal; }
+        public Value jdiValue() { return jdiValue; }
+        public boolean isNull() { return isNull; }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (!(o instanceof LocalEntry)) return false;
+            LocalEntry that = (LocalEntry) o;
+            return isNull == that.isNull
+                    && Objects.equals(jdiLocal, that.jdiLocal)
+                    && Objects.equals(jdiValue, that.jdiValue);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(jdiLocal, jdiValue, isNull);
+        }
+
+        @Override
+        public String toString() {
+            return "LocalEntry[jdiLocal=" + jdiLocal + ", jdiValue=" + jdiValue
+                    + ", isNull=" + isNull + "]";
+        }
+    }
+
     /**
      * Restore a frozen thread from a snapshot.
      *
@@ -522,8 +560,7 @@ final class ThreadRestorer {
         // Pre-resolve all values and pin object references to prevent GC collection.
         // The target JVM's GC can collect objects between resolve and setValue(),
         // causing ObjectCollectedException. disableCollection() prevents this.
-        record LocalEntry(com.sun.jdi.LocalVariable jdiLocal,
-                          Value jdiValue, boolean isNull) {}
+        // LocalEntry is defined as a static inner class of ThreadRestorer
         List<LocalEntry> entries = new ArrayList<>();
         List<ObjectReference> pinnedRefs = new ArrayList<>();
 
