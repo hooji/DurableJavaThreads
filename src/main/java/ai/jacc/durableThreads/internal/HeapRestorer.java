@@ -5,7 +5,6 @@ import org.objenesis.ObjenesisStd;
 
 import java.lang.reflect.Array;
 import java.lang.reflect.Field;
-import java.lang.reflect.InaccessibleObjectException;
 import java.lang.reflect.Modifier;
 import java.util.HashMap;
 import java.util.List;
@@ -51,45 +50,64 @@ public final class HeapRestorer {
      * Resolve an ObjectRef to a live Java object.
      */
     public Object resolve(ObjectRef ref) {
-        return switch (ref) {
-            case NullRef ignored -> null;
-            case PrimitiveRef p -> p.value();
-            case HeapRef h -> restored.get(h.id());
-        };
+        if (ref instanceof NullRef) {
+            return null;
+        } else if (ref instanceof PrimitiveRef) {
+            return ((PrimitiveRef) ref).value();
+        } else if (ref instanceof HeapRef) {
+            return restored.get(((HeapRef) ref).id());
+        }
+        return null;
     }
 
     private void allocate(ObjectSnapshot snap) {
         if (restored.containsKey(snap.id())) return;
 
-        Object obj = switch (snap.kind()) {
-            case STRING -> {
+        Object obj;
+        switch (snap.kind()) {
+            case STRING: {
                 // Strings and StringBuilder/StringBuffer: extract value directly
                 ObjectRef valueRef = snap.fields().get("value");
-                String content = (valueRef instanceof PrimitiveRef p && p.value() instanceof String s) ? s : "";
-                yield switch (snap.className()) {
-                    case "java.lang.StringBuilder" -> new StringBuilder(content);
-                    case "java.lang.StringBuffer" -> new StringBuffer(content);
-                    default -> content; // java.lang.String
-                };
+                String content = "";
+                if (valueRef instanceof PrimitiveRef) {
+                    Object val = ((PrimitiveRef) valueRef).value();
+                    if (val instanceof String) {
+                        content = (String) val;
+                    }
+                }
+                String cn = snap.className();
+                if ("java.lang.StringBuilder".equals(cn)) {
+                    obj = new StringBuilder(content);
+                } else if ("java.lang.StringBuffer".equals(cn)) {
+                    obj = new StringBuffer(content);
+                } else {
+                    obj = content; // java.lang.String
+                }
+                break;
             }
-            case ARRAY -> {
+            case ARRAY: {
                 Class<?> componentType = resolveArrayComponentType(snap.className());
                 int length = snap.arrayElements() != null ? snap.arrayElements().length : 0;
-                yield Array.newInstance(componentType, length);
+                obj = Array.newInstance(componentType, length);
+                break;
             }
-            case COLLECTION -> {
+            case COLLECTION: {
                 // Collections are rebuilt by adding elements in the populate pass
-                yield createEmptyCollection(snap.className());
+                obj = createEmptyCollection(snap.className());
+                break;
             }
-            case REGULAR -> {
+            case REGULAR: {
                 try {
                     Class<?> clazz = Class.forName(snap.className());
-                    yield OBJENESIS.newInstance(clazz);
+                    obj = OBJENESIS.newInstance(clazz);
                 } catch (ClassNotFoundException e) {
                     throw new RuntimeException("Cannot restore object of type: " + snap.className(), e);
                 }
+                break;
             }
-        };
+            default:
+                throw new RuntimeException("Unknown ObjectKind: " + snap.kind());
+        }
 
         restored.put(snap.id(), obj);
     }
@@ -99,10 +117,18 @@ public final class HeapRestorer {
         if (obj == null) return;
 
         switch (snap.kind()) {
-            case STRING -> {} // Strings are immutable, already set during allocation
-            case ARRAY -> populateArray(obj, snap);
-            case COLLECTION -> populateCollection(obj, snap);
-            case REGULAR -> populateRegularObject(obj, snap);
+            case STRING:
+                // Strings are immutable, already set during allocation
+                break;
+            case ARRAY:
+                populateArray(obj, snap);
+                break;
+            case COLLECTION:
+                populateCollection(obj, snap);
+                break;
+            case REGULAR:
+                populateRegularObject(obj, snap);
+                break;
         }
     }
 
@@ -115,7 +141,8 @@ public final class HeapRestorer {
 
         if (className.contains("Map")) {
             // Map: elements are interleaved key/value pairs
-            if (obj instanceof java.util.Map map) {
+            if (obj instanceof java.util.Map) {
+                java.util.Map map = (java.util.Map) obj;
                 for (int i = 0; i + 1 < elements.length; i += 2) {
                     Object key = resolve(elements[i]);
                     Object value = resolve(elements[i + 1]);
@@ -127,7 +154,8 @@ public final class HeapRestorer {
             }
         } else {
             // List, Set, Deque: elements are sequential
-            if (obj instanceof java.util.Collection coll) {
+            if (obj instanceof java.util.Collection) {
+                java.util.Collection coll = (java.util.Collection) obj;
                 for (ObjectRef element : elements) {
                     coll.add(resolve(element));
                 }
@@ -139,26 +167,22 @@ public final class HeapRestorer {
     }
 
     private static Object createEmptyCollection(String className) {
-        return switch (className) {
-            case "java.util.ArrayList" -> new java.util.ArrayList<>();
-            case "java.util.LinkedList" -> new java.util.LinkedList<>();
-            case "java.util.HashSet" -> new java.util.HashSet<>();
-            case "java.util.LinkedHashSet" -> new java.util.LinkedHashSet<>();
-            case "java.util.TreeSet" -> new java.util.TreeSet<>();
-            case "java.util.HashMap" -> new java.util.HashMap<>();
-            case "java.util.LinkedHashMap" -> new java.util.LinkedHashMap<>();
-            case "java.util.TreeMap" -> new java.util.TreeMap<>();
-            case "java.util.concurrent.ConcurrentHashMap" -> new java.util.concurrent.ConcurrentHashMap<>();
-            case "java.util.ArrayDeque" -> new java.util.ArrayDeque<>();
-            default -> {
-                try {
-                    Class<?> clazz = Class.forName(className);
-                    yield OBJENESIS.newInstance(clazz);
-                } catch (ClassNotFoundException e) {
-                    throw new RuntimeException("Cannot create collection: " + className, e);
-                }
-            }
-        };
+        if ("java.util.ArrayList".equals(className)) return new java.util.ArrayList<>();
+        if ("java.util.LinkedList".equals(className)) return new java.util.LinkedList<>();
+        if ("java.util.HashSet".equals(className)) return new java.util.HashSet<>();
+        if ("java.util.LinkedHashSet".equals(className)) return new java.util.LinkedHashSet<>();
+        if ("java.util.TreeSet".equals(className)) return new java.util.TreeSet<>();
+        if ("java.util.HashMap".equals(className)) return new java.util.HashMap<>();
+        if ("java.util.LinkedHashMap".equals(className)) return new java.util.LinkedHashMap<>();
+        if ("java.util.TreeMap".equals(className)) return new java.util.TreeMap<>();
+        if ("java.util.concurrent.ConcurrentHashMap".equals(className)) return new java.util.concurrent.ConcurrentHashMap<>();
+        if ("java.util.ArrayDeque".equals(className)) return new java.util.ArrayDeque<>();
+        try {
+            Class<?> clazz = Class.forName(className);
+            return OBJENESIS.newInstance(clazz);
+        } catch (ClassNotFoundException e) {
+            throw new RuntimeException("Cannot create collection: " + className, e);
+        }
     }
 
     private void populateArray(Object array, ObjectSnapshot snap) {
@@ -199,7 +223,7 @@ public final class HeapRestorer {
             } catch (NoSuchFieldException e) {
                 throw new RuntimeException("Cannot restore field '" + fieldKey
                         + "': field no longer exists (class structure changed?)", e);
-            } catch (IllegalAccessException | InaccessibleObjectException e) {
+            } catch (IllegalAccessException e) {
                 throw new RuntimeException("Cannot restore field '" + fieldKey
                         + "': field is inaccessible. Add appropriate --add-opens "
                         + "JVM flags if this is a module-protected field.", e);

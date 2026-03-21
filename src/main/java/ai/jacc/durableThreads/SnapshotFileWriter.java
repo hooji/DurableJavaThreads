@@ -8,6 +8,7 @@ import java.io.OutputStream;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.function.Consumer;
 
 /**
@@ -28,7 +29,7 @@ public final class SnapshotFileWriter implements Consumer<ThreadSnapshot> {
      * @param filePath the file path as a string
      */
     public SnapshotFileWriter(String filePath) {
-        this(Path.of(filePath));
+        this(Paths.get(filePath));
     }
 
     /**

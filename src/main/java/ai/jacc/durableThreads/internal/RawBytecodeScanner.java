@@ -4,6 +4,7 @@ import org.objectweb.asm.Opcodes;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * Scans raw bytecode bytes to find exact bytecode positions (BCPs) of invoke
@@ -20,7 +21,36 @@ public final class RawBytecodeScanner {
     private RawBytecodeScanner() {}
 
     /** An invoke instruction found in the bytecode. */
-    public record InvokeLocation(int bcp, int opcode) {}
+    public static final class InvokeLocation {
+        private final int bcp;
+        private final int opcode;
+
+        public InvokeLocation(int bcp, int opcode) {
+            this.bcp = bcp;
+            this.opcode = opcode;
+        }
+
+        public int bcp() { return bcp; }
+        public int opcode() { return opcode; }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (!(o instanceof InvokeLocation)) return false;
+            InvokeLocation that = (InvokeLocation) o;
+            return bcp == that.bcp && opcode == that.opcode;
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(bcp, opcode);
+        }
+
+        @Override
+        public String toString() {
+            return "InvokeLocation[bcp=" + bcp + ", opcode=" + opcode + "]";
+        }
+    }
 
     /**
      * Scan a method's bytecode for invoke instructions, returning exact BCPs.
@@ -191,45 +221,51 @@ public final class RawBytecodeScanner {
      * @param opcode the instruction opcode
      */
     private static int opcodeSize(byte[] code, int pc, int bcp, int opcode) {
-        return switch (opcode) {
+        switch (opcode) {
             // 2-byte
-            case 0x10, 0x12, 0x15, 0x16, 0x17, 0x18, 0x19, // bipush, ldc, iload..aload
-                 0x36, 0x37, 0x38, 0x39, 0x3a, // istore..astore
-                 0xa9, 0xbc -> 2; // ret, newarray
+            case 0x10: case 0x12: case 0x15: case 0x16: case 0x17: case 0x18: case 0x19: // bipush, ldc, iload..aload
+            case 0x36: case 0x37: case 0x38: case 0x39: case 0x3a: // istore..astore
+            case 0xa9: case 0xbc: // ret, newarray
+                return 2;
             // 3-byte
-            case 0x11, 0x13, 0x14, 0x84, // sipush, ldc_w, ldc2_w, iinc
-                 0x99, 0x9a, 0x9b, 0x9c, 0x9d, 0x9e, // if*
-                 0x9f, 0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, // if_icmp*, if_acmp*
-                 0xa7, 0xa8, // goto, jsr
-                 0xb2, 0xb3, 0xb4, 0xb5, // getstatic..putfield
-                 0xb6, 0xb7, 0xb8, // invoke{virtual,special,static}
-                 0xbb, 0xbd, 0xc0, 0xc1, // new, anewarray, checkcast, instanceof
-                 0xc6, 0xc7 -> 3; // ifnull, ifnonnull
+            case 0x11: case 0x13: case 0x14: case 0x84: // sipush, ldc_w, ldc2_w, iinc
+            case 0x99: case 0x9a: case 0x9b: case 0x9c: case 0x9d: case 0x9e: // if*
+            case 0x9f: case 0xa0: case 0xa1: case 0xa2: case 0xa3: case 0xa4: case 0xa5: case 0xa6: // if_icmp*, if_acmp*
+            case 0xa7: case 0xa8: // goto, jsr
+            case 0xb2: case 0xb3: case 0xb4: case 0xb5: // getstatic..putfield
+            case 0xb6: case 0xb7: case 0xb8: // invoke{virtual,special,static}
+            case 0xbb: case 0xbd: case 0xc0: case 0xc1: // new, anewarray, checkcast, instanceof
+            case 0xc6: case 0xc7: // ifnull, ifnonnull
+                return 3;
             // 4-byte
-            case 0xc5 -> 4; // multianewarray
+            case 0xc5: // multianewarray
+                return 4;
             // 5-byte
-            case 0xb9, 0xba, 0xc8, 0xc9 -> 5; // invokeinterface, invokedynamic, goto_w, jsr_w
+            case 0xb9: case 0xba: case 0xc8: case 0xc9: // invokeinterface, invokedynamic, goto_w, jsr_w
+                return 5;
             // wide
-            case 0xc4 -> (code[pc + 1] & 0xFF) == 0x84 ? 6 : 4;
+            case 0xc4:
+                return (code[pc + 1] & 0xFF) == 0x84 ? 6 : 4;
             // tableswitch (variable, alignment-padded relative to method start)
-            case 0xaa -> {
+            case 0xaa: {
                 // Padding aligns the NEXT byte to a 4-byte boundary relative to BCP 0
                 int padding = (4 - ((bcp + 1) % 4)) % 4;
                 int afterPad = pc + 1 + padding;
                 int low = readI4(code, afterPad + 4);
                 int high = readI4(code, afterPad + 8);
-                yield 1 + padding + 12 + (high - low + 1) * 4;
+                return 1 + padding + 12 + (high - low + 1) * 4;
             }
             // lookupswitch (variable, alignment-padded relative to method start)
-            case 0xab -> {
+            case 0xab: {
                 int padding = (4 - ((bcp + 1) % 4)) % 4;
                 int afterPad = pc + 1 + padding;
                 int npairs = readI4(code, afterPad + 4);
-                yield 1 + padding + 8 + npairs * 8;
+                return 1 + padding + 8 + npairs * 8;
             }
             // All other instructions are 1 byte
-            default -> 1;
-        };
+            default:
+                return 1;
+        }
     }
 
     private static int readU2(byte[] b, int off) {

@@ -3,8 +3,7 @@ package ai.jacc.durableThreads.snapshot;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -13,18 +12,22 @@ class ThreadSnapshotTest {
     @Test
     void snapshotPreservesAllFields() {
         Instant now = Instant.now();
-        var locals = List.of(
+        List<LocalVariable> locals = Arrays.asList(
                 new LocalVariable(0, "this", "Lcom/example/Foo;", new NullRef()),
                 new LocalVariable(1, "x", "I", new PrimitiveRef(42))
         );
-        var frame = new FrameSnapshot(
+        FrameSnapshot frame = new FrameSnapshot(
                 "com/example/Foo", "doWork", "()V",
                 42, 0, new byte[]{1, 2, 3}, locals);
-        var heap = List.of(
+
+        Map<String, ObjectRef> fields = new LinkedHashMap<>();
+        fields.put("field1", new PrimitiveRef(10));
+
+        List<ObjectSnapshot> heap = Arrays.asList(
                 new ObjectSnapshot(1L, "com.example.Foo", ObjectKind.REGULAR,
-                        Map.of("field1", new PrimitiveRef(10)), null)
+                        fields, null)
         );
-        var snapshot = new ThreadSnapshot(now, "worker-1", List.of(frame), heap);
+        ThreadSnapshot snapshot = new ThreadSnapshot(now, "worker-1", Arrays.asList(frame), heap);
 
         assertEquals(now, snapshot.capturedAt());
         assertEquals("worker-1", snapshot.threadName());
@@ -39,15 +42,15 @@ class ThreadSnapshotTest {
 
     @Test
     void multipleFramesOrderedBottomToTop() {
-        var bottom = new FrameSnapshot("com/example/Main", "main", "([Ljava/lang/String;)V",
-                10, 0, new byte[0], List.of());
-        var middle = new FrameSnapshot("com/example/Service", "process", "()V",
-                25, 0, new byte[0], List.of());
-        var top = new FrameSnapshot("com/example/Service", "compute", "(I)I",
-                87, 0, new byte[0], List.of());
+        FrameSnapshot bottom = new FrameSnapshot("com/example/Main", "main", "([Ljava/lang/String;)V",
+                10, 0, new byte[0], Collections.<LocalVariable>emptyList());
+        FrameSnapshot middle = new FrameSnapshot("com/example/Service", "process", "()V",
+                25, 0, new byte[0], Collections.<LocalVariable>emptyList());
+        FrameSnapshot top = new FrameSnapshot("com/example/Service", "compute", "(I)I",
+                87, 0, new byte[0], Collections.<LocalVariable>emptyList());
 
-        var snapshot = new ThreadSnapshot(Instant.now(), "t1",
-                List.of(bottom, middle, top), List.of());
+        ThreadSnapshot snapshot = new ThreadSnapshot(Instant.now(), "t1",
+                Arrays.asList(bottom, middle, top), Collections.<ObjectSnapshot>emptyList());
 
         assertEquals(3, snapshot.frameCount());
         assertEquals("main", snapshot.bottomFrame().methodName());
@@ -70,11 +73,11 @@ class ThreadSnapshotTest {
 
     @Test
     void objectSnapshotRegular() {
-        var fields = Map.<String, ObjectRef>of(
-                "com.example.Foo.name", new PrimitiveRef("test"),
-                "com.example.Foo.count", new PrimitiveRef(5)
-        );
-        var snap = new ObjectSnapshot(1L, "com.example.Foo", ObjectKind.REGULAR, fields, null);
+        Map<String, ObjectRef> fields = new LinkedHashMap<>();
+        fields.put("com.example.Foo.name", new PrimitiveRef("test"));
+        fields.put("com.example.Foo.count", new PrimitiveRef(5));
+
+        ObjectSnapshot snap = new ObjectSnapshot(1L, "com.example.Foo", ObjectKind.REGULAR, fields, null);
 
         assertEquals(1L, snap.id());
         assertEquals(ObjectKind.REGULAR, snap.kind());
@@ -85,7 +88,7 @@ class ThreadSnapshotTest {
     @Test
     void objectSnapshotArray() {
         ObjectRef[] elements = {new PrimitiveRef(1), new PrimitiveRef(2), new PrimitiveRef(3)};
-        var snap = new ObjectSnapshot(2L, "[I", ObjectKind.ARRAY, Map.of(), elements);
+        ObjectSnapshot snap = new ObjectSnapshot(2L, "[I", ObjectKind.ARRAY, Collections.<String, ObjectRef>emptyMap(), elements);
 
         assertEquals(ObjectKind.ARRAY, snap.kind());
         assertEquals(3, snap.arrayElements().length);
@@ -93,8 +96,9 @@ class ThreadSnapshotTest {
 
     @Test
     void objectSnapshotString() {
-        var fields = Map.<String, ObjectRef>of("value", new PrimitiveRef("hello world"));
-        var snap = new ObjectSnapshot(3L, "java.lang.String", ObjectKind.STRING, fields, null);
+        Map<String, ObjectRef> fields = new LinkedHashMap<>();
+        fields.put("value", new PrimitiveRef("hello world"));
+        ObjectSnapshot snap = new ObjectSnapshot(3L, "java.lang.String", ObjectKind.STRING, fields, null);
 
         assertEquals(ObjectKind.STRING, snap.kind());
         assertEquals("hello world", ((PrimitiveRef) snap.fields().get("value")).value());

@@ -34,16 +34,16 @@ public final class JdiHeapWalker {
             return new NullRef();
         }
 
-        if (value instanceof PrimitiveValue pv) {
-            return capturePrimitive(pv);
+        if (value instanceof PrimitiveValue) {
+            return capturePrimitive((PrimitiveValue) value);
         }
 
-        if (value instanceof StringReference sr) {
-            return new PrimitiveRef(sr.value());
+        if (value instanceof StringReference) {
+            return new PrimitiveRef(((StringReference) value).value());
         }
 
-        if (value instanceof ObjectReference objRef) {
-            return captureObject(objRef);
+        if (value instanceof ObjectReference) {
+            return captureObject((ObjectReference) value);
         }
 
         return new NullRef();
@@ -64,17 +64,15 @@ public final class JdiHeapWalker {
     }
 
     private ObjectRef capturePrimitive(PrimitiveValue pv) {
-        return switch (pv) {
-            case BooleanValue v -> new PrimitiveRef(v.value());
-            case ByteValue v -> new PrimitiveRef(v.value());
-            case CharValue v -> new PrimitiveRef(v.value());
-            case ShortValue v -> new PrimitiveRef(v.value());
-            case IntegerValue v -> new PrimitiveRef(v.value());
-            case LongValue v -> new PrimitiveRef(v.value());
-            case FloatValue v -> new PrimitiveRef(v.value());
-            case DoubleValue v -> new PrimitiveRef(v.value());
-            default -> new PrimitiveRef(0);
-        };
+        if (pv instanceof BooleanValue) return new PrimitiveRef(((BooleanValue) pv).value());
+        if (pv instanceof ByteValue) return new PrimitiveRef(((ByteValue) pv).value());
+        if (pv instanceof CharValue) return new PrimitiveRef(((CharValue) pv).value());
+        if (pv instanceof ShortValue) return new PrimitiveRef(((ShortValue) pv).value());
+        if (pv instanceof IntegerValue) return new PrimitiveRef(((IntegerValue) pv).value());
+        if (pv instanceof LongValue) return new PrimitiveRef(((LongValue) pv).value());
+        if (pv instanceof FloatValue) return new PrimitiveRef(((FloatValue) pv).value());
+        if (pv instanceof DoubleValue) return new PrimitiveRef(((DoubleValue) pv).value());
+        return new PrimitiveRef(0);
     }
 
     private ObjectRef captureObject(ObjectReference objRef) {
@@ -92,13 +90,13 @@ public final class JdiHeapWalker {
         ReferenceType refType = objRef.referenceType();
         String className = refType.name();
 
-        if (objRef instanceof StringReference sr) {
-            captureString(snapId, sr);
-        } else if (objRef instanceof ArrayReference arrRef) {
+        if (objRef instanceof StringReference) {
+            captureString(snapId, (StringReference) objRef);
+        } else if (objRef instanceof ArrayReference) {
             // Convert JDI display name ("int[]", "java.lang.String[][]") to
             // JVM internal name ("[I", "[[Ljava.lang.String;") for Class.forName()
             String jvmArrayName = toJvmArrayName(className);
-            captureArray(snapId, arrRef, jvmArrayName);
+            captureArray(snapId, (ArrayReference) objRef, jvmArrayName);
         } else {
             captureRegularObject(snapId, objRef, refType, className);
         }
@@ -122,7 +120,7 @@ public final class JdiHeapWalker {
         }
 
         snapshots.add(new ObjectSnapshot(snapId, className,
-                ObjectKind.ARRAY, Map.of(), elements, null));
+                ObjectKind.ARRAY, Collections.<String, ObjectRef>emptyMap(), elements, null));
     }
 
     /** Packages whose internal fields should not be walked (JDK internals). */
@@ -138,7 +136,7 @@ public final class JdiHeapWalker {
     }
 
     /** Collection types we can capture by walking internals via JDI. */
-    private static final Set<String> CAPTURABLE_COLLECTIONS = Set.of(
+    private static final Set<String> CAPTURABLE_COLLECTIONS = new HashSet<>(Arrays.asList(
             "java.util.ArrayList",
             "java.util.LinkedList",
             "java.util.HashSet",
@@ -149,12 +147,12 @@ public final class JdiHeapWalker {
             "java.util.TreeMap",
             "java.util.concurrent.ConcurrentHashMap",
             "java.util.ArrayDeque"
-    );
+    ));
 
     /** JDK types whose content can be captured via toString(). */
-    private static final Set<String> TOSTRING_CAPTURABLE = Set.of(
+    private static final Set<String> TOSTRING_CAPTURABLE = new HashSet<>(Arrays.asList(
             "java.lang.StringBuilder", "java.lang.StringBuffer"
-    );
+    ));
 
     private void captureRegularObject(long snapId, ObjectReference objRef,
                                        ReferenceType refType, String className) {
@@ -173,7 +171,7 @@ public final class JdiHeapWalker {
         // Other JDK internal types: store as opaque (inaccessible fields)
         if (isOpaqueType(className)) {
             snapshots.add(new ObjectSnapshot(snapId, className,
-                    ObjectKind.REGULAR, Map.of(), null, null));
+                    ObjectKind.REGULAR, Collections.<String, ObjectRef>emptyMap(), null, null));
             return;
         }
 
@@ -203,8 +201,8 @@ public final class JdiHeapWalker {
             }
 
             // Walk to superclass
-            if (current instanceof ClassType ct) {
-                current = ct.superclass();
+            if (current instanceof ClassType) {
+                current = ((ClassType) current).superclass();
             } else {
                 break;
             }
@@ -240,24 +238,32 @@ public final class JdiHeapWalker {
                 Value countVal = objRef.getValue(countField);
                 Value coderVal = coderField != null ? objRef.getValue(coderField) : null;
                 Value valueVal = objRef.getValue(valueField);
-                int count = (countVal instanceof IntegerValue iv) ? iv.value() : 0;
-                int coder = (coderVal instanceof IntegerValue iv) ? iv.value() : 0;
+                int count = (countVal instanceof IntegerValue) ? ((IntegerValue) countVal).value() : 0;
+                int coder = (coderVal instanceof IntegerValue) ? ((IntegerValue) coderVal).value() : 0;
 
-                if (valueVal instanceof ArrayReference arr && count > 0) {
-                    if (coder == 0) {
-                        // LATIN1: each byte is a char
-                        byte[] bytes = new byte[count];
-                        List<Value> vals = arr.getValues(0, count);
+                if (valueVal instanceof ArrayReference && count > 0) {
+                    ArrayReference arr = (ArrayReference) valueVal;
+                    List<Value> vals = arr.getValues(0, Math.min(count, arr.length()));
+                    if (coderField == null || vals.get(0) instanceof CharValue) {
+                        // Java 8: value is a char[] array
+                        char[] chars = new char[count];
                         for (int i = 0; i < count; i++) {
-                            bytes[i] = (vals.get(i) instanceof ByteValue bv) ? bv.value() : 0;
+                            chars[i] = (vals.get(i) instanceof CharValue) ? ((CharValue) vals.get(i)).value() : 0;
+                        }
+                        content = new String(chars);
+                    } else if (coder == 0) {
+                        // Java 9+ LATIN1: each byte is a char
+                        byte[] bytes = new byte[count];
+                        for (int i = 0; i < count; i++) {
+                            bytes[i] = (vals.get(i) instanceof ByteValue) ? ((ByteValue) vals.get(i)).value() : 0;
                         }
                         content = new String(bytes, java.nio.charset.StandardCharsets.ISO_8859_1);
                     } else {
-                        // UTF16: two bytes per char
+                        // Java 9+ UTF16: two bytes per char
                         byte[] bytes = new byte[count * 2];
-                        List<Value> vals = arr.getValues(0, count * 2);
+                        List<Value> utf16Vals = arr.getValues(0, count * 2);
                         for (int i = 0; i < count * 2; i++) {
-                            bytes[i] = (vals.get(i) instanceof ByteValue bv) ? bv.value() : 0;
+                            bytes[i] = (utf16Vals.get(i) instanceof ByteValue) ? ((ByteValue) utf16Vals.get(i)).value() : 0;
                         }
                         content = new String(bytes, java.nio.charset.StandardCharsets.UTF_16LE);
                     }
@@ -300,9 +306,10 @@ public final class JdiHeapWalker {
         if (elementDataField != null && sizeField != null) {
             // ArrayList-like: read elementData array up to size
             Value sizeVal = objRef.getValue(sizeField);
-            int size = (sizeVal instanceof IntegerValue iv) ? iv.value() : 0;
+            int size = (sizeVal instanceof IntegerValue) ? ((IntegerValue) sizeVal).value() : 0;
             Value dataVal = objRef.getValue(elementDataField);
-            if (dataVal instanceof ArrayReference arr) {
+            if (dataVal instanceof ArrayReference) {
+                ArrayReference arr = (ArrayReference) dataVal;
                 for (int i = 0; i < Math.min(size, arr.length()); i++) {
                     elements.add(capture(arr.getValue(i)));
                 }
@@ -312,8 +319,8 @@ public final class JdiHeapWalker {
             com.sun.jdi.Field mapField = findField(refType, "map");
             if (mapField != null) {
                 Value mapVal = objRef.getValue(mapField);
-                if (mapVal instanceof ObjectReference mapRef) {
-                    List<ObjectRef> pairs = extractMapEntries(mapRef);
+                if (mapVal instanceof ObjectReference) {
+                    List<ObjectRef> pairs = extractMapEntries((ObjectReference) mapVal);
                     // HashSet: only keep keys (even indices)
                     for (int i = 0; i < pairs.size(); i += 2) {
                         elements.add(pairs.get(i));
@@ -323,14 +330,14 @@ public final class JdiHeapWalker {
         }
 
         snapshots.add(new ObjectSnapshot(snapId, className,
-                ObjectKind.COLLECTION, Map.of(), elements.toArray(new ObjectRef[0]), null));
+                ObjectKind.COLLECTION, Collections.<String, ObjectRef>emptyMap(), elements.toArray(new ObjectRef[0]), null));
     }
 
     private void captureMap(long snapId, ObjectReference objRef,
                              ReferenceType refType, String className) {
         List<ObjectRef> pairs = extractMapEntries(objRef);
         snapshots.add(new ObjectSnapshot(snapId, className,
-                ObjectKind.COLLECTION, Map.of(), pairs.toArray(new ObjectRef[0]), null));
+                ObjectKind.COLLECTION, Collections.<String, ObjectRef>emptyMap(), pairs.toArray(new ObjectRef[0]), null));
     }
 
     /** Extract key/value pairs from a HashMap-like structure via JDI. */
@@ -342,11 +349,13 @@ public final class JdiHeapWalker {
             if (tableField == null) return pairs;
 
             Value tableVal = mapRef.getValue(tableField);
-            if (!(tableVal instanceof ArrayReference table)) return pairs;
+            if (!(tableVal instanceof ArrayReference)) return pairs;
+            ArrayReference table = (ArrayReference) tableVal;
 
             for (int i = 0; i < table.length(); i++) {
                 Value bucketVal = table.getValue(i);
-                if (!(bucketVal instanceof ObjectReference node)) continue;
+                if (!(bucketVal instanceof ObjectReference)) continue;
+                ObjectReference node = (ObjectReference) bucketVal;
 
                 // Walk the linked list in each bucket
                 while (node != null) {
@@ -362,7 +371,7 @@ public final class JdiHeapWalker {
                     com.sun.jdi.Field nextField = findField(node.referenceType(), "next");
                     if (nextField != null) {
                         Value nextVal = node.getValue(nextField);
-                        node = (nextVal instanceof ObjectReference or) ? or : null;
+                        node = (nextVal instanceof ObjectReference) ? (ObjectReference) nextVal : null;
                     } else {
                         break;
                     }
@@ -379,8 +388,8 @@ public final class JdiHeapWalker {
     private static com.sun.jdi.Field findField(ReferenceType type, String name) {
         com.sun.jdi.Field f = type.fieldByName(name);
         if (f != null) return f;
-        if (type instanceof ClassType ct && ct.superclass() != null) {
-            return findField(ct.superclass(), name);
+        if (type instanceof ClassType && ((ClassType) type).superclass() != null) {
+            return findField(((ClassType) type).superclass(), name);
         }
         return null;
     }
@@ -405,18 +414,20 @@ public final class JdiHeapWalker {
         }
         if (dims == 0) return jdiName; // not an array
 
-        String prefix = "[".repeat(dims);
-        String descriptor = switch (base) {
-            case "boolean" -> "Z";
-            case "byte"    -> "B";
-            case "char"    -> "C";
-            case "short"   -> "S";
-            case "int"     -> "I";
-            case "long"    -> "J";
-            case "float"   -> "F";
-            case "double"  -> "D";
-            default        -> "L" + base + ";";
-        };
-        return prefix + descriptor;
+        StringBuilder prefix = new StringBuilder();
+        for (int i = 0; i < dims; i++) {
+            prefix.append('[');
+        }
+        String descriptor;
+        if ("boolean".equals(base)) descriptor = "Z";
+        else if ("byte".equals(base)) descriptor = "B";
+        else if ("char".equals(base)) descriptor = "C";
+        else if ("short".equals(base)) descriptor = "S";
+        else if ("int".equals(base)) descriptor = "I";
+        else if ("long".equals(base)) descriptor = "J";
+        else if ("float".equals(base)) descriptor = "F";
+        else if ("double".equals(base)) descriptor = "D";
+        else descriptor = "L" + base + ";";
+        return prefix.toString() + descriptor;
     }
 }

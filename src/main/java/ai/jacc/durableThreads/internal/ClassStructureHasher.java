@@ -45,8 +45,8 @@ public final class ClassStructureHasher {
                     digest.update(field.typeName().getBytes(StandardCharsets.UTF_8));
                 }
 
-                if (current instanceof ClassType ct) {
-                    current = ct.superclass();
+                if (current instanceof ClassType) {
+                    current = ((ClassType) current).superclass();
                 } else {
                     break;
                 }

@@ -15,11 +15,46 @@ public final class ChildJvm {
     private ChildJvm() {}
 
     /** Result of running a child JVM process. */
-    public record Result(int exitCode, String stdout, String stderr) {
+    public static final class Result {
+        private final int exitCode;
+        private final String stdout;
+        private final String stderr;
+
+        public Result(int exitCode, String stdout, String stderr) {
+            this.exitCode = exitCode;
+            this.stdout = stdout;
+            this.stderr = stderr;
+        }
+
+        public int exitCode() { return exitCode; }
+        public String stdout() { return stdout; }
+        public String stderr() { return stderr; }
+
         public boolean succeeded() { return exitCode == 0; }
 
         public List<String> stdoutLines() {
-            return stdout.isBlank() ? List.of() : List.of(stdout.split("\n"));
+            return stdout.trim().isEmpty() ? Collections.<String>emptyList() : Arrays.asList(stdout.split("\n"));
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (!(o instanceof Result)) return false;
+            Result that = (Result) o;
+            return exitCode == that.exitCode
+                    && Objects.equals(stdout, that.stdout)
+                    && Objects.equals(stderr, that.stderr);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(exitCode, stdout, stderr);
+        }
+
+        @Override
+        public String toString() {
+            return "Result[exitCode=" + exitCode + ", stdout=" + stdout
+                    + ", stderr=" + stderr + "]";
         }
     }
 
@@ -36,7 +71,7 @@ public final class ChildJvm {
     public static Result run(String mainClass, String classpath, int jdwpPort,
                               String[] args, int timeoutSec) throws Exception {
         String javaHome = System.getProperty("java.home");
-        String java = Path.of(javaHome, "bin", "java").toString();
+        String java = Paths.get(javaHome, "bin", "java").toString();
         String agentJar = findAgentJar();
 
         List<String> cmd = new ArrayList<>();
@@ -53,13 +88,16 @@ public final class ChildJvm {
             cmd.add("-agentlib:jdwp=transport=dt_socket,server=y,suspend=n");
         }
 
-        // Add JDI module
-        cmd.add("--add-modules");
-        cmd.add("jdk.jdi");
+        // Add JDI module (only on JDK 9+, where the module system exists)
+        if (javaSpecVersion() >= 9) {
+            cmd.add("--add-modules");
+            cmd.add("jdk.jdi");
+        }
 
-        // Classpath
+        // Classpath — on Java 8, append tools.jar for com.sun.jdi classes
         cmd.add("-cp");
-        cmd.add(classpath);
+        String toolsJar = findToolsJar();
+        cmd.add(toolsJar != null ? classpath + File.pathSeparator + toolsJar : classpath);
 
         // Suppress the proxy env from propagating to child JVMs
         cmd.add("-D_JAVA_OPTIONS=");
@@ -77,9 +115,9 @@ public final class ChildJvm {
         Process proc = pb.start();
 
         // Read stdout and stderr in background threads to avoid blocking
-        var stdoutFuture = CompletableFuture.supplyAsync(
+        CompletableFuture<String> stdoutFuture = CompletableFuture.supplyAsync(
                 () -> readStream(proc.getInputStream()));
-        var stderrFuture = CompletableFuture.supplyAsync(
+        CompletableFuture<String> stderrFuture = CompletableFuture.supplyAsync(
                 () -> readStream(proc.getErrorStream()));
 
         boolean finished = proc.waitFor(timeoutSec, TimeUnit.SECONDS);
@@ -103,26 +141,65 @@ public final class ChildJvm {
      */
     public static String buildClasspath() {
         String agentJar = findAgentJar();
-        String testClasses = Path.of("target", "test-classes").toAbsolutePath().toString();
-        String mainClasses = Path.of("target", "classes").toAbsolutePath().toString();
-        return agentJar + File.pathSeparator + testClasses + File.pathSeparator + mainClasses;
+        String testClasses = Paths.get("target", "test-classes").toAbsolutePath().toString();
+        String mainClasses = Paths.get("target", "classes").toAbsolutePath().toString();
+        String cp = agentJar + File.pathSeparator + testClasses + File.pathSeparator + mainClasses;
+        String toolsJar = findToolsJar();
+        if (toolsJar != null) {
+            cp += File.pathSeparator + toolsJar;
+        }
+        return cp;
     }
 
     /**
      * Find an available port for JDWP.
      */
     public static int findFreePort() {
-        try (var ss = new java.net.ServerSocket(0)) {
+        java.net.ServerSocket ss = null;
+        try {
+            ss = new java.net.ServerSocket(0);
             return ss.getLocalPort();
         } catch (IOException e) {
             return 15005 + new Random().nextInt(1000);
+        } finally {
+            if (ss != null) {
+                try { ss.close(); } catch (IOException ignored) {}
+            }
         }
+    }
+
+    /**
+     * Locate tools.jar for Java 8 JDKs (contains com.sun.jdi classes).
+     * Returns null on Java 9+ where JDI is in the jdk.jdi module.
+     */
+    static String findToolsJar() {
+        if (javaSpecVersion() >= 9) return null;
+        String javaHome = System.getProperty("java.home");
+        // java.home typically points to the JRE inside the JDK, e.g. /usr/lib/jvm/java-8/jre
+        Path toolsJar = Paths.get(javaHome, "..", "lib", "tools.jar").normalize();
+        if (Files.exists(toolsJar)) return toolsJar.toString();
+        // Some layouts have java.home pointing to the JDK root
+        toolsJar = Paths.get(javaHome, "lib", "tools.jar");
+        if (Files.exists(toolsJar)) return toolsJar.toString();
+        return null;
+    }
+
+    /** Returns the major Java version (8, 9, 10, …, 25). */
+    static int javaSpecVersion() {
+        String v = System.getProperty("java.specification.version", "1.8");
+        // Java 8 reports "1.8"; Java 9+ reports "9", "10", etc.
+        if (v.startsWith("1.")) {
+            return Integer.parseInt(v.substring(2));
+        }
+        return Integer.parseInt(v);
     }
 
     private static String findAgentJar() {
         // Look for the shaded jar in target/
-        Path target = Path.of("target");
-        try (var files = Files.list(target)) {
+        Path target = Paths.get("target");
+        java.util.stream.Stream<Path> files = null;
+        try {
+            files = Files.list(target);
             return files
                     .filter(p -> p.getFileName().toString().startsWith("durable-threads-"))
                     .filter(p -> p.getFileName().toString().endsWith(".jar"))
@@ -134,11 +211,14 @@ public final class ChildJvm {
                             "Agent jar not found in target/. Run 'mvn package -DskipTests' first."));
         } catch (IOException e) {
             throw new RuntimeException("Cannot list target/ directory", e);
+        } finally {
+            if (files != null) files.close();
         }
     }
 
     private static String readStream(InputStream is) {
-        try (var reader = new BufferedReader(new InputStreamReader(is))) {
+        BufferedReader reader = new BufferedReader(new InputStreamReader(is));
+        try {
             StringBuilder sb = new StringBuilder();
             String line;
             while ((line = reader.readLine()) != null) {
@@ -147,6 +227,8 @@ public final class ChildJvm {
             return sb.toString();
         } catch (IOException e) {
             return "[error reading stream: " + e.getMessage() + "]";
+        } finally {
+            try { reader.close(); } catch (IOException ignored) {}
         }
     }
 }

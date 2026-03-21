@@ -3,8 +3,7 @@ package ai.jacc.durableThreads.internal;
 import ai.jacc.durableThreads.snapshot.*;
 import org.junit.jupiter.api.Test;
 
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -65,7 +64,7 @@ class HeapRoundTripTest {
         long personId = ((HeapRef) ref).id();
         ObjectSnapshot personSnap = snapshots.stream()
                 .filter(s -> s.id() == personId)
-                .findFirst().orElseThrow();
+                .findFirst().orElseThrow(() -> new NoSuchElementException());
 
         assertEquals(ObjectKind.REGULAR, personSnap.kind());
         assertEquals(Person.class.getName(), personSnap.className());
@@ -119,16 +118,18 @@ class HeapRoundTripTest {
         long arrId = ((HeapRef) ref).id();
         ObjectSnapshot arraySnap = snapshots.stream()
                 .filter(s -> s.id() == arrId)
-                .findFirst().orElseThrow();
+                .findFirst().orElseThrow(() -> new NoSuchElementException());
         assertEquals(ObjectKind.ARRAY, arraySnap.kind());
         assertEquals(2, arraySnap.arrayElements().length);
     }
 
     @Test
     void restoreString() {
-        var heap = List.of(
+        Map<String, ObjectRef> fields = new LinkedHashMap<>();
+        fields.put("value", new PrimitiveRef("hello"));
+        List<ObjectSnapshot> heap = Arrays.asList(
                 new ObjectSnapshot(1L, "java.lang.String", ObjectKind.STRING,
-                        Map.of("value", new PrimitiveRef("hello")), null)
+                        fields, null)
         );
 
         HeapRestorer restorer = new HeapRestorer();
@@ -142,8 +143,8 @@ class HeapRoundTripTest {
         ObjectRef[] elements = {
                 new PrimitiveRef(10), new PrimitiveRef(20), new PrimitiveRef(30)
         };
-        var heap = List.of(
-                new ObjectSnapshot(1L, "[I", ObjectKind.ARRAY, Map.of(), elements)
+        List<ObjectSnapshot> heap = Arrays.asList(
+                new ObjectSnapshot(1L, "[I", ObjectKind.ARRAY, Collections.<String, ObjectRef>emptyMap(), elements)
         );
 
         HeapRestorer restorer = new HeapRestorer();
@@ -156,15 +157,18 @@ class HeapRoundTripTest {
 
     @Test
     void restoreSimpleObject() {
-        var personFields = Map.<String, ObjectRef>of(
-                Person.class.getName() + ".name", new HeapRef(2L),
-                Person.class.getName() + ".age", new PrimitiveRef(30)
-        );
-        var heap = List.of(
+        Map<String, ObjectRef> personFields = new LinkedHashMap<>();
+        personFields.put(Person.class.getName() + ".name", new HeapRef(2L));
+        personFields.put(Person.class.getName() + ".age", new PrimitiveRef(30));
+
+        Map<String, ObjectRef> stringFields = new LinkedHashMap<>();
+        stringFields.put("value", new PrimitiveRef("Alice"));
+
+        List<ObjectSnapshot> heap = Arrays.asList(
                 new ObjectSnapshot(1L, Person.class.getName(), ObjectKind.REGULAR,
                         personFields, null),
                 new ObjectSnapshot(2L, "java.lang.String", ObjectKind.STRING,
-                        Map.of("value", new PrimitiveRef("Alice")), null)
+                        stringFields, null)
         );
 
         HeapRestorer restorer = new HeapRestorer();
@@ -179,25 +183,31 @@ class HeapRoundTripTest {
 
     @Test
     void restoreCircularReferences() {
-        var aliceFields = Map.<String, ObjectRef>of(
-                Person.class.getName() + ".name", new HeapRef(3L),
-                Person.class.getName() + ".age", new PrimitiveRef(30),
-                Person.class.getName() + ".friend", new HeapRef(2L)
-        );
-        var bobFields = Map.<String, ObjectRef>of(
-                Person.class.getName() + ".name", new HeapRef(4L),
-                Person.class.getName() + ".age", new PrimitiveRef(25),
-                Person.class.getName() + ".friend", new HeapRef(1L)
-        );
-        var heap = List.of(
+        Map<String, ObjectRef> aliceFields = new LinkedHashMap<>();
+        aliceFields.put(Person.class.getName() + ".name", new HeapRef(3L));
+        aliceFields.put(Person.class.getName() + ".age", new PrimitiveRef(30));
+        aliceFields.put(Person.class.getName() + ".friend", new HeapRef(2L));
+
+        Map<String, ObjectRef> bobFields = new LinkedHashMap<>();
+        bobFields.put(Person.class.getName() + ".name", new HeapRef(4L));
+        bobFields.put(Person.class.getName() + ".age", new PrimitiveRef(25));
+        bobFields.put(Person.class.getName() + ".friend", new HeapRef(1L));
+
+        Map<String, ObjectRef> aliceNameFields = new LinkedHashMap<>();
+        aliceNameFields.put("value", new PrimitiveRef("Alice"));
+
+        Map<String, ObjectRef> bobNameFields = new LinkedHashMap<>();
+        bobNameFields.put("value", new PrimitiveRef("Bob"));
+
+        List<ObjectSnapshot> heap = Arrays.asList(
                 new ObjectSnapshot(1L, Person.class.getName(), ObjectKind.REGULAR,
                         aliceFields, null),
                 new ObjectSnapshot(2L, Person.class.getName(), ObjectKind.REGULAR,
                         bobFields, null),
                 new ObjectSnapshot(3L, "java.lang.String", ObjectKind.STRING,
-                        Map.of("value", new PrimitiveRef("Alice")), null),
+                        aliceNameFields, null),
                 new ObjectSnapshot(4L, "java.lang.String", ObjectKind.STRING,
-                        Map.of("value", new PrimitiveRef("Bob")), null)
+                        bobNameFields, null)
         );
 
         HeapRestorer restorer = new HeapRestorer();
@@ -214,9 +224,11 @@ class HeapRoundTripTest {
 
     @Test
     void resolveObjectRef() {
-        var heap = List.of(
+        Map<String, ObjectRef> fields = new LinkedHashMap<>();
+        fields.put("value", new PrimitiveRef("test"));
+        List<ObjectSnapshot> heap = Arrays.asList(
                 new ObjectSnapshot(1L, "java.lang.String", ObjectKind.STRING,
-                        Map.of("value", new PrimitiveRef("test")), null)
+                        fields, null)
         );
 
         HeapRestorer restorer = new HeapRestorer();
@@ -233,19 +245,26 @@ class HeapRoundTripTest {
 
     @Test
     void restoreArrayList() {
+        Map<String, ObjectRef> alphaFields = new LinkedHashMap<>();
+        alphaFields.put("value", new PrimitiveRef("alpha"));
+        Map<String, ObjectRef> betaFields = new LinkedHashMap<>();
+        betaFields.put("value", new PrimitiveRef("beta"));
+        Map<String, ObjectRef> gammaFields = new LinkedHashMap<>();
+        gammaFields.put("value", new PrimitiveRef("gamma"));
+
         // ArrayList with three string elements
-        var heap = List.of(
+        List<ObjectSnapshot> heap = Arrays.asList(
                 new ObjectSnapshot(1L, "java.util.ArrayList", ObjectKind.COLLECTION,
-                        Map.of(),
+                        Collections.<String, ObjectRef>emptyMap(),
                         new ObjectRef[]{
                                 new HeapRef(2L), new HeapRef(3L), new HeapRef(4L)
                         }),
                 new ObjectSnapshot(2L, "java.lang.String", ObjectKind.STRING,
-                        Map.of("value", new PrimitiveRef("alpha")), null),
+                        alphaFields, null),
                 new ObjectSnapshot(3L, "java.lang.String", ObjectKind.STRING,
-                        Map.of("value", new PrimitiveRef("beta")), null),
+                        betaFields, null),
                 new ObjectSnapshot(4L, "java.lang.String", ObjectKind.STRING,
-                        Map.of("value", new PrimitiveRef("gamma")), null)
+                        gammaFields, null)
         );
 
         HeapRestorer restorer = new HeapRestorer();
@@ -263,18 +282,23 @@ class HeapRoundTripTest {
 
     @Test
     void restoreHashMap() {
+        Map<String, ObjectRef> key1Fields = new LinkedHashMap<>();
+        key1Fields.put("value", new PrimitiveRef("key1"));
+        Map<String, ObjectRef> key2Fields = new LinkedHashMap<>();
+        key2Fields.put("value", new PrimitiveRef("key2"));
+
         // HashMap with two key-value pairs (interleaved: k1, v1, k2, v2)
-        var heap = List.of(
+        List<ObjectSnapshot> heap = Arrays.asList(
                 new ObjectSnapshot(1L, "java.util.HashMap", ObjectKind.COLLECTION,
-                        Map.of(),
+                        Collections.<String, ObjectRef>emptyMap(),
                         new ObjectRef[]{
                                 new HeapRef(2L), new PrimitiveRef(100),
                                 new HeapRef(3L), new PrimitiveRef(200)
                         }),
                 new ObjectSnapshot(2L, "java.lang.String", ObjectKind.STRING,
-                        Map.of("value", new PrimitiveRef("key1")), null),
+                        key1Fields, null),
                 new ObjectSnapshot(3L, "java.lang.String", ObjectKind.STRING,
-                        Map.of("value", new PrimitiveRef("key2")), null)
+                        key2Fields, null)
         );
 
         HeapRestorer restorer = new HeapRestorer();
@@ -292,9 +316,9 @@ class HeapRoundTripTest {
     @Test
     void restoreHashSet() {
         // HashSet with elements (just values, no pairs)
-        var heap = List.of(
+        List<ObjectSnapshot> heap = Arrays.asList(
                 new ObjectSnapshot(1L, "java.util.HashSet", ObjectKind.COLLECTION,
-                        Map.of(),
+                        Collections.<String, ObjectRef>emptyMap(),
                         new ObjectRef[]{
                                 new PrimitiveRef(10), new PrimitiveRef(20), new PrimitiveRef(30)
                         })
@@ -316,18 +340,21 @@ class HeapRoundTripTest {
     @Test
     void restoreCollectionWithNonSerializableElements() {
         // ArrayList containing Person objects (non-Serializable)
-        var personFields = Map.<String, ObjectRef>of(
-                Person.class.getName() + ".name", new HeapRef(3L),
-                Person.class.getName() + ".age", new PrimitiveRef(42)
-        );
-        var heap = List.of(
+        Map<String, ObjectRef> personFields = new LinkedHashMap<>();
+        personFields.put(Person.class.getName() + ".name", new HeapRef(3L));
+        personFields.put(Person.class.getName() + ".age", new PrimitiveRef(42));
+
+        Map<String, ObjectRef> nameFields = new LinkedHashMap<>();
+        nameFields.put("value", new PrimitiveRef("Charlie"));
+
+        List<ObjectSnapshot> heap = Arrays.asList(
                 new ObjectSnapshot(1L, "java.util.ArrayList", ObjectKind.COLLECTION,
-                        Map.of(),
+                        Collections.<String, ObjectRef>emptyMap(),
                         new ObjectRef[]{new HeapRef(2L)}),
                 new ObjectSnapshot(2L, Person.class.getName(), ObjectKind.REGULAR,
                         personFields, null),
                 new ObjectSnapshot(3L, "java.lang.String", ObjectKind.STRING,
-                        Map.of("value", new PrimitiveRef("Charlie")), null)
+                        nameFields, null)
         );
 
         HeapRestorer restorer = new HeapRestorer();
@@ -347,33 +374,40 @@ class HeapRoundTripTest {
     @Test
     void multipleReferencesToSameObjectPreserveIdentity() {
         // Two Person objects both reference the same friend object
-        var sharedFriend = Map.<String, ObjectRef>of(
-                Person.class.getName() + ".name", new HeapRef(4L),
-                Person.class.getName() + ".age", new PrimitiveRef(20)
-        );
-        var aliceFields = Map.<String, ObjectRef>of(
-                Person.class.getName() + ".name", new HeapRef(5L),
-                Person.class.getName() + ".age", new PrimitiveRef(30),
-                Person.class.getName() + ".friend", new HeapRef(3L) // shared
-        );
-        var bobFields = Map.<String, ObjectRef>of(
-                Person.class.getName() + ".name", new HeapRef(6L),
-                Person.class.getName() + ".age", new PrimitiveRef(25),
-                Person.class.getName() + ".friend", new HeapRef(3L) // same shared
-        );
-        var heap = List.of(
+        Map<String, ObjectRef> sharedFriendFields = new LinkedHashMap<>();
+        sharedFriendFields.put(Person.class.getName() + ".name", new HeapRef(4L));
+        sharedFriendFields.put(Person.class.getName() + ".age", new PrimitiveRef(20));
+
+        Map<String, ObjectRef> aliceFields = new LinkedHashMap<>();
+        aliceFields.put(Person.class.getName() + ".name", new HeapRef(5L));
+        aliceFields.put(Person.class.getName() + ".age", new PrimitiveRef(30));
+        aliceFields.put(Person.class.getName() + ".friend", new HeapRef(3L));
+
+        Map<String, ObjectRef> bobFields = new LinkedHashMap<>();
+        bobFields.put(Person.class.getName() + ".name", new HeapRef(6L));
+        bobFields.put(Person.class.getName() + ".age", new PrimitiveRef(25));
+        bobFields.put(Person.class.getName() + ".friend", new HeapRef(3L));
+
+        Map<String, ObjectRef> charlieNameFields = new LinkedHashMap<>();
+        charlieNameFields.put("value", new PrimitiveRef("Charlie"));
+        Map<String, ObjectRef> aliceNameFields = new LinkedHashMap<>();
+        aliceNameFields.put("value", new PrimitiveRef("Alice"));
+        Map<String, ObjectRef> bobNameFields = new LinkedHashMap<>();
+        bobNameFields.put("value", new PrimitiveRef("Bob"));
+
+        List<ObjectSnapshot> heap = Arrays.asList(
                 new ObjectSnapshot(1L, Person.class.getName(), ObjectKind.REGULAR,
                         aliceFields, null),
                 new ObjectSnapshot(2L, Person.class.getName(), ObjectKind.REGULAR,
                         bobFields, null),
                 new ObjectSnapshot(3L, Person.class.getName(), ObjectKind.REGULAR,
-                        sharedFriend, null),
+                        sharedFriendFields, null),
                 new ObjectSnapshot(4L, "java.lang.String", ObjectKind.STRING,
-                        Map.of("value", new PrimitiveRef("Charlie")), null),
+                        charlieNameFields, null),
                 new ObjectSnapshot(5L, "java.lang.String", ObjectKind.STRING,
-                        Map.of("value", new PrimitiveRef("Alice")), null),
+                        aliceNameFields, null),
                 new ObjectSnapshot(6L, "java.lang.String", ObjectKind.STRING,
-                        Map.of("value", new PrimitiveRef("Bob")), null)
+                        bobNameFields, null)
         );
 
         HeapRestorer restorer = new HeapRestorer();
@@ -392,16 +426,19 @@ class HeapRoundTripTest {
     @Test
     void selfReferentialObjectPreservesIdentity() {
         // A Person whose friend is itself
-        var selfFields = Map.<String, ObjectRef>of(
-                Person.class.getName() + ".name", new HeapRef(2L),
-                Person.class.getName() + ".age", new PrimitiveRef(99),
-                Person.class.getName() + ".friend", new HeapRef(1L) // self-reference
-        );
-        var heap = List.of(
+        Map<String, ObjectRef> selfFields = new LinkedHashMap<>();
+        selfFields.put(Person.class.getName() + ".name", new HeapRef(2L));
+        selfFields.put(Person.class.getName() + ".age", new PrimitiveRef(99));
+        selfFields.put(Person.class.getName() + ".friend", new HeapRef(1L));
+
+        Map<String, ObjectRef> nameFields = new LinkedHashMap<>();
+        nameFields.put("value", new PrimitiveRef("Narcissus"));
+
+        List<ObjectSnapshot> heap = Arrays.asList(
                 new ObjectSnapshot(1L, Person.class.getName(), ObjectKind.REGULAR,
                         selfFields, null),
                 new ObjectSnapshot(2L, "java.lang.String", ObjectKind.STRING,
-                        Map.of("value", new PrimitiveRef("Narcissus")), null)
+                        nameFields, null)
         );
 
         HeapRestorer restorer = new HeapRestorer();

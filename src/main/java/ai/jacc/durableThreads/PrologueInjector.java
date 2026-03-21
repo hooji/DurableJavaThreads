@@ -3,7 +3,9 @@ package ai.jacc.durableThreads;
 import org.objectweb.asm.*;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * ASM-based bytecode transformer that injects the universal replay prologue.
@@ -417,10 +419,12 @@ public final class PrologueInjector extends ClassVisitor {
          */
         private void emitOriginalCodeWithSkipChecks(int skipSlot, int retValSlot) {
             for (Runnable op : bufferedOps) {
-                if (op instanceof InvokeMarker marker) {
+                if (op instanceof InvokeMarker) {
+                    InvokeMarker marker = (InvokeMarker) op;
                     emitInvokeWithSkipCheck(skipSlot, retValSlot, marker.index, marker.opcode,
                             marker.owner, marker.name, marker.descriptor, marker.isInterface);
-                } else if (op instanceof InvokeDynamicMarker marker) {
+                } else if (op instanceof InvokeDynamicMarker) {
+                    InvokeDynamicMarker marker = (InvokeDynamicMarker) op;
                     emitInvokeDynamicWithSkipCheck(skipSlot, marker.index,
                             marker.name, marker.descriptor,
                             marker.bootstrapMethodHandle, marker.bootstrapMethodArguments);
@@ -569,9 +573,15 @@ public final class PrologueInjector extends ClassVisitor {
 
         private void popValue(Type type) {
             switch (type.getSort()) {
-                case Type.VOID -> {}
-                case Type.LONG, Type.DOUBLE -> target.visitInsn(Opcodes.POP2);
-                default -> target.visitInsn(Opcodes.POP);
+                case Type.VOID:
+                    break;
+                case Type.LONG:
+                case Type.DOUBLE:
+                    target.visitInsn(Opcodes.POP2);
+                    break;
+                default:
+                    target.visitInsn(Opcodes.POP);
+                    break;
             }
         }
 
@@ -587,24 +597,44 @@ public final class PrologueInjector extends ClassVisitor {
          */
         private void boxReturnValue(Type retType) {
             switch (retType.getSort()) {
-                case Type.VOID -> target.visitInsn(Opcodes.ACONST_NULL);
-                case Type.BOOLEAN -> target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                        RS, "boxBoolean", "(Z)Ljava/lang/Object;", false);
-                case Type.BYTE -> target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                        RS, "boxByte", "(B)Ljava/lang/Object;", false);
-                case Type.CHAR -> target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                        RS, "boxChar", "(C)Ljava/lang/Object;", false);
-                case Type.SHORT -> target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                        RS, "boxShort", "(S)Ljava/lang/Object;", false);
-                case Type.INT -> target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                        RS, "boxInt", "(I)Ljava/lang/Object;", false);
-                case Type.LONG -> target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                        RS, "boxLong", "(J)Ljava/lang/Object;", false);
-                case Type.FLOAT -> target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                        RS, "boxFloat", "(F)Ljava/lang/Object;", false);
-                case Type.DOUBLE -> target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                        RS, "boxDouble", "(D)Ljava/lang/Object;", false);
-                default -> {} // OBJECT and ARRAY are already references
+                case Type.VOID:
+                    target.visitInsn(Opcodes.ACONST_NULL);
+                    break;
+                case Type.BOOLEAN:
+                    target.visitMethodInsn(Opcodes.INVOKESTATIC,
+                            RS, "boxBoolean", "(Z)Ljava/lang/Object;", false);
+                    break;
+                case Type.BYTE:
+                    target.visitMethodInsn(Opcodes.INVOKESTATIC,
+                            RS, "boxByte", "(B)Ljava/lang/Object;", false);
+                    break;
+                case Type.CHAR:
+                    target.visitMethodInsn(Opcodes.INVOKESTATIC,
+                            RS, "boxChar", "(C)Ljava/lang/Object;", false);
+                    break;
+                case Type.SHORT:
+                    target.visitMethodInsn(Opcodes.INVOKESTATIC,
+                            RS, "boxShort", "(S)Ljava/lang/Object;", false);
+                    break;
+                case Type.INT:
+                    target.visitMethodInsn(Opcodes.INVOKESTATIC,
+                            RS, "boxInt", "(I)Ljava/lang/Object;", false);
+                    break;
+                case Type.LONG:
+                    target.visitMethodInsn(Opcodes.INVOKESTATIC,
+                            RS, "boxLong", "(J)Ljava/lang/Object;", false);
+                    break;
+                case Type.FLOAT:
+                    target.visitMethodInsn(Opcodes.INVOKESTATIC,
+                            RS, "boxFloat", "(F)Ljava/lang/Object;", false);
+                    break;
+                case Type.DOUBLE:
+                    target.visitMethodInsn(Opcodes.INVOKESTATIC,
+                            RS, "boxDouble", "(D)Ljava/lang/Object;", false);
+                    break;
+                default:
+                    // OBJECT and ARRAY are already references
+                    break;
             }
         }
 
@@ -617,64 +647,81 @@ public final class PrologueInjector extends ClassVisitor {
          */
         private void unboxReturnValue(Type retType, int retValSlot) {
             switch (retType.getSort()) {
-                case Type.VOID -> {} // nothing to push
-                case Type.BOOLEAN -> {
+                case Type.VOID:
+                    // nothing to push
+                    break;
+                case Type.BOOLEAN:
                     target.visitVarInsn(Opcodes.ALOAD, retValSlot);
                     target.visitMethodInsn(Opcodes.INVOKESTATIC,
                             RS, "unboxBoolean", "(Ljava/lang/Object;)Z", false);
-                }
-                case Type.BYTE -> {
+                    break;
+                case Type.BYTE:
                     target.visitVarInsn(Opcodes.ALOAD, retValSlot);
                     target.visitMethodInsn(Opcodes.INVOKESTATIC,
                             RS, "unboxByte", "(Ljava/lang/Object;)B", false);
-                }
-                case Type.CHAR -> {
+                    break;
+                case Type.CHAR:
                     target.visitVarInsn(Opcodes.ALOAD, retValSlot);
                     target.visitMethodInsn(Opcodes.INVOKESTATIC,
                             RS, "unboxChar", "(Ljava/lang/Object;)C", false);
-                }
-                case Type.SHORT -> {
+                    break;
+                case Type.SHORT:
                     target.visitVarInsn(Opcodes.ALOAD, retValSlot);
                     target.visitMethodInsn(Opcodes.INVOKESTATIC,
                             RS, "unboxShort", "(Ljava/lang/Object;)S", false);
-                }
-                case Type.INT -> {
+                    break;
+                case Type.INT:
                     target.visitVarInsn(Opcodes.ALOAD, retValSlot);
                     target.visitMethodInsn(Opcodes.INVOKESTATIC,
                             RS, "unboxInt", "(Ljava/lang/Object;)I", false);
-                }
-                case Type.LONG -> {
+                    break;
+                case Type.LONG:
                     target.visitVarInsn(Opcodes.ALOAD, retValSlot);
                     target.visitMethodInsn(Opcodes.INVOKESTATIC,
                             RS, "unboxLong", "(Ljava/lang/Object;)J", false);
-                }
-                case Type.FLOAT -> {
+                    break;
+                case Type.FLOAT:
                     target.visitVarInsn(Opcodes.ALOAD, retValSlot);
                     target.visitMethodInsn(Opcodes.INVOKESTATIC,
                             RS, "unboxFloat", "(Ljava/lang/Object;)F", false);
-                }
-                case Type.DOUBLE -> {
+                    break;
+                case Type.DOUBLE:
                     target.visitVarInsn(Opcodes.ALOAD, retValSlot);
                     target.visitMethodInsn(Opcodes.INVOKESTATIC,
                             RS, "unboxDouble", "(Ljava/lang/Object;)D", false);
-                }
-                default -> {
+                    break;
+                default:
                     // OBJECT or ARRAY — load and cast to expected type
                     target.visitVarInsn(Opcodes.ALOAD, retValSlot);
                     target.visitTypeInsn(Opcodes.CHECKCAST, retType.getInternalName());
-                }
+                    break;
             }
         }
 
         private void pushDefaultValue(Type type) {
             switch (type.getSort()) {
-                case Type.BOOLEAN, Type.BYTE, Type.CHAR, Type.SHORT, Type.INT ->
-                        target.visitInsn(Opcodes.ICONST_0);
-                case Type.LONG -> target.visitInsn(Opcodes.LCONST_0);
-                case Type.FLOAT -> target.visitInsn(Opcodes.FCONST_0);
-                case Type.DOUBLE -> target.visitInsn(Opcodes.DCONST_0);
-                case Type.ARRAY, Type.OBJECT -> target.visitInsn(Opcodes.ACONST_NULL);
-                default -> {}
+                case Type.BOOLEAN:
+                case Type.BYTE:
+                case Type.CHAR:
+                case Type.SHORT:
+                case Type.INT:
+                    target.visitInsn(Opcodes.ICONST_0);
+                    break;
+                case Type.LONG:
+                    target.visitInsn(Opcodes.LCONST_0);
+                    break;
+                case Type.FLOAT:
+                    target.visitInsn(Opcodes.FCONST_0);
+                    break;
+                case Type.DOUBLE:
+                    target.visitInsn(Opcodes.DCONST_0);
+                    break;
+                case Type.ARRAY:
+                case Type.OBJECT:
+                    target.visitInsn(Opcodes.ACONST_NULL);
+                    break;
+                default:
+                    break;
             }
         }
 
@@ -692,25 +739,213 @@ public final class PrologueInjector extends ClassVisitor {
 
         // --- Marker types ---
 
-        record InvokeMarker(int index, int opcode, String owner, String name,
-                            String descriptor, boolean isInterface) implements Runnable {
+        static final class InvokeMarker implements Runnable {
+            private final int index;
+            private final int opcode;
+            private final String owner;
+            private final String name;
+            private final String descriptor;
+            private final boolean isInterface;
+
+            InvokeMarker(int index, int opcode, String owner, String name,
+                         String descriptor, boolean isInterface) {
+                this.index = index;
+                this.opcode = opcode;
+                this.owner = owner;
+                this.name = name;
+                this.descriptor = descriptor;
+                this.isInterface = isInterface;
+            }
+
+            public int index() { return index; }
+            public int opcode() { return opcode; }
+            public String owner() { return owner; }
+            public String name() { return name; }
+            public String descriptor() { return descriptor; }
+            public boolean isInterface() { return isInterface; }
+
             @Override public void run() {
                 throw new IllegalStateException("InvokeMarker must be handled");
             }
+
+            @Override
+            public boolean equals(Object o) {
+                if (this == o) return true;
+                if (!(o instanceof InvokeMarker)) return false;
+                InvokeMarker that = (InvokeMarker) o;
+                return index == that.index && opcode == that.opcode
+                        && isInterface == that.isInterface
+                        && Objects.equals(owner, that.owner)
+                        && Objects.equals(name, that.name)
+                        && Objects.equals(descriptor, that.descriptor);
+            }
+
+            @Override
+            public int hashCode() {
+                return Objects.hash(index, opcode, owner, name, descriptor, isInterface);
+            }
+
+            @Override
+            public String toString() {
+                return "InvokeMarker[index=" + index + ", opcode=" + opcode
+                        + ", owner=" + owner + ", name=" + name
+                        + ", descriptor=" + descriptor + ", isInterface=" + isInterface + "]";
+            }
         }
 
-        record InvokeDynamicMarker(int index, String name, String descriptor,
-                                   Handle bootstrapMethodHandle,
-                                   Object[] bootstrapMethodArguments) implements Runnable {
+        static final class InvokeDynamicMarker implements Runnable {
+            private final int index;
+            private final String name;
+            private final String descriptor;
+            private final Handle bootstrapMethodHandle;
+            private final Object[] bootstrapMethodArguments;
+
+            InvokeDynamicMarker(int index, String name, String descriptor,
+                                Handle bootstrapMethodHandle,
+                                Object[] bootstrapMethodArguments) {
+                this.index = index;
+                this.name = name;
+                this.descriptor = descriptor;
+                this.bootstrapMethodHandle = bootstrapMethodHandle;
+                this.bootstrapMethodArguments = bootstrapMethodArguments;
+            }
+
+            public int index() { return index; }
+            public String name() { return name; }
+            public String descriptor() { return descriptor; }
+            public Handle bootstrapMethodHandle() { return bootstrapMethodHandle; }
+            public Object[] bootstrapMethodArguments() { return bootstrapMethodArguments; }
+
             @Override public void run() {
                 throw new IllegalStateException("InvokeDynamicMarker must be handled");
+            }
+
+            @Override
+            public boolean equals(Object o) {
+                if (this == o) return true;
+                if (!(o instanceof InvokeDynamicMarker)) return false;
+                InvokeDynamicMarker that = (InvokeDynamicMarker) o;
+                return index == that.index
+                        && Objects.equals(name, that.name)
+                        && Objects.equals(descriptor, that.descriptor)
+                        && Objects.equals(bootstrapMethodHandle, that.bootstrapMethodHandle)
+                        && Arrays.equals(bootstrapMethodArguments, that.bootstrapMethodArguments);
+            }
+
+            @Override
+            public int hashCode() {
+                int result = Objects.hash(index, name, descriptor, bootstrapMethodHandle);
+                result = 31 * result + Arrays.hashCode(bootstrapMethodArguments);
+                return result;
+            }
+
+            @Override
+            public String toString() {
+                return "InvokeDynamicMarker[index=" + index + ", name=" + name
+                        + ", descriptor=" + descriptor
+                        + ", bootstrapMethodHandle=" + bootstrapMethodHandle
+                        + ", bootstrapMethodArguments=" + Arrays.toString(bootstrapMethodArguments) + "]";
             }
         }
     }
 
-    record InvokeInfo(int index, int opcode, String owner, String name, String descriptor,
-                      boolean isInterface) {}
+    static final class InvokeInfo {
+        private final int index;
+        private final int opcode;
+        private final String owner;
+        private final String name;
+        private final String descriptor;
+        private final boolean isInterface;
 
-    record LocalVarInfo(String name, String desc, String sig,
-                        Label start, Label end, int index) {}
+        InvokeInfo(int index, int opcode, String owner, String name, String descriptor,
+                   boolean isInterface) {
+            this.index = index;
+            this.opcode = opcode;
+            this.owner = owner;
+            this.name = name;
+            this.descriptor = descriptor;
+            this.isInterface = isInterface;
+        }
+
+        public int index() { return index; }
+        public int opcode() { return opcode; }
+        public String owner() { return owner; }
+        public String name() { return name; }
+        public String descriptor() { return descriptor; }
+        public boolean isInterface() { return isInterface; }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (!(o instanceof InvokeInfo)) return false;
+            InvokeInfo that = (InvokeInfo) o;
+            return index == that.index && opcode == that.opcode
+                    && isInterface == that.isInterface
+                    && Objects.equals(owner, that.owner)
+                    && Objects.equals(name, that.name)
+                    && Objects.equals(descriptor, that.descriptor);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(index, opcode, owner, name, descriptor, isInterface);
+        }
+
+        @Override
+        public String toString() {
+            return "InvokeInfo[index=" + index + ", opcode=" + opcode
+                    + ", owner=" + owner + ", name=" + name
+                    + ", descriptor=" + descriptor + ", isInterface=" + isInterface + "]";
+        }
+    }
+
+    static final class LocalVarInfo {
+        private final String name;
+        private final String desc;
+        private final String sig;
+        private final Label start;
+        private final Label end;
+        private final int index;
+
+        LocalVarInfo(String name, String desc, String sig,
+                     Label start, Label end, int index) {
+            this.name = name;
+            this.desc = desc;
+            this.sig = sig;
+            this.start = start;
+            this.end = end;
+            this.index = index;
+        }
+
+        public String name() { return name; }
+        public String desc() { return desc; }
+        public String sig() { return sig; }
+        public Label start() { return start; }
+        public Label end() { return end; }
+        public int index() { return index; }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (!(o instanceof LocalVarInfo)) return false;
+            LocalVarInfo that = (LocalVarInfo) o;
+            return index == that.index
+                    && Objects.equals(name, that.name)
+                    && Objects.equals(desc, that.desc)
+                    && Objects.equals(sig, that.sig)
+                    && Objects.equals(start, that.start)
+                    && Objects.equals(end, that.end);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(name, desc, sig, start, end, index);
+        }
+
+        @Override
+        public String toString() {
+            return "LocalVarInfo[name=" + name + ", desc=" + desc + ", sig=" + sig
+                    + ", start=" + start + ", end=" + end + ", index=" + index + "]";
+        }
+    }
 }

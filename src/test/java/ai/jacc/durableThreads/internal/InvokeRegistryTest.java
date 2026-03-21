@@ -17,19 +17,19 @@ class InvokeRegistryTest {
     @Test
     void registerAndRetrieveOffsets() {
         String key = InvokeRegistry.key("com/test/A", "method1", "()V");
-        List<Integer> offsets = List.of(10, 25, 42);
+        List<Integer> offsets = java.util.Arrays.asList(10, 25, 42);
         InvokeRegistry.register(key, offsets);
 
         List<Integer> retrieved = InvokeRegistry.getInvokeOffsets(key);
         assertNotNull(retrieved);
         assertEquals(3, retrieved.size());
-        assertEquals(List.of(10, 25, 42), retrieved);
+        assertEquals(java.util.Arrays.asList(10, 25, 42), retrieved);
     }
 
     @Test
     void getInvokeIndexFindsExactMatch() {
         String key = InvokeRegistry.key("com/test/B", "method2", "()V");
-        InvokeRegistry.register(key, List.of(10, 25, 42));
+        InvokeRegistry.register(key, java.util.Arrays.asList(10, 25, 42));
 
         assertEquals(0, InvokeRegistry.getInvokeIndex(key, 10));
         assertEquals(1, InvokeRegistry.getInvokeIndex(key, 25));
@@ -39,7 +39,7 @@ class InvokeRegistryTest {
     @Test
     void getInvokeIndexFindsNearestBefore() {
         String key = InvokeRegistry.key("com/test/C", "method3", "()V");
-        InvokeRegistry.register(key, List.of(10, 25, 42));
+        InvokeRegistry.register(key, java.util.Arrays.asList(10, 25, 42));
 
         // BCP 30 is between invokes at 25 and 42 → should return index 1
         assertEquals(1, InvokeRegistry.getInvokeIndex(key, 30));
@@ -55,7 +55,7 @@ class InvokeRegistryTest {
     @Test
     void getInvokeIndexReturnsNegativeForBcpBeforeFirstInvoke() {
         String key = InvokeRegistry.key("com/test/D", "method4", "()V");
-        InvokeRegistry.register(key, List.of(10, 25));
+        InvokeRegistry.register(key, java.util.Arrays.asList(10, 25));
 
         assertEquals(-1, InvokeRegistry.getInvokeIndex(key, 5));
     }

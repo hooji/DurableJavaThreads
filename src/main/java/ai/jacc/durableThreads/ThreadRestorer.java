@@ -16,6 +16,44 @@ final class ThreadRestorer {
 
     private ThreadRestorer() {}
 
+    /** Pre-resolved local variable entry for batch setValue. */
+    static final class LocalEntry {
+        private final com.sun.jdi.LocalVariable jdiLocal;
+        private final Value jdiValue;
+        private final boolean isNull;
+
+        LocalEntry(com.sun.jdi.LocalVariable jdiLocal, Value jdiValue, boolean isNull) {
+            this.jdiLocal = jdiLocal;
+            this.jdiValue = jdiValue;
+            this.isNull = isNull;
+        }
+
+        public com.sun.jdi.LocalVariable jdiLocal() { return jdiLocal; }
+        public Value jdiValue() { return jdiValue; }
+        public boolean isNull() { return isNull; }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (!(o instanceof LocalEntry)) return false;
+            LocalEntry that = (LocalEntry) o;
+            return isNull == that.isNull
+                    && Objects.equals(jdiLocal, that.jdiLocal)
+                    && Objects.equals(jdiValue, that.jdiValue);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(jdiLocal, jdiValue, isNull);
+        }
+
+        @Override
+        public String toString() {
+            return "LocalEntry[jdiLocal=" + jdiLocal + ", jdiValue=" + jdiValue
+                    + ", isNull=" + isNull + "]";
+        }
+    }
+
     /**
      * Restore a frozen thread from a snapshot.
      *
@@ -245,24 +283,45 @@ final class ThreadRestorer {
                         // Snapshot frames are [bottom..top], so deepest = frameCount-1
                         int snapshotFrameIdx = frameCount - 1 - f;
 
-                        ThreadReference tr2 = waitForThreadAtMethod(vm, threadName,
-                                "localsReady", "ReplayState", 30_000);
-                        if (tr2 == null) {
+                        // Retry loop: after releasing the previous frame's latch, the
+                        // replay thread may still be WAITING inside the old localsReady()
+                        // call when we poll. We detect this via frame identity mismatch
+                        // and retry until the thread advances to the correct frame.
+                        long deadline = System.currentTimeMillis() + 30_000;
+                        boolean frameSet = false;
+                        while (!frameSet && System.currentTimeMillis() < deadline) {
+                            ThreadReference tr2 = waitForThreadAtMethod(vm, threadName,
+                                    "localsReady", "ReplayState",
+                                    deadline - System.currentTimeMillis());
+                            if (tr2 == null) {
+                                throw new RuntimeException(
+                                        "Timeout waiting for replay thread '" + threadName
+                                        + "' to reach localsReady() for frame " + f
+                                        + " (" + snapshot.frames().get(snapshotFrameIdx).className()
+                                        + "." + snapshot.frames().get(snapshotFrameIdx).methodName()
+                                        + "). The thread may have failed during re-execution.");
+                            }
+
+                            tr2.suspend();
+                            try {
+                                if (isCorrectFrame(tr2, snapshot.frames().get(snapshotFrameIdx))) {
+                                    setLocalsForSingleFrame(vm, tr2, snapshot,
+                                            restoredHeap, heapRestorer, snapshotFrameIdx);
+                                    ReplayState.releaseLocalsReady();
+                                    frameSet = true;
+                                }
+                                // else: thread is still in previous frame's localsReady(),
+                                // resume and retry after it advances
+                            } finally {
+                                tr2.resume();
+                            }
+                        }
+                        if (!frameSet) {
                             throw new RuntimeException(
-                                    "Timeout waiting for replay thread '" + threadName
-                                    + "' to reach localsReady() for frame " + f
+                                    "Timeout waiting for correct frame for " + f
                                     + " (" + snapshot.frames().get(snapshotFrameIdx).className()
                                     + "." + snapshot.frames().get(snapshotFrameIdx).methodName()
                                     + "). The thread may have failed during re-execution.");
-                        }
-
-                        tr2.suspend();
-                        try {
-                            setLocalsForSingleFrame(vm, tr2, snapshot,
-                                    restoredHeap, heapRestorer, snapshotFrameIdx);
-                            ReplayState.releaseLocalsReady();
-                        } finally {
-                            tr2.resume();
                         }
                     }
 
@@ -323,6 +382,36 @@ final class ThreadRestorer {
             }
         }
         return null;
+    }
+
+    /**
+     * Check if the first user frame on the JDI stack matches the expected snapshot frame.
+     * Used to detect when the replay thread is still in a previous frame's localsReady()
+     * vs. having advanced to the correct frame's localsReady().
+     * Thread must already be suspended.
+     */
+    private static boolean isCorrectFrame(ThreadReference tr, FrameSnapshot snapFrame) {
+        try {
+            List<StackFrame> jdiFrames = tr.frames(0, Math.min(15, tr.frameCount()));
+            for (StackFrame jdiFrame : jdiFrames) {
+                Location loc = jdiFrame.location();
+                String jdiClassName = loc.declaringType().name().replace('.', '/');
+                String jdiMethodName = loc.method().name();
+                // Skip infrastructure frames
+                if (jdiClassName.startsWith("ai/jacc/durableThreads/ReplayState")
+                        || jdiClassName.startsWith("java/")
+                        || jdiClassName.startsWith("jdk/")
+                        || jdiClassName.startsWith("sun/")) {
+                    continue;
+                }
+                // First user frame — check if it matches
+                return jdiClassName.equals(snapFrame.className())
+                        && jdiMethodName.equals(snapFrame.methodName());
+            }
+        } catch (IncompatibleThreadStateException e) {
+            // Can't read frames
+        }
+        return false;
     }
 
     /**
@@ -522,8 +611,7 @@ final class ThreadRestorer {
         // Pre-resolve all values and pin object references to prevent GC collection.
         // The target JVM's GC can collect objects between resolve and setValue(),
         // causing ObjectCollectedException. disableCollection() prevents this.
-        record LocalEntry(com.sun.jdi.LocalVariable jdiLocal,
-                          Value jdiValue, boolean isNull) {}
+        // LocalEntry is defined as a static inner class of ThreadRestorer
         List<LocalEntry> entries = new ArrayList<>();
         List<ObjectReference> pinnedRefs = new ArrayList<>();
 
@@ -535,7 +623,8 @@ final class ThreadRestorer {
                     restoredHeap, heapRestorer);
             boolean isNull = snapLocal.value() instanceof NullRef;
 
-            if (jdiValue instanceof ObjectReference objRef) {
+            if (jdiValue instanceof ObjectReference) {
+                ObjectReference objRef = (ObjectReference) jdiValue;
                 try {
                     objRef.disableCollection();
                     pinnedRefs.add(objRef);
@@ -543,7 +632,8 @@ final class ThreadRestorer {
                     // Object was collected before we could pin it — re-resolve
                     jdiValue = convertToJdiValue(vm, snapLocal.value(),
                             restoredHeap, heapRestorer);
-                    if (jdiValue instanceof ObjectReference retryRef) {
+                    if (jdiValue instanceof ObjectReference) {
+                        ObjectReference retryRef = (ObjectReference) jdiValue;
                         retryRef.disableCollection();
                         pinnedRefs.add(retryRef);
                     }
@@ -599,11 +689,14 @@ final class ThreadRestorer {
     private static Value convertToJdiValue(VirtualMachine vm, ObjectRef ref,
                                            Map<Long, Object> restoredHeap,
                                            HeapRestorer heapRestorer) {
-        return switch (ref) {
-            case NullRef ignored -> null;
-            case PrimitiveRef p -> convertPrimitiveToJdiValue(vm, p.value());
-            case HeapRef h -> resolveHeapRefViaJdi(vm, h.id());
-        };
+        if (ref instanceof NullRef) {
+            return null;
+        } else if (ref instanceof PrimitiveRef) {
+            return convertPrimitiveToJdiValue(vm, ((PrimitiveRef) ref).value());
+        } else if (ref instanceof HeapRef) {
+            return resolveHeapRefViaJdi(vm, ((HeapRef) ref).id());
+        }
+        return null;
     }
 
     /**
@@ -698,14 +791,14 @@ final class ThreadRestorer {
                 if (keyField == null || valField == null) break;
 
                 Value keyVal = node.getValue(keyField);
-                if (keyVal instanceof StringReference sr && sr.value().equals(targetKey)) {
+                if (keyVal instanceof StringReference && ((StringReference) keyVal).value().equals(targetKey)) {
                     return node.getValue(valField);
                 }
 
                 // Follow the chain
                 if (nextField != null) {
                     Value nextVal = node.getValue(nextField);
-                    node = (nextVal instanceof ObjectReference or) ? or : null;
+                    node = (nextVal instanceof ObjectReference) ? (ObjectReference) nextVal : null;
                 } else {
                     break;
                 }
@@ -720,8 +813,8 @@ final class ThreadRestorer {
     private static com.sun.jdi.Field findField(ReferenceType type, String name) {
         com.sun.jdi.Field f = type.fieldByName(name);
         if (f != null) return f;
-        if (type instanceof ClassType ct && ct.superclass() != null) {
-            return findField(ct.superclass(), name);
+        if (type instanceof ClassType && ((ClassType) type).superclass() != null) {
+            return findField(((ClassType) type).superclass(), name);
         }
         return null;
     }
@@ -730,15 +823,15 @@ final class ThreadRestorer {
      * Convert a boxed primitive to the corresponding JDI Value.
      */
     private static Value convertPrimitiveToJdiValue(VirtualMachine vm, java.io.Serializable value) {
-        if (value instanceof Boolean b) return vm.mirrorOf(b);
-        if (value instanceof Byte b) return vm.mirrorOf(b);
-        if (value instanceof Character c) return vm.mirrorOf(c);
-        if (value instanceof Short s) return vm.mirrorOf(s);
-        if (value instanceof Integer i) return vm.mirrorOf(i);
-        if (value instanceof Long l) return vm.mirrorOf(l);
-        if (value instanceof Float f) return vm.mirrorOf(f);
-        if (value instanceof Double d) return vm.mirrorOf(d);
-        if (value instanceof String s) return vm.mirrorOf(s);
+        if (value instanceof Boolean) return vm.mirrorOf((Boolean) value);
+        if (value instanceof Byte) return vm.mirrorOf((Byte) value);
+        if (value instanceof Character) return vm.mirrorOf((Character) value);
+        if (value instanceof Short) return vm.mirrorOf((Short) value);
+        if (value instanceof Integer) return vm.mirrorOf((Integer) value);
+        if (value instanceof Long) return vm.mirrorOf((Long) value);
+        if (value instanceof Float) return vm.mirrorOf((Float) value);
+        if (value instanceof Double) return vm.mirrorOf((Double) value);
+        if (value instanceof String) return vm.mirrorOf((String) value);
         return null;
     }
 

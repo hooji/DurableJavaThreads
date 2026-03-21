@@ -100,7 +100,8 @@ public final class OperandStackChecker {
                                                  String methodName) {
         if (frame == null) return null; // unreachable code
 
-        if (insn instanceof MethodInsnNode methodInsn) {
+        if (insn instanceof MethodInsnNode) {
+            MethodInsnNode methodInsn = (MethodInsnNode) insn;
             int expectedStackDepth = computeInvokeConsumedSlots(
                     methodInsn.getOpcode(), methodInsn.desc);
             int actualStackDepth = frame.getStackSize();
@@ -114,7 +115,8 @@ public final class OperandStackChecker {
                         methodName, methodInsn.owner, methodInsn.name, methodInsn.desc,
                         extraSlots);
             }
-        } else if (insn instanceof InvokeDynamicInsnNode indyInsn) {
+        } else if (insn instanceof InvokeDynamicInsnNode) {
+            InvokeDynamicInsnNode indyInsn = (InvokeDynamicInsnNode) insn;
             int expectedStackDepth = computeInvokeConsumedSlots(
                     Opcodes.INVOKESTATIC, indyInsn.desc); // invokedynamic has no receiver
             int actualStackDepth = frame.getStackSize();

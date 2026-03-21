@@ -224,7 +224,7 @@ class SequentialFreezeRestoreTest {
         ThreadSnapshot restored3 = deserialize(bytes3);
 
         // All restored snapshots should have the same data
-        for (ThreadSnapshot r : List.of(restored1, restored2, restored3)) {
+        for (ThreadSnapshot r : Arrays.asList(restored1, restored2, restored3)) {
             assertEquals(snapshot.capturedAt(), r.capturedAt());
             assertEquals(snapshot.threadName(), r.threadName());
             assertEquals(snapshot.frameCount(), r.frameCount());
@@ -337,7 +337,7 @@ class SequentialFreezeRestoreTest {
         // Simulate the locals at the freeze point inside runLoop:
         // slot 0: start (int), slot 1: end (int), slot 2: freezeInterval (int),
         // slot 3: freezeLog (List), slot 4: sum (int), slot 5: i (int)
-        var locals = List.of(
+        List<LocalVariable> locals = Arrays.asList(
                 new LocalVariable(0, "start", "I", new PrimitiveRef(0)),
                 new LocalVariable(1, "end", "I", new PrimitiveRef(101)),
                 new LocalVariable(2, "freezeInterval", "I", new PrimitiveRef(5)),
@@ -346,7 +346,7 @@ class SequentialFreezeRestoreTest {
                 new LocalVariable(5, "i", "I", new PrimitiveRef(loopCounter))
         );
 
-        var frame = new FrameSnapshot(
+        FrameSnapshot frame = new FrameSnapshot(
                 "ai/jacc/durableThreads/SequentialFreezeRestoreTest$PeriodicFreezeWorkflow",
                 "runLoop", "(IIILjava/util/List;)I",
                 42, // placeholder BCP
@@ -358,8 +358,8 @@ class SequentialFreezeRestoreTest {
         return new ThreadSnapshot(
                 timestamp,
                 "workflow-thread",
-                List.of(frame),
-                List.of() // no heap objects needed for this test
+                Arrays.asList(frame),
+                Collections.<ObjectSnapshot>emptyList() // no heap objects needed for this test
         );
     }
 
@@ -371,7 +371,8 @@ class SequentialFreezeRestoreTest {
 
     private static int extractLoopCounter(ThreadSnapshot snapshot) {
         for (LocalVariable local : snapshot.topFrame().locals()) {
-            if ("i".equals(local.name()) && local.value() instanceof PrimitiveRef pr) {
+            if ("i".equals(local.name()) && local.value() instanceof PrimitiveRef) {
+                PrimitiveRef pr = (PrimitiveRef) local.value();
                 return (int) pr.value();
             }
         }
@@ -476,7 +477,13 @@ class SequentialFreezeRestoreTest {
         String resourcePath = clazz.getName().replace('.', '/') + ".class";
         try (InputStream is = clazz.getClassLoader().getResourceAsStream(resourcePath)) {
             assertNotNull(is, "Could not load class bytes for " + clazz.getName());
-            return is.readAllBytes();
+            ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+            byte[] data = new byte[4096];
+            int bytesRead;
+            while ((bytesRead = is.read(data, 0, data.length)) != -1) {
+                buffer.write(data, 0, bytesRead);
+            }
+            return buffer.toByteArray();
         }
     }
 }

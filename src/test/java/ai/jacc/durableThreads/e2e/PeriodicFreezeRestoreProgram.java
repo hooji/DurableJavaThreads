@@ -56,7 +56,7 @@ public class PeriodicFreezeRestoreProgram {
                 Durable.freeze(snapshot -> {
                     try {
                         byte[] bytes = serialize(snapshot);
-                        Path file = Path.of(snapshotDir, "checkpoint-" + capturedI + ".bin");
+                        Path file = Paths.get(snapshotDir, "checkpoint-" + capturedI + ".bin");
                         Files.write(file, bytes);
                         System.out.println("FREEZE i=" + capturedI
                                 + " sum=" + capturedSum

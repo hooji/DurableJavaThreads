@@ -4,11 +4,14 @@ import org.junit.jupiter.api.*;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -35,7 +38,7 @@ class ReadmeDemoIT {
     @AfterEach
     void tearDown() throws IOException {
         if (tempDir != null) {
-            try (var files = Files.walk(tempDir)) {
+            try (Stream<Path> files = Files.walk(tempDir)) {
                 files.sorted(Comparator.reverseOrder())
                         .forEach(p -> { try { Files.delete(p); } catch (IOException ignored) {} });
             }
@@ -48,40 +51,42 @@ class ReadmeDemoIT {
         String agentJar = findAgentJar();
 
         // Write FreezeDemo.java — exactly as shown in the README
-        Files.writeString(tempDir.resolve("FreezeDemo.java"), """
-                import ai.jacc.durableThreads.Durable;
-
-                public class FreezeDemo {
-                    public static void main(String[] args) throws Exception {
-                        for (int i = 0; i <= 10; i++) {
-                            System.out.println("i=" + i);
-
-                            if (i == 5) {
-                                System.out.println("About to freeze!");
-                                Durable.freeze("./snapshot.dat");
-                                // Everything below only runs after restore
-                                System.out.println("Resumed!");
-                            }
-                        }
-                        System.out.println("Done!");
-                    }
-                }
-                """);
+        String freezeDemoSource =
+                "import ai.jacc.durableThreads.Durable;\n"
+                + "\n"
+                + "public class FreezeDemo {\n"
+                + "    public static void main(String[] args) throws Exception {\n"
+                + "        for (int i = 0; i <= 10; i++) {\n"
+                + "            System.out.println(\"i=\" + i);\n"
+                + "\n"
+                + "            if (i == 5) {\n"
+                + "                System.out.println(\"About to freeze!\");\n"
+                + "                Durable.freeze(\"./snapshot.dat\");\n"
+                + "                // Everything below only runs after restore\n"
+                + "                System.out.println(\"Resumed!\");\n"
+                + "            }\n"
+                + "        }\n"
+                + "        System.out.println(\"Done!\");\n"
+                + "    }\n"
+                + "}\n";
+        Files.write(tempDir.resolve("FreezeDemo.java"), freezeDemoSource.getBytes(StandardCharsets.UTF_8));
 
         // Write RestoreDemo.java — exactly as shown in the README
-        Files.writeString(tempDir.resolve("RestoreDemo.java"), """
-                import ai.jacc.durableThreads.Durable;
-
-                public class RestoreDemo {
-                    public static void main(String[] args) throws Exception {
-                        Durable.restore("./snapshot.dat", true, true);
-                    }
-                }
-                """);
+        String restoreDemoSource =
+                "import ai.jacc.durableThreads.Durable;\n"
+                + "\n"
+                + "public class RestoreDemo {\n"
+                + "    public static void main(String[] args) throws Exception {\n"
+                + "        Durable.restore(\"./snapshot.dat\", true, true);\n"
+                + "    }\n"
+                + "}\n";
+        Files.write(tempDir.resolve("RestoreDemo.java"), restoreDemoSource.getBytes(StandardCharsets.UTF_8));
 
         // --- Compile with javac -g (exactly as README instructs) ---
         String javaHome = System.getProperty("java.home");
-        String javac = Path.of(javaHome, "bin", "javac").toString();
+        // On Java 8, java.home points to the JRE subdir; javac is in the parent bin/
+        // On Windows, the executable is javac.exe so we check for both names.
+        String javac = resolveExecutable(javaHome, "javac");
 
         ProcessBuilder compilePb = new ProcessBuilder(
                 javac, "-g", "-cp", agentJar,
@@ -97,23 +102,28 @@ class ReadmeDemoIT {
         assertTrue(Files.exists(tempDir.resolve("RestoreDemo.class")), "RestoreDemo.class should exist");
 
         // --- Run FreezeDemo (freezes main thread at i==5) ---
-        String java = Path.of(javaHome, "bin", "java").toString();
+        String java = Paths.get(javaHome, "bin", "java").toString();
         String classpath = tempDir.toAbsolutePath() + File.pathSeparator + agentJar;
+        String toolsJar = ChildJvm.findToolsJar();
+        if (toolsJar != null) {
+            classpath += File.pathSeparator + toolsJar;
+        }
 
-        ProcessBuilder freezePb = new ProcessBuilder(
+        List<String> freezeCmd = new ArrayList<>(Arrays.asList(
                 java,
                 "-javaagent:" + agentJar,
-                "-agentlib:jdwp=transport=dt_socket,server=y,suspend=n",
-                "--add-modules", "jdk.jdi",
-                "-cp", classpath,
-                "-D_JAVA_OPTIONS=",
-                "FreezeDemo");
+                "-agentlib:jdwp=transport=dt_socket,server=y,suspend=n"));
+        if (ChildJvm.javaSpecVersion() >= 9) {
+            freezeCmd.addAll(Arrays.asList("--add-modules", "jdk.jdi"));
+        }
+        freezeCmd.addAll(Arrays.asList("-cp", classpath, "-D_JAVA_OPTIONS=", "FreezeDemo"));
+        ProcessBuilder freezePb = new ProcessBuilder(freezeCmd);
         freezePb.directory(tempDir.toFile());
         freezePb.environment().remove("JAVA_TOOL_OPTIONS");
         Process freezeProc = freezePb.start();
 
-        var freezeStdout = CompletableFuture.supplyAsync(() -> readStream(freezeProc.getInputStream()));
-        var freezeStderr = CompletableFuture.supplyAsync(() -> readStream(freezeProc.getErrorStream()));
+        CompletableFuture<String> freezeStdout = CompletableFuture.supplyAsync(() -> readStream(freezeProc.getInputStream()));
+        CompletableFuture<String> freezeStderr = CompletableFuture.supplyAsync(() -> readStream(freezeProc.getErrorStream()));
 
         assertTrue(freezeProc.waitFor(60, TimeUnit.SECONDS), "FreezeDemo should complete within 60s");
 
@@ -121,7 +131,7 @@ class ReadmeDemoIT {
         String fErr = freezeStderr.get(5, TimeUnit.SECONDS);
 
         System.out.println("=== FREEZE STDOUT ===\n" + fOut);
-        if (!fErr.isBlank()) System.out.println("=== FREEZE STDERR ===\n" + fErr);
+        if (!fErr.trim().isEmpty()) System.out.println("=== FREEZE STDERR ===\n" + fErr);
 
         // Should print i=0 through i=5 and "About to freeze!"
         for (int i = 0; i <= 5; i++) {
@@ -140,20 +150,21 @@ class ReadmeDemoIT {
         assertTrue(Files.size(snapshotFile) > 100, "snapshot.dat should have content");
 
         // --- Run RestoreDemo ---
-        ProcessBuilder restorePb = new ProcessBuilder(
+        List<String> restoreCmd = new ArrayList<>(Arrays.asList(
                 java,
                 "-javaagent:" + agentJar,
-                "-agentlib:jdwp=transport=dt_socket,server=y,suspend=n",
-                "--add-modules", "jdk.jdi",
-                "-cp", classpath,
-                "-D_JAVA_OPTIONS=",
-                "RestoreDemo");
+                "-agentlib:jdwp=transport=dt_socket,server=y,suspend=n"));
+        if (ChildJvm.javaSpecVersion() >= 9) {
+            restoreCmd.addAll(Arrays.asList("--add-modules", "jdk.jdi"));
+        }
+        restoreCmd.addAll(Arrays.asList("-cp", classpath, "-D_JAVA_OPTIONS=", "RestoreDemo"));
+        ProcessBuilder restorePb = new ProcessBuilder(restoreCmd);
         restorePb.directory(tempDir.toFile());
         restorePb.environment().remove("JAVA_TOOL_OPTIONS");
         Process restoreProc = restorePb.start();
 
-        var restoreStdout = CompletableFuture.supplyAsync(() -> readStream(restoreProc.getInputStream()));
-        var restoreStderr = CompletableFuture.supplyAsync(() -> readStream(restoreProc.getErrorStream()));
+        CompletableFuture<String> restoreStdout = CompletableFuture.supplyAsync(() -> readStream(restoreProc.getInputStream()));
+        CompletableFuture<String> restoreStderr = CompletableFuture.supplyAsync(() -> readStream(restoreProc.getErrorStream()));
 
         assertTrue(restoreProc.waitFor(60, TimeUnit.SECONDS), "RestoreDemo should complete within 60s");
 
@@ -161,7 +172,7 @@ class ReadmeDemoIT {
         String rErr = restoreStderr.get(5, TimeUnit.SECONDS);
 
         System.out.println("=== RESTORE STDOUT ===\n" + rOut);
-        if (!rErr.isBlank()) System.out.println("=== RESTORE STDERR ===\n" + rErr);
+        if (!rErr.trim().isEmpty()) System.out.println("=== RESTORE STDERR ===\n" + rErr);
 
         // Restored thread should resume and complete
         assertTrue(rOut.contains("Resumed!"), "Restored thread should print 'Resumed!'");
@@ -173,26 +184,26 @@ class ReadmeDemoIT {
         // Restored thread must NOT replay pre-freeze output
         for (int i = 0; i <= 4; i++) {
             String lineToCheck = "i=" + i;
-            assertFalse(rOut.lines().anyMatch(l -> l.equals(lineToCheck)),
+            assertFalse(Arrays.stream(rOut.split("\n")).anyMatch(l -> l.equals(lineToCheck)),
                     "Restore must not replay i=" + i + ". Stdout:\n" + rOut);
         }
         assertFalse(rOut.contains("About to freeze!"),
                 "Restore must not replay 'About to freeze!'. Stdout:\n" + rOut);
 
         // Exact output check: only post-freeze lines
-        var userLines = rOut.lines()
-                .filter(l -> !l.isBlank())
+        List<String> userLines = Arrays.stream(rOut.split("\n"))
+                .filter(l -> !l.trim().isEmpty())
                 .filter(l -> !l.startsWith("Listening for transport dt_socket"))
-                .toList();
-        assertEquals(List.of(
+                .collect(Collectors.toList());
+        assertEquals(Arrays.asList(
                 "Resumed!", "i=6", "i=7", "i=8", "i=9", "i=10", "Done!"),
                 userLines,
                 "Restore output should be exactly the post-freeze lines. Got:\n" + rOut);
     }
 
     private static String findAgentJar() {
-        Path target = Path.of("target");
-        try (var files = Files.list(target)) {
+        Path target = Paths.get("target");
+        try (Stream<Path> files = Files.list(target)) {
             return files
                     .filter(p -> p.getFileName().toString().startsWith("durable-threads-"))
                     .filter(p -> p.getFileName().toString().endsWith(".jar"))
@@ -207,8 +218,26 @@ class ReadmeDemoIT {
         }
     }
 
+    /**
+     * Resolve a JDK executable (e.g. "javac") from java.home.
+     * Handles: Java 8 JRE layout (../bin/), Windows (.exe suffix).
+     */
+    private static String resolveExecutable(String javaHome, String name) {
+        // Try standard location first, then Java 8 fallback (java.home = jre/)
+        for (String base : new String[]{
+                Paths.get(javaHome, "bin").toString(),
+                Paths.get(javaHome, "..", "bin").normalize().toString()}) {
+            Path plain = Paths.get(base, name);
+            if (Files.exists(plain)) return plain.toString();
+            Path exe = Paths.get(base, name + ".exe");
+            if (Files.exists(exe)) return exe.toString();
+        }
+        // Fall back to unqualified name — let the OS resolve it
+        return Paths.get(javaHome, "bin", name).toString();
+    }
+
     private static String readStream(java.io.InputStream is) {
-        try (var reader = new java.io.BufferedReader(new java.io.InputStreamReader(is))) {
+        try (java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.InputStreamReader(is))) {
             StringBuilder sb = new StringBuilder();
             String line;
             while ((line = reader.readLine()) != null) {

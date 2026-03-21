@@ -26,7 +26,7 @@ public class RestoreProgram {
         }
         String snapshotFile = args[0];
 
-        byte[] bytes = Files.readAllBytes(Path.of(snapshotFile));
+        byte[] bytes = Files.readAllBytes(Paths.get(snapshotFile));
         ThreadSnapshot snapshot = deserialize(bytes);
 
         System.out.println("SNAPSHOT_LOADED=true");

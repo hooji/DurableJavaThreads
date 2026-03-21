@@ -9,6 +9,7 @@ import java.io.ObjectInputStream;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.function.Consumer;
 
 /**
@@ -150,7 +151,7 @@ public final class Durable {
      * @throws UncheckedIOException if the file cannot be read
      */
     public static Thread restore(String filePath) {
-        return restore(Path.of(filePath));
+        return restore(Paths.get(filePath));
     }
 
     /**
@@ -164,7 +165,7 @@ public final class Durable {
      * @throws UncheckedIOException if the file cannot be read
      */
     public static Thread restore(String filePath, boolean startThread) {
-        return restore(Path.of(filePath), startThread);
+        return restore(Paths.get(filePath), startThread);
     }
 
     /**
@@ -183,7 +184,7 @@ public final class Durable {
      */
     public static Thread restore(String filePath, boolean startThread,
                                  boolean waitForThreadToFinish) throws InterruptedException {
-        return restore(Path.of(filePath), startThread, waitForThreadToFinish);
+        return restore(Paths.get(filePath), startThread, waitForThreadToFinish);
     }
 
     /**

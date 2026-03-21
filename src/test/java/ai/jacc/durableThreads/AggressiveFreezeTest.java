@@ -3,6 +3,7 @@ package ai.jacc.durableThreads;
 import org.junit.jupiter.api.Test;
 import org.objectweb.asm.*;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.lang.reflect.Method;
@@ -548,7 +549,7 @@ class AggressiveFreezeTest {
             // point, so it's skipped and h gets null (default for Object). When the
             // post-freeze code calls h.length(), it throws NullPointerException.
             // In a real restore, JDI would set h to the correct value.
-            var thrown = assertThrows(java.lang.reflect.InvocationTargetException.class,
+            java.lang.reflect.InvocationTargetException thrown = assertThrows(java.lang.reflect.InvocationTargetException.class,
                     () -> m.invoke(null, 10));
             assertInstanceOf(NullPointerException.class, thrown.getCause(),
                     "h is null because string concat invoke was skipped");
@@ -712,7 +713,13 @@ class AggressiveFreezeTest {
         String resourcePath = clazz.getName().replace('.', '/') + ".class";
         try (InputStream is = clazz.getClassLoader().getResourceAsStream(resourcePath)) {
             assertNotNull(is, "Could not load class bytes for " + clazz.getName());
-            return is.readAllBytes();
+            ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+            byte[] data = new byte[4096];
+            int bytesRead;
+            while ((bytesRead = is.read(data, 0, data.length)) != -1) {
+                buffer.write(data, 0, bytesRead);
+            }
+            return buffer.toByteArray();
         }
     }
 }

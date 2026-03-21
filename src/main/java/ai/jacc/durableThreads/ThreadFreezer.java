@@ -123,7 +123,7 @@ final class ThreadFreezer {
         // Phase 2: busy spin (should truly never be reached)
         //noinspection InfiniteLoopStatement
         while (true) {
-            Thread.onSpinWait();
+            Thread.yield();
         }
     }
 
@@ -340,7 +340,7 @@ final class ThreadFreezer {
             int slot = 0;
             try {
                 // Attempt to get the slot via reflection on JDI impl
-                var slotMethod = jdiLocal.getClass().getMethod("slot");
+                java.lang.reflect.Method slotMethod = jdiLocal.getClass().getMethod("slot");
                 slot = (int) slotMethod.invoke(jdiLocal);
             } catch (Exception ignored) {}
             result.add(new ai.jacc.durableThreads.snapshot.LocalVariable(
@@ -359,11 +359,11 @@ final class ThreadFreezer {
         private static final Set<Long> frozenThreads = Collections.synchronizedSet(new HashSet<>());
 
         static void markFrozen(Thread t) {
-            frozenThreads.add(t.threadId());
+            frozenThreads.add(t.getId());
         }
 
         static boolean isFrozen(Thread t) {
-            return frozenThreads.remove(t.threadId());
+            return frozenThreads.remove(t.getId());
         }
     }
 }

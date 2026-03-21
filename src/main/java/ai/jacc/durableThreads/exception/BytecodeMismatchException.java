@@ -1,5 +1,7 @@
 package ai.jacc.durableThreads.exception;
 
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 /**
@@ -12,7 +14,7 @@ public class BytecodeMismatchException extends RuntimeException {
 
     public BytecodeMismatchException(List<String> changedMethods) {
         super("Bytecode has changed for methods: " + changedMethods);
-        this.changedMethods = List.copyOf(changedMethods);
+        this.changedMethods = Collections.unmodifiableList(new ArrayList<>(changedMethods));
     }
 
     /** Fully qualified names of methods whose bytecode has changed. */

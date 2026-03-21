@@ -74,7 +74,7 @@ public class DeepCallChainFreezeProgram {
         Durable.freeze(snapshot -> {
             try {
                 byte[] bytes = serialize(snapshot);
-                Files.write(Path.of(snapshotFile), bytes);
+                Files.write(Paths.get(snapshotFile), bytes);
                 System.out.println("FREEZE_COMPLETE");
                 System.out.println("FRAME_COUNT=" + snapshot.frameCount());
                 System.out.flush();

@@ -9,8 +9,8 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.net.ServerSocket;
 import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.*;
@@ -177,7 +177,7 @@ public final class JdiHelper {
         } else if (os.contains("win")) {
             return getListeningPortsWindows();
         }
-        return List.of(); // Unknown OS — fall through to ephemeral scan
+        return Collections.emptyList(); // Unknown OS — fall through to ephemeral scan
     }
 
     /**
@@ -189,7 +189,7 @@ public final class JdiHelper {
         List<Integer> ports = new ArrayList<>();
         for (String procFile : new String[]{"/proc/net/tcp", "/proc/net/tcp6"}) {
             try {
-                List<String> lines = Files.readAllLines(Path.of(procFile));
+                List<String> lines = Files.readAllLines(java.nio.file.Paths.get(procFile));
                 for (int i = 1; i < lines.size(); i++) { // skip header
                     String[] fields = lines.get(i).trim().split("\\s+");
                     if (fields.length >= 4 && "0A".equals(fields[3])) {
@@ -215,11 +215,12 @@ public final class JdiHelper {
      */
     private static List<Integer> getListeningPortsMacOS() {
         List<Integer> ports = new ArrayList<>();
-        long pid = ProcessHandle.current().pid();
+        long pid = getPid();
         try {
             Process proc = new ProcessBuilder("lsof", "-iTCP", "-sTCP:LISTEN", "-nP",
                     "-p", String.valueOf(pid)).redirectErrorStream(true).start();
-            try (var reader = new BufferedReader(new InputStreamReader(proc.getInputStream()))) {
+            BufferedReader reader = new BufferedReader(new InputStreamReader(proc.getInputStream()));
+            try {
                 String line;
                 while ((line = reader.readLine()) != null) {
                     // Find "TCP *:PORT" or "TCP 127.0.0.1:PORT"
@@ -240,6 +241,8 @@ public final class JdiHelper {
                     } catch (NumberFormatException ignored) {
                     }
                 }
+            } finally {
+                reader.close();
             }
             proc.waitFor(5, TimeUnit.SECONDS);
         } catch (Exception ignored) {
@@ -253,11 +256,12 @@ public final class JdiHelper {
      */
     private static List<Integer> getListeningPortsWindows() {
         List<Integer> ports = new ArrayList<>();
-        String pid = String.valueOf(ProcessHandle.current().pid());
+        String pid = String.valueOf(getPid());
         try {
             Process proc = new ProcessBuilder("netstat", "-ano")
                     .redirectErrorStream(true).start();
-            try (var reader = new BufferedReader(new InputStreamReader(proc.getInputStream()))) {
+            BufferedReader reader = new BufferedReader(new InputStreamReader(proc.getInputStream()));
+            try {
                 String line;
                 while ((line = reader.readLine()) != null) {
                     String trimmed = line.trim();
@@ -276,6 +280,8 @@ public final class JdiHelper {
                     } catch (NumberFormatException ignored) {
                     }
                 }
+            } finally {
+                reader.close();
             }
             proc.waitFor(5, TimeUnit.SECONDS);
         } catch (Exception ignored) {
@@ -289,7 +295,7 @@ public final class JdiHelper {
      * or if port 0 was specified (meaning OS-assigned).
      */
     private static int detectPortFromArguments() {
-        var args = java.lang.management.ManagementFactory.getRuntimeMXBean().getInputArguments();
+        List<String> args = java.lang.management.ManagementFactory.getRuntimeMXBean().getInputArguments();
         for (String arg : args) {
             if (arg.contains("jdwp") && arg.contains("address=")) {
                 String addressPart = extractValue(arg, "address");
@@ -383,7 +389,7 @@ public final class JdiHelper {
      */
     private static boolean isJdwpOnCommandLine() {
         try {
-            var args = java.lang.management.ManagementFactory.getRuntimeMXBean().getInputArguments();
+            List<String> args = java.lang.management.ManagementFactory.getRuntimeMXBean().getInputArguments();
             for (String arg : args) {
                 if (arg.contains("jdwp")) {
                     return true;
@@ -418,7 +424,7 @@ public final class JdiHelper {
                 Field nonceField = types.get(0).fieldByName("jdwpDiscoveryNonce");
                 if (nonceField == null) { vm.dispose(); return null; }
                 Value val = types.get(0).getValue(nonceField);
-                if (val instanceof StringReference sr && expectedNonce.equals(sr.value())) {
+                if (val instanceof StringReference && expectedNonce.equals(((StringReference) val).value())) {
                     return vm; // Nonce matches — return the connection
                 }
                 vm.dispose();
@@ -528,5 +534,21 @@ public final class JdiHelper {
         int start = idx + key.length() + 1;
         int end = arg.indexOf(',', start);
         return end < 0 ? arg.substring(start) : arg.substring(start, end);
+    }
+
+    /**
+     * Get the current process ID in a Java 8 compatible way.
+     * Uses ManagementFactory.getRuntimeMXBean().getName() which returns "pid@hostname".
+     */
+    private static long getPid() {
+        String name = java.lang.management.ManagementFactory.getRuntimeMXBean().getName();
+        int atIdx = name.indexOf('@');
+        if (atIdx > 0) {
+            try {
+                return Long.parseLong(name.substring(0, atIdx));
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        return -1;
     }
 }
