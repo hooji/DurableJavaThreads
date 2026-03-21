@@ -161,6 +161,8 @@ Thread running          Snapshot file          New JVM
 
 4. **Restore via replay** — In a new JVM, `Durable.restore(snapshot)` rebuilds the heap, re-enters every method on the original call stack using the injected prologues, sets local variables via JDI, and resumes execution from exactly where `freeze()` was called.
 
+For a deep dive into how bytecode offsets are computed and why the freeze/restore mapping is correct across JVM restarts, see [Bytecode Offset Computation: Correctness Analysis](docs/bytecode-offset-correctness.md).
+
 ### How It Compares
 
 | Feature | Durable Threads | Quasar/Loom | CRIU | Project Loom |
