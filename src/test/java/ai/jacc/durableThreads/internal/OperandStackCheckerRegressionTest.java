@@ -275,7 +275,13 @@ class OperandStackCheckerRegressionTest {
         String resourcePath = clazz.getName().replace('.', '/') + ".class";
         try (InputStream is = clazz.getClassLoader().getResourceAsStream(resourcePath)) {
             assertNotNull(is);
-            return is.readAllBytes();
+            java.io.ByteArrayOutputStream buffer = new java.io.ByteArrayOutputStream();
+            byte[] data = new byte[4096];
+            int bytesRead;
+            while ((bytesRead = is.read(data, 0, data.length)) != -1) {
+                buffer.write(data, 0, bytesRead);
+            }
+            return buffer.toByteArray();
         }
     }
 
@@ -287,7 +293,7 @@ class OperandStackCheckerRegressionTest {
     private static byte[] generateClass(String simpleName, ClassBodyGenerator body) {
         String fullName = "com/test/" + simpleName;
         ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_FRAMES);
-        cw.visit(Opcodes.V21, Opcodes.ACC_PUBLIC, fullName, null,
+        cw.visit(Opcodes.V1_8, Opcodes.ACC_PUBLIC, fullName, null,
                 "java/lang/Object", null);
 
         MethodVisitor init = cw.visitMethod(Opcodes.ACC_PUBLIC, "<init>", "()V", null, null);

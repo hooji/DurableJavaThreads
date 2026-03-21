@@ -6,7 +6,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.*;
 import java.time.Instant;
-import java.util.*;;
+import java.util.*;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -40,27 +40,36 @@ class DurableIntegrationTest {
     @Test
     void snapshotIsSerializable() throws Exception {
         // Build a snapshot with all ref types
-        var locals = List.of(
+        List<LocalVariable> locals = Arrays.asList(
                 new LocalVariable(0, "this", "Lcom/example/Foo;", new HeapRef(1L)),
                 new LocalVariable(1, "x", "I", new PrimitiveRef(42)),
                 new LocalVariable(2, "name", "Ljava/lang/String;", new NullRef())
         );
-        var frame = new FrameSnapshot(
+        FrameSnapshot frame = new FrameSnapshot(
                 "com/example/Foo", "doWork", "()V",
                 42, 0, new byte[]{1, 2, 3, 4}, locals);
-        var heap = List.of(
+
+        Map<String, ObjectRef> obj1Fields = new LinkedHashMap<>();
+        obj1Fields.put("com.example.Foo.value", new PrimitiveRef(100));
+
+        Map<String, ObjectRef> obj2Fields = Collections.emptyMap();
+
+        Map<String, ObjectRef> obj3Fields = new LinkedHashMap<>();
+        obj3Fields.put("value", new PrimitiveRef("hello"));
+
+        List<ObjectSnapshot> heap = Arrays.asList(
                 new ObjectSnapshot(1L, "com.example.Foo", ObjectKind.REGULAR,
-                        Map.of("com.example.Foo.value", new PrimitiveRef(100)),
+                        obj1Fields,
                         null),
                 new ObjectSnapshot(2L, "[I", ObjectKind.ARRAY,
-                        Map.of(),
+                        obj2Fields,
                         new ObjectRef[]{new PrimitiveRef(1), new PrimitiveRef(2)}),
                 new ObjectSnapshot(3L, "java.lang.String", ObjectKind.STRING,
-                        Map.of("value", new PrimitiveRef("hello")),
+                        obj3Fields,
                         null)
         );
-        var original = new ThreadSnapshot(Instant.now(), "worker-1",
-                List.of(frame), heap);
+        ThreadSnapshot original = new ThreadSnapshot(Instant.now(), "worker-1",
+                Arrays.asList(frame), heap);
 
         // Serialize
         byte[] bytes;
@@ -102,10 +111,10 @@ class DurableIntegrationTest {
     @Test
     void snapshotSerializationSizeIsReasonable() throws Exception {
         // A simple snapshot shouldn't serialize to an enormous size
-        var snapshot = new ThreadSnapshot(Instant.now(), "t1",
-                List.of(new FrameSnapshot("Foo", "bar", "()V", 0, 0, new byte[32],
-                        List.of(new LocalVariable(0, "x", "I", new PrimitiveRef(1))))),
-                List.of());
+        ThreadSnapshot snapshot = new ThreadSnapshot(Instant.now(), "t1",
+                Arrays.asList(new FrameSnapshot("Foo", "bar", "()V", 0, 0, new byte[32],
+                        Arrays.asList(new LocalVariable(0, "x", "I", new PrimitiveRef(1))))),
+                Collections.<ObjectSnapshot>emptyList());
 
         byte[] bytes;
         try (ByteArrayOutputStream baos = new ByteArrayOutputStream();

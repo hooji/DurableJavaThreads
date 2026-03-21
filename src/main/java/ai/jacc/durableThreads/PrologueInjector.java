@@ -419,10 +419,12 @@ public final class PrologueInjector extends ClassVisitor {
          */
         private void emitOriginalCodeWithSkipChecks(int skipSlot, int retValSlot) {
             for (Runnable op : bufferedOps) {
-                if (op instanceof InvokeMarker marker) {
+                if (op instanceof InvokeMarker) {
+                    InvokeMarker marker = (InvokeMarker) op;
                     emitInvokeWithSkipCheck(skipSlot, retValSlot, marker.index, marker.opcode,
                             marker.owner, marker.name, marker.descriptor, marker.isInterface);
-                } else if (op instanceof InvokeDynamicMarker marker) {
+                } else if (op instanceof InvokeDynamicMarker) {
+                    InvokeDynamicMarker marker = (InvokeDynamicMarker) op;
                     emitInvokeDynamicWithSkipCheck(skipSlot, marker.index,
                             marker.name, marker.descriptor,
                             marker.bootstrapMethodHandle, marker.bootstrapMethodArguments);
@@ -571,9 +573,15 @@ public final class PrologueInjector extends ClassVisitor {
 
         private void popValue(Type type) {
             switch (type.getSort()) {
-                case Type.VOID -> {}
-                case Type.LONG, Type.DOUBLE -> target.visitInsn(Opcodes.POP2);
-                default -> target.visitInsn(Opcodes.POP);
+                case Type.VOID:
+                    break;
+                case Type.LONG:
+                case Type.DOUBLE:
+                    target.visitInsn(Opcodes.POP2);
+                    break;
+                default:
+                    target.visitInsn(Opcodes.POP);
+                    break;
             }
         }
 
@@ -589,24 +597,44 @@ public final class PrologueInjector extends ClassVisitor {
          */
         private void boxReturnValue(Type retType) {
             switch (retType.getSort()) {
-                case Type.VOID -> target.visitInsn(Opcodes.ACONST_NULL);
-                case Type.BOOLEAN -> target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                        RS, "boxBoolean", "(Z)Ljava/lang/Object;", false);
-                case Type.BYTE -> target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                        RS, "boxByte", "(B)Ljava/lang/Object;", false);
-                case Type.CHAR -> target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                        RS, "boxChar", "(C)Ljava/lang/Object;", false);
-                case Type.SHORT -> target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                        RS, "boxShort", "(S)Ljava/lang/Object;", false);
-                case Type.INT -> target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                        RS, "boxInt", "(I)Ljava/lang/Object;", false);
-                case Type.LONG -> target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                        RS, "boxLong", "(J)Ljava/lang/Object;", false);
-                case Type.FLOAT -> target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                        RS, "boxFloat", "(F)Ljava/lang/Object;", false);
-                case Type.DOUBLE -> target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                        RS, "boxDouble", "(D)Ljava/lang/Object;", false);
-                default -> {} // OBJECT and ARRAY are already references
+                case Type.VOID:
+                    target.visitInsn(Opcodes.ACONST_NULL);
+                    break;
+                case Type.BOOLEAN:
+                    target.visitMethodInsn(Opcodes.INVOKESTATIC,
+                            RS, "boxBoolean", "(Z)Ljava/lang/Object;", false);
+                    break;
+                case Type.BYTE:
+                    target.visitMethodInsn(Opcodes.INVOKESTATIC,
+                            RS, "boxByte", "(B)Ljava/lang/Object;", false);
+                    break;
+                case Type.CHAR:
+                    target.visitMethodInsn(Opcodes.INVOKESTATIC,
+                            RS, "boxChar", "(C)Ljava/lang/Object;", false);
+                    break;
+                case Type.SHORT:
+                    target.visitMethodInsn(Opcodes.INVOKESTATIC,
+                            RS, "boxShort", "(S)Ljava/lang/Object;", false);
+                    break;
+                case Type.INT:
+                    target.visitMethodInsn(Opcodes.INVOKESTATIC,
+                            RS, "boxInt", "(I)Ljava/lang/Object;", false);
+                    break;
+                case Type.LONG:
+                    target.visitMethodInsn(Opcodes.INVOKESTATIC,
+                            RS, "boxLong", "(J)Ljava/lang/Object;", false);
+                    break;
+                case Type.FLOAT:
+                    target.visitMethodInsn(Opcodes.INVOKESTATIC,
+                            RS, "boxFloat", "(F)Ljava/lang/Object;", false);
+                    break;
+                case Type.DOUBLE:
+                    target.visitMethodInsn(Opcodes.INVOKESTATIC,
+                            RS, "boxDouble", "(D)Ljava/lang/Object;", false);
+                    break;
+                default:
+                    // OBJECT and ARRAY are already references
+                    break;
             }
         }
 
@@ -619,64 +647,81 @@ public final class PrologueInjector extends ClassVisitor {
          */
         private void unboxReturnValue(Type retType, int retValSlot) {
             switch (retType.getSort()) {
-                case Type.VOID -> {} // nothing to push
-                case Type.BOOLEAN -> {
+                case Type.VOID:
+                    // nothing to push
+                    break;
+                case Type.BOOLEAN:
                     target.visitVarInsn(Opcodes.ALOAD, retValSlot);
                     target.visitMethodInsn(Opcodes.INVOKESTATIC,
                             RS, "unboxBoolean", "(Ljava/lang/Object;)Z", false);
-                }
-                case Type.BYTE -> {
+                    break;
+                case Type.BYTE:
                     target.visitVarInsn(Opcodes.ALOAD, retValSlot);
                     target.visitMethodInsn(Opcodes.INVOKESTATIC,
                             RS, "unboxByte", "(Ljava/lang/Object;)B", false);
-                }
-                case Type.CHAR -> {
+                    break;
+                case Type.CHAR:
                     target.visitVarInsn(Opcodes.ALOAD, retValSlot);
                     target.visitMethodInsn(Opcodes.INVOKESTATIC,
                             RS, "unboxChar", "(Ljava/lang/Object;)C", false);
-                }
-                case Type.SHORT -> {
+                    break;
+                case Type.SHORT:
                     target.visitVarInsn(Opcodes.ALOAD, retValSlot);
                     target.visitMethodInsn(Opcodes.INVOKESTATIC,
                             RS, "unboxShort", "(Ljava/lang/Object;)S", false);
-                }
-                case Type.INT -> {
+                    break;
+                case Type.INT:
                     target.visitVarInsn(Opcodes.ALOAD, retValSlot);
                     target.visitMethodInsn(Opcodes.INVOKESTATIC,
                             RS, "unboxInt", "(Ljava/lang/Object;)I", false);
-                }
-                case Type.LONG -> {
+                    break;
+                case Type.LONG:
                     target.visitVarInsn(Opcodes.ALOAD, retValSlot);
                     target.visitMethodInsn(Opcodes.INVOKESTATIC,
                             RS, "unboxLong", "(Ljava/lang/Object;)J", false);
-                }
-                case Type.FLOAT -> {
+                    break;
+                case Type.FLOAT:
                     target.visitVarInsn(Opcodes.ALOAD, retValSlot);
                     target.visitMethodInsn(Opcodes.INVOKESTATIC,
                             RS, "unboxFloat", "(Ljava/lang/Object;)F", false);
-                }
-                case Type.DOUBLE -> {
+                    break;
+                case Type.DOUBLE:
                     target.visitVarInsn(Opcodes.ALOAD, retValSlot);
                     target.visitMethodInsn(Opcodes.INVOKESTATIC,
                             RS, "unboxDouble", "(Ljava/lang/Object;)D", false);
-                }
-                default -> {
+                    break;
+                default:
                     // OBJECT or ARRAY — load and cast to expected type
                     target.visitVarInsn(Opcodes.ALOAD, retValSlot);
                     target.visitTypeInsn(Opcodes.CHECKCAST, retType.getInternalName());
-                }
+                    break;
             }
         }
 
         private void pushDefaultValue(Type type) {
             switch (type.getSort()) {
-                case Type.BOOLEAN, Type.BYTE, Type.CHAR, Type.SHORT, Type.INT ->
-                        target.visitInsn(Opcodes.ICONST_0);
-                case Type.LONG -> target.visitInsn(Opcodes.LCONST_0);
-                case Type.FLOAT -> target.visitInsn(Opcodes.FCONST_0);
-                case Type.DOUBLE -> target.visitInsn(Opcodes.DCONST_0);
-                case Type.ARRAY, Type.OBJECT -> target.visitInsn(Opcodes.ACONST_NULL);
-                default -> {}
+                case Type.BOOLEAN:
+                case Type.BYTE:
+                case Type.CHAR:
+                case Type.SHORT:
+                case Type.INT:
+                    target.visitInsn(Opcodes.ICONST_0);
+                    break;
+                case Type.LONG:
+                    target.visitInsn(Opcodes.LCONST_0);
+                    break;
+                case Type.FLOAT:
+                    target.visitInsn(Opcodes.FCONST_0);
+                    break;
+                case Type.DOUBLE:
+                    target.visitInsn(Opcodes.DCONST_0);
+                    break;
+                case Type.ARRAY:
+                case Type.OBJECT:
+                    target.visitInsn(Opcodes.ACONST_NULL);
+                    break;
+                default:
+                    break;
             }
         }
 

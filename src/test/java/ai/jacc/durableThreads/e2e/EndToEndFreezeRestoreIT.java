@@ -49,8 +49,8 @@ class EndToEndFreezeRestoreIT {
                 .filter(line -> !line.startsWith("FRAME_COUNT="))
                 .filter(line -> !line.equals("RESTORE_COMPLETE"))
                 .filter(line -> !line.startsWith("Listening for transport dt_socket"))
-                .filter(line -> !line.isBlank())
-                .toList();
+                .filter(line -> !line.trim().isEmpty())
+                .collect(java.util.stream.Collectors.toList());
     }
 
     // ===================================================================
@@ -69,7 +69,7 @@ class EndToEndFreezeRestoreIT {
                     new String[]{snapshotFile.toString()}, 60);
 
             System.out.println("=== AUTO-DISCOVERY FREEZE STDOUT ===\n" + freezeResult.stdout());
-            if (!freezeResult.stderr().isBlank()) {
+            if (!freezeResult.stderr().trim().isEmpty()) {
                 System.out.println("=== AUTO-DISCOVERY FREEZE STDERR ===\n" + freezeResult.stderr());
             }
 
@@ -85,7 +85,7 @@ class EndToEndFreezeRestoreIT {
                     new String[]{snapshotFile.toString()}, 60);
 
             System.out.println("=== AUTO-DISCOVERY RESTORE STDOUT ===\n" + restoreResult.stdout());
-            if (!restoreResult.stderr().isBlank()) {
+            if (!restoreResult.stderr().trim().isEmpty()) {
                 System.out.println("=== AUTO-DISCOVERY RESTORE STDERR ===\n" + restoreResult.stderr());
             }
 
@@ -156,7 +156,7 @@ class EndToEndFreezeRestoreIT {
                     new String[]{snapshotFile.toString()}, 60);
 
             System.out.println("=== FREEZE STDOUT ===\n" + freezeResult.stdout());
-            if (!freezeResult.stderr().isBlank()) {
+            if (!freezeResult.stderr().trim().isEmpty()) {
                 System.out.println("=== FREEZE STDERR ===\n" + freezeResult.stderr());
             }
 
@@ -174,7 +174,7 @@ class EndToEndFreezeRestoreIT {
                     new String[]{snapshotFile.toString()}, 60);
 
             System.out.println("=== RESTORE STDOUT ===\n" + restoreResult.stdout());
-            if (!restoreResult.stderr().isBlank()) {
+            if (!restoreResult.stderr().trim().isEmpty()) {
                 System.out.println("=== RESTORE STDERR ===\n" + restoreResult.stderr());
             }
 
@@ -189,8 +189,8 @@ class EndToEndFreezeRestoreIT {
                     "Restored thread should output message. Stdout:\n" + restoreResult.stdout());
 
             // Restored thread must NOT replay pre-freeze output
-            var userLines = extractUserOutput(restoreResult.stdout());
-            assertEquals(java.util.List.of("AFTER_FREEZE=42", "MESSAGE=hello-from-freeze"),
+            java.util.List<String> userLines = extractUserOutput(restoreResult.stdout());
+            assertEquals(java.util.Arrays.asList("AFTER_FREEZE=42", "MESSAGE=hello-from-freeze"),
                     userLines,
                     "Restore output should be exactly the post-freeze lines, no replay. Got:\n"
                             + restoreResult.stdout());
@@ -217,7 +217,7 @@ class EndToEndFreezeRestoreIT {
                     new String[]{snapshotDir.toString()}, 120);
 
             System.out.println("=== SEQUENTIAL STDOUT ===\n" + result.stdout());
-            if (!result.stderr().isBlank()) {
+            if (!result.stderr().trim().isEmpty()) {
                 System.out.println("=== SEQUENTIAL STDERR ===\n" + result.stderr());
             }
 
@@ -227,13 +227,13 @@ class EndToEndFreezeRestoreIT {
 
             // Verify snapshot file was written
             long snapshotCount;
-            try (var files = Files.list(snapshotDir)) {
+            try (java.util.stream.Stream<Path> files = Files.list(snapshotDir)) {
                 snapshotCount = files.filter(p -> p.toString().endsWith(".bin")).count();
             }
             assertTrue(snapshotCount >= 1,
                     "At least one snapshot file should be written. Count: " + snapshotCount);
         } finally {
-            try (var files = Files.walk(snapshotDir)) {
+            try (java.util.stream.Stream<Path> files = Files.walk(snapshotDir)) {
                 files.sorted(java.util.Comparator.reverseOrder())
                         .forEach(p -> { try { Files.delete(p); } catch (IOException ignored) {} });
             }
@@ -257,7 +257,7 @@ class EndToEndFreezeRestoreIT {
                     new String[]{snapshotFile.toString()}, 60);
 
             System.out.println("=== DEEP CHAIN FREEZE STDOUT ===\n" + freezeResult.stdout());
-            if (!freezeResult.stderr().isBlank()) {
+            if (!freezeResult.stderr().trim().isEmpty()) {
                 System.out.println("=== DEEP CHAIN FREEZE STDERR ===\n" + freezeResult.stderr());
             }
 
@@ -282,7 +282,7 @@ class EndToEndFreezeRestoreIT {
                     new String[]{snapshotFile.toString()}, 60);
 
             System.out.println("=== DEEP CHAIN RESTORE STDOUT ===\n" + restoreResult.stdout());
-            if (!restoreResult.stderr().isBlank()) {
+            if (!restoreResult.stderr().trim().isEmpty()) {
                 System.out.println("=== DEEP CHAIN RESTORE STDERR ===\n" + restoreResult.stderr());
             }
 
@@ -296,8 +296,8 @@ class EndToEndFreezeRestoreIT {
 
             // Restored thread should produce post-freeze output with correct values
             // innerMethod: computed(37) + 80 = 117; middleMethod: 117 + 100 = 217; outerMethod: 217 + 1000 = 1217
-            var userLines = extractUserOutput(restoreResult.stdout());
-            assertEquals(java.util.List.of(
+            java.util.List<String> userLines = extractUserOutput(restoreResult.stdout());
+            assertEquals(java.util.Arrays.asList(
                     "INNER_AFTER=117",
                     "MIDDLE_AFTER=117",
                     "OUTER_AFTER=217",
@@ -323,7 +323,7 @@ class EndToEndFreezeRestoreIT {
                     new String[]{snapshotFile.toString()}, 60);
 
             System.out.println("=== LOOP FREEZE STDOUT ===\n" + freezeResult.stdout());
-            if (!freezeResult.stderr().isBlank()) {
+            if (!freezeResult.stderr().trim().isEmpty()) {
                 System.out.println("=== LOOP FREEZE STDERR ===\n" + freezeResult.stderr());
             }
 
@@ -346,7 +346,7 @@ class EndToEndFreezeRestoreIT {
                     new String[]{snapshotFile.toString()}, 60);
 
             System.out.println("=== LOOP RESTORE STDOUT ===\n" + restoreResult.stdout());
-            if (!restoreResult.stderr().isBlank()) {
+            if (!restoreResult.stderr().trim().isEmpty()) {
                 System.out.println("=== LOOP RESTORE STDERR ===\n" + restoreResult.stderr());
             }
 
@@ -356,8 +356,8 @@ class EndToEndFreezeRestoreIT {
 
             // Restored thread should continue from i=4 (after freeze), then loop i=5..9
             // Expected: AFTER_FREEZE, ITERATION i=5..9, FINAL_SUM=45, LOOP_RESULT=45
-            var userLines = extractUserOutput(restoreResult.stdout());
-            assertEquals(java.util.List.of(
+            java.util.List<String> userLines = extractUserOutput(restoreResult.stdout());
+            assertEquals(java.util.Arrays.asList(
                     "AFTER_FREEZE i=4 sum=10",
                     "ITERATION i=5 sum=15",
                     "ITERATION i=6 sum=21",
@@ -387,7 +387,7 @@ class EndToEndFreezeRestoreIT {
                     new String[]{snapshotFile.toString()}, 60);
 
             System.out.println("=== RETVAL FREEZE STDOUT ===\n" + freezeResult.stdout());
-            if (!freezeResult.stderr().isBlank()) {
+            if (!freezeResult.stderr().trim().isEmpty()) {
                 System.out.println("=== RETVAL FREEZE STDERR ===\n" + freezeResult.stderr());
             }
 
@@ -408,7 +408,7 @@ class EndToEndFreezeRestoreIT {
                     new String[]{snapshotFile.toString()}, 60);
 
             System.out.println("=== RETVAL RESTORE STDOUT ===\n" + restoreResult.stdout());
-            if (!restoreResult.stderr().isBlank()) {
+            if (!restoreResult.stderr().trim().isEmpty()) {
                 System.out.println("=== RETVAL RESTORE STDERR ===\n" + restoreResult.stderr());
             }
 
@@ -418,8 +418,8 @@ class EndToEndFreezeRestoreIT {
 
             // Restored thread should have preserved v1=15, v2=45, v3=43,
             // then compute v4=21, v5=121, CHAIN_RESULT=245
-            var userLines = extractUserOutput(restoreResult.stdout());
-            assertEquals(java.util.List.of(
+            java.util.List<String> userLines = extractUserOutput(restoreResult.stdout());
+            assertEquals(java.util.Arrays.asList(
                     "AFTER_FREEZE v1=15 v2=45 v3=43",
                     "AFTER_COMPUTE v4=21 v5=121",
                     "CHAIN_RESULT=245"),
@@ -443,7 +443,7 @@ class EndToEndFreezeRestoreIT {
                     new String[]{snapshotFile.toString()}, 60);
 
             System.out.println("=== HEAP FREEZE STDOUT ===\n" + freezeResult.stdout());
-            if (!freezeResult.stderr().isBlank()) {
+            if (!freezeResult.stderr().trim().isEmpty()) {
                 System.out.println("=== HEAP FREEZE STDERR ===\n" + freezeResult.stderr());
             }
 
@@ -472,7 +472,7 @@ class EndToEndFreezeRestoreIT {
                     new String[]{snapshotFile.toString()}, 60);
 
             System.out.println("=== HEAP RESTORE STDOUT ===\n" + restoreResult.stdout());
-            if (!restoreResult.stderr().isBlank()) {
+            if (!restoreResult.stderr().trim().isEmpty()) {
                 System.out.println("=== HEAP RESTORE STDERR ===\n" + restoreResult.stderr());
             }
 
@@ -518,7 +518,7 @@ class EndToEndFreezeRestoreIT {
                     new String[]{snapshotFile.toString(), "5"}, 60);
 
             System.out.println("=== FIB FREEZE STDOUT ===\n" + freezeResult.stdout());
-            if (!freezeResult.stderr().isBlank()) {
+            if (!freezeResult.stderr().trim().isEmpty()) {
                 System.out.println("=== FIB FREEZE STDERR ===\n" + freezeResult.stderr());
             }
 
@@ -542,7 +542,7 @@ class EndToEndFreezeRestoreIT {
                     new String[]{snapshotFile.toString()}, 60);
 
             System.out.println("=== FIB RESTORE STDOUT ===\n" + restoreResult.stdout());
-            if (!restoreResult.stderr().isBlank()) {
+            if (!restoreResult.stderr().trim().isEmpty()) {
                 System.out.println("=== FIB RESTORE STDERR ===\n" + restoreResult.stderr());
             }
 
@@ -570,7 +570,7 @@ class EndToEndFreezeRestoreIT {
                     new String[]{snapshotFile.toString()}, 60);
 
             System.out.println("=== TRYCATCH FREEZE STDOUT ===\n" + freezeResult.stdout());
-            if (!freezeResult.stderr().isBlank()) {
+            if (!freezeResult.stderr().trim().isEmpty()) {
                 System.out.println("=== TRYCATCH FREEZE STDERR ===\n" + freezeResult.stderr());
             }
 
@@ -590,7 +590,7 @@ class EndToEndFreezeRestoreIT {
                     new String[]{snapshotFile.toString()}, 60);
 
             System.out.println("=== TRYCATCH RESTORE STDOUT ===\n" + restoreResult.stdout());
-            if (!restoreResult.stderr().isBlank()) {
+            if (!restoreResult.stderr().trim().isEmpty()) {
                 System.out.println("=== TRYCATCH RESTORE STDERR ===\n" + restoreResult.stderr());
             }
 
@@ -599,8 +599,8 @@ class EndToEndFreezeRestoreIT {
             assertRestoreSucceeded(restoreResult);
 
             // Restored thread should continue in try block, execute finally
-            var userLines = extractUserOutput(restoreResult.stdout());
-            assertEquals(java.util.List.of(
+            java.util.List<String> userLines = extractUserOutput(restoreResult.stdout());
+            assertEquals(java.util.Arrays.asList(
                     "TRY_AFTER",
                     "FINALLY_EXECUTED",
                     "TRYCATCH_RESULT=before-after-end-finally"),
@@ -624,7 +624,7 @@ class EndToEndFreezeRestoreIT {
                     new String[]{snapshotFile.toString()}, 60);
 
             System.out.println("=== NESTED FREEZE STDOUT ===\n" + freezeResult.stdout());
-            if (!freezeResult.stderr().isBlank()) {
+            if (!freezeResult.stderr().trim().isEmpty()) {
                 System.out.println("=== NESTED FREEZE STDERR ===\n" + freezeResult.stderr());
             }
 
@@ -644,7 +644,7 @@ class EndToEndFreezeRestoreIT {
                     new String[]{snapshotFile.toString()}, 60);
 
             System.out.println("=== NESTED RESTORE STDOUT ===\n" + restoreResult.stdout());
-            if (!restoreResult.stderr().isBlank()) {
+            if (!restoreResult.stderr().trim().isEmpty()) {
                 System.out.println("=== NESTED RESTORE STDERR ===\n" + restoreResult.stderr());
             }
 
@@ -653,8 +653,8 @@ class EndToEndFreezeRestoreIT {
             assertRestoreSucceeded(restoreResult);
 
             // Restored thread should continue from (i=2, j=3), complete all 25 iterations
-            var userLines = extractUserOutput(restoreResult.stdout());
-            assertEquals(java.util.List.of(
+            java.util.List<String> userLines = extractUserOutput(restoreResult.stdout());
+            assertEquals(java.util.Arrays.asList(
                     "AFTER_FREEZE i=2 j=3 total=13",
                     "TOTAL_ITERATIONS=25",
                     "FROZE_AT_TOTAL=13"),
@@ -678,7 +678,7 @@ class EndToEndFreezeRestoreIT {
                     new String[]{snapshotFile.toString()}, 60);
 
             System.out.println("=== MANY LOCALS FREEZE STDOUT ===\n" + freezeResult.stdout());
-            if (!freezeResult.stderr().isBlank()) {
+            if (!freezeResult.stderr().trim().isEmpty()) {
                 System.out.println("=== MANY LOCALS FREEZE STDERR ===\n" + freezeResult.stderr());
             }
 
@@ -698,7 +698,7 @@ class EndToEndFreezeRestoreIT {
                     new String[]{snapshotFile.toString()}, 60);
 
             System.out.println("=== MANY LOCALS RESTORE STDOUT ===\n" + restoreResult.stdout());
-            if (!restoreResult.stderr().isBlank()) {
+            if (!restoreResult.stderr().trim().isEmpty()) {
                 System.out.println("=== MANY LOCALS RESTORE STDERR ===\n" + restoreResult.stderr());
             }
 
@@ -709,8 +709,8 @@ class EndToEndFreezeRestoreIT {
             // Restored thread should have all typed locals with correct values
             // j = d + (long)e = 30 + 15 = 45
             // result = 10 + 11 + 12 + 30 + 15 + 5 + 1 + 33 + 45 = 162
-            var userLines = extractUserOutput(restoreResult.stdout());
-            assertEquals(java.util.List.of(
+            java.util.List<String> userLines = extractUserOutput(restoreResult.stdout());
+            assertEquals(java.util.Arrays.asList(
                     "AFTER_FREEZE a=10 b=11 c=12 d=30 g=true h=33 j=45",
                     "MANY_LOCALS_RESULT=162"),
                     userLines,
@@ -733,7 +733,7 @@ class EndToEndFreezeRestoreIT {
                     new String[]{snapshotDir.toString()}, 120);
 
             System.out.println("=== PERIODIC STDOUT ===\n" + result.stdout());
-            if (!result.stderr().isBlank()) {
+            if (!result.stderr().trim().isEmpty()) {
                 System.out.println("=== PERIODIC STDERR ===\n" + result.stderr());
             }
 
@@ -743,13 +743,13 @@ class EndToEndFreezeRestoreIT {
 
             // Verify at least one checkpoint file was written
             long checkpointCount;
-            try (var files = Files.list(snapshotDir)) {
+            try (java.util.stream.Stream<Path> files = Files.list(snapshotDir)) {
                 checkpointCount = files.filter(p -> p.toString().endsWith(".bin")).count();
             }
             assertTrue(checkpointCount >= 1,
                     "At least one checkpoint file should be written. Count: " + checkpointCount);
         } finally {
-            try (var files = Files.walk(snapshotDir)) {
+            try (java.util.stream.Stream<Path> files = Files.walk(snapshotDir)) {
                 files.sorted(java.util.Comparator.reverseOrder())
                         .forEach(p -> { try { Files.delete(p); } catch (IOException ignored) {} });
             }
@@ -772,7 +772,7 @@ class EndToEndFreezeRestoreIT {
                     new String[]{snapshotFile.toString()}, 60);
 
             System.out.println("=== SWITCH FREEZE STDOUT ===\n" + freezeResult.stdout());
-            if (!freezeResult.stderr().isBlank()) {
+            if (!freezeResult.stderr().trim().isEmpty()) {
                 System.out.println("=== SWITCH FREEZE STDERR ===\n" + freezeResult.stderr());
             }
 
@@ -794,15 +794,15 @@ class EndToEndFreezeRestoreIT {
                     new String[]{snapshotFile.toString()}, 60);
 
             System.out.println("=== SWITCH RESTORE STDOUT ===\n" + restoreResult.stdout());
-            if (!restoreResult.stderr().isBlank()) {
+            if (!restoreResult.stderr().trim().isEmpty()) {
                 System.out.println("=== SWITCH RESTORE STDERR ===\n" + restoreResult.stderr());
             }
 
             assertRestoreSucceeded(restoreResult);
 
             // afterFreeze = 97 + 90 + 1000 = 1187
-            var userLines = extractUserOutput(restoreResult.stdout());
-            assertEquals(java.util.List.of(
+            java.util.List<String> userLines = extractUserOutput(restoreResult.stdout());
+            assertEquals(java.util.Arrays.asList(
                     "AFTER_FREEZE=1187",
                     "SWITCH_RESULT=1187"),
                     userLines,
@@ -825,7 +825,7 @@ class EndToEndFreezeRestoreIT {
                     new String[]{snapshotFile.toString()}, 60);
 
             System.out.println("=== MIXED FREEZE STDOUT ===\n" + freezeResult.stdout());
-            if (!freezeResult.stderr().isBlank()) {
+            if (!freezeResult.stderr().trim().isEmpty()) {
                 System.out.println("=== MIXED FREEZE STDERR ===\n" + freezeResult.stderr());
             }
 
@@ -846,15 +846,15 @@ class EndToEndFreezeRestoreIT {
                     new String[]{snapshotFile.toString()}, 60);
 
             System.out.println("=== MIXED RESTORE STDOUT ===\n" + restoreResult.stdout());
-            if (!restoreResult.stderr().isBlank()) {
+            if (!restoreResult.stderr().trim().isEmpty()) {
                 System.out.println("=== MIXED RESTORE STDERR ===\n" + restoreResult.stderr());
             }
 
             assertRestoreSucceeded(restoreResult);
 
             // total = 15 + 30 + 35 + 14 = 94
-            var userLines = extractUserOutput(restoreResult.stdout());
-            assertEquals(java.util.List.of(
+            java.util.List<String> userLines = extractUserOutput(restoreResult.stdout());
+            assertEquals(java.util.Arrays.asList(
                     "AFTER_FREEZE a=15 b=30 c=35 d=13",
                     "LABEL=result-30-end",
                     "SB=val=15",
@@ -879,7 +879,7 @@ class EndToEndFreezeRestoreIT {
                     new String[]{snapshotFile.toString()}, 60);
 
             System.out.println("=== COMPLEX FREEZE STDOUT ===\n" + freezeResult.stdout());
-            if (!freezeResult.stderr().isBlank()) {
+            if (!freezeResult.stderr().trim().isEmpty()) {
                 System.out.println("=== COMPLEX FREEZE STDERR ===\n" + freezeResult.stderr());
             }
 
@@ -900,7 +900,7 @@ class EndToEndFreezeRestoreIT {
                     new String[]{snapshotFile.toString()}, 60);
 
             System.out.println("=== COMPLEX RESTORE STDOUT ===\n" + restoreResult.stdout());
-            if (!restoreResult.stderr().isBlank()) {
+            if (!restoreResult.stderr().trim().isEmpty()) {
                 System.out.println("=== COMPLEX RESTORE STDERR ===\n" + restoreResult.stderr());
             }
 
@@ -910,8 +910,8 @@ class EndToEndFreezeRestoreIT {
             // With per-frame localsReady(), 'total' in the intermediate frame
             // complexMethod IS correctly restored to 84.
             // So total = 84 + helperResult = 84 + 268 = 352.
-            var userLines = extractUserOutput(restoreResult.stdout());
-            assertEquals(java.util.List.of(
+            java.util.List<String> userLines = extractUserOutput(restoreResult.stdout());
+            assertEquals(java.util.Arrays.asList(
                     "HELPER_AFTER a=168 afterFreeze=268",
                     "SB_AFTER=try-helper",
                     "AFTER_FREEZE total=352",

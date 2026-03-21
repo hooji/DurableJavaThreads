@@ -75,7 +75,13 @@ class RawBytecodeScannerTest {
         String resourcePath = clazz.getName().replace('.', '/') + ".class";
         try (InputStream is = clazz.getClassLoader().getResourceAsStream(resourcePath)) {
             assertNotNull(is, "Could not load class bytes for " + clazz.getName());
-            return is.readAllBytes();
+            java.io.ByteArrayOutputStream buffer = new java.io.ByteArrayOutputStream();
+            byte[] data = new byte[4096];
+            int bytesRead;
+            while ((bytesRead = is.read(data, 0, data.length)) != -1) {
+                buffer.write(data, 0, bytesRead);
+            }
+            return buffer.toByteArray();
         }
     }
 }
