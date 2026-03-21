@@ -145,11 +145,24 @@ public final class DurableTransformer implements ClassFileTransformer {
                         + ". This indicates an inconsistency between the injector "
                         + "and scanner invoke filtering.");
             }
-            List<Integer> offsets = allOffsets.subList(
+            List<Integer> originalOffsets = allOffsets.subList(
                     allOffsets.size() - originalCount, allOffsets.size());
 
-            if (!offsets.isEmpty()) {
-                InvokeRegistry.register(key, new ArrayList<>(offsets));
+            if (!originalOffsets.isEmpty()) {
+                InvokeRegistry.register(key, new ArrayList<>(originalOffsets));
+            }
+
+            // Also register resume-stub invoke offsets. When a restored thread
+            // is re-frozen, the JDI frame BCP may point to a resume stub invoke
+            // (not the original code invoke). Since stub invoke i corresponds to
+            // original invoke index i, we map them to the same indices.
+            int stubCount = allOffsets.size() - originalCount;
+            if (stubCount > 0 && stubCount >= originalCount) {
+                // Stub invokes are the first `stubCount` entries. The last
+                // `originalCount` of those stubs map 1:1 to invoke indices.
+                List<Integer> stubOffsets = allOffsets.subList(
+                        stubCount - originalCount, stubCount);
+                InvokeRegistry.registerStubOffsets(key, new ArrayList<>(stubOffsets));
             }
         }
     }
