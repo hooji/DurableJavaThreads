@@ -923,4 +923,57 @@ class EndToEndFreezeRestoreIT {
             Files.deleteIfExists(snapshotFile);
         }
     }
+
+    // ===================================================================
+    // Same-JVM lifecycle tests
+    // ===================================================================
+
+    @Test
+    @DisplayName("E2E: Freeze and restore in the SAME JVM without restart")
+    void sameJvmFreezeAndRestore() throws Exception {
+        Path snapshotFile = Files.createTempFile("durable-samejvm-", ".bin");
+        try {
+            int port = ChildJvm.findFreePort();
+            ChildJvm.Result result = ChildJvm.run(
+                    "ai.jacc.durableThreads.e2e.SameJvmFreezeRestoreProgram",
+                    classpath, port,
+                    new String[]{snapshotFile.toString()}, 60);
+
+            System.out.println("=== SAME JVM STDOUT ===\n" + result.stdout());
+            if (!result.stderr().isBlank()) {
+                System.out.println("=== SAME JVM STDERR ===\n" + result.stderr());
+            }
+
+            // Freeze should succeed
+            assertTrue(result.stdout().contains("ABOUT_TO_FREEZE"),
+                    "Should reach freeze point. Stdout:\n" + result.stdout());
+            assertTrue(result.stdout().contains("FREEZE_COMPLETE"),
+                    "Freeze should complete. Stdout:\n" + result.stdout());
+
+            // Same-JVM restore should succeed
+            assertTrue(result.stdout().contains("RESTORING_SAME_JVM"),
+                    "Should attempt same-JVM restore. Stdout:\n" + result.stdout());
+            assertFalse(result.stdout().contains("RESTORE_FAILED"),
+                    "Same-JVM restore should not fail. Stderr:\n" + result.stderr());
+            assertTrue(result.stdout().contains("SAME_JVM_RESTORE_COMPLETE"),
+                    "Same-JVM restore should complete. Stdout:\n" + result.stdout());
+
+            // Restored thread should resume and print the remaining iterations
+            assertTrue(result.stdout().contains("RESUMED"),
+                    "Restored thread should print RESUMED. Stdout:\n" + result.stdout());
+            assertTrue(result.stdout().contains("DONE"),
+                    "Restored thread should complete. Stdout:\n" + result.stdout());
+
+            // Verify iterations: i=2..5 before freeze, i=6..12 after restore
+            for (int i = 2; i <= 12; i++) {
+                assertTrue(result.stdout().contains("i=" + i),
+                        "Should contain i=" + i + ". Stdout:\n" + result.stdout());
+            }
+
+            assertEquals(0, result.exitCode(),
+                    "Process should exit cleanly. Stderr:\n" + result.stderr());
+        } finally {
+            Files.deleteIfExists(snapshotFile);
+        }
+    }
 }

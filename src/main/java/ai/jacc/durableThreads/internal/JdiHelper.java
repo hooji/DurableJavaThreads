@@ -459,6 +459,19 @@ public final class JdiHelper {
             cachedVm = null;
             vm = cached;
         } else {
+            // Reuse existing keep-alive connection if still valid.
+            // This is critical for same-JVM freeze→restore: JDWP only allows
+            // one debugger at a time, so the connection from freeze is still
+            // occupying the port. Reusing it avoids a "Connection refused" error.
+            VirtualMachine existing = keepAliveVm;
+            if (existing != null) {
+                try {
+                    existing.allThreads(); // probe: throws if connection is dead
+                    return existing;
+                } catch (Exception e) {
+                    keepAliveVm = null; // connection is dead — clear and reconnect
+                }
+            }
             vm = jdiConnect(port, 0);
         }
 
