@@ -450,14 +450,32 @@ public final class JdiHelper {
     /**
      * Connect to the local JVM via JDI socket attach.
      *
-     * <p>If a cached connection exists (from port auto-discovery), it is returned
-     * and the cache is cleared. Otherwise, a new connection is established.</p>
+     * <p>Resolution order:</p>
+     * <ol>
+     *   <li>Reuse the existing {@code keepAliveVm} connection (from a prior
+     *       freeze or restore in the same JVM)</li>
+     *   <li>Return a cached connection from port auto-discovery</li>
+     *   <li>Establish a new connection</li>
+     * </ol>
      *
      * @param port the JDWP port
      * @return the VirtualMachine connection
      */
     public static VirtualMachine connect(int port) {
         VirtualMachine vm;
+
+        // Reuse existing keep-alive connection (from prior freeze/restore)
+        VirtualMachine alive = keepAliveVm;
+        if (alive != null) {
+            try {
+                // Verify the connection is still usable by calling a lightweight method
+                alive.allThreads();
+                return alive;
+            } catch (Exception e) {
+                // Connection is dead — fall through to reconnect
+                keepAliveVm = null;
+            }
+        }
 
         // Return cached connection from discovery if available
         VirtualMachine cached = cachedVm;

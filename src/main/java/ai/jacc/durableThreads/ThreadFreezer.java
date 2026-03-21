@@ -140,20 +140,37 @@ final class ThreadFreezer {
             // Find the target thread in JDI
             ThreadReference threadRef = JdiHelper.findThread(vm, targetThread);
 
-            // Suspend the target thread
-            threadRef.suspend();
-            try {
-                // Capture the thread's state
-                ThreadSnapshot snapshot = captureSnapshot(threadRef, targetThread.getName());
+            // Suspend the target thread and capture its state.
+            // Retry on InvalidStackFrameException — this can happen when
+            // reusing a JDI connection from a prior freeze/restore cycle,
+            // because the previous cycle's pending resume events can race
+            // with our suspend.
+            ThreadSnapshot snapshot = null;
+            int maxRetries = 5;
+            for (int attempt = 0; attempt < maxRetries; attempt++) {
+                threadRef.suspend();
+                try {
+                    snapshot = captureSnapshot(threadRef, targetThread.getName());
 
-                // Call the handler with the snapshot.
-                // This happens while the target thread is still suspended, so the
-                // handler can safely write the snapshot without racing the target.
-                handler.accept(snapshot);
-
-            } finally {
-                // Resume the thread so we can terminate it
-                threadRef.resume();
+                    // Call the handler while the thread is still suspended,
+                    // so it can safely write the snapshot without racing.
+                    handler.accept(snapshot);
+                    break; // success
+                } catch (com.sun.jdi.InvalidStackFrameException e) {
+                    // Thread was resumed between suspend and frame read —
+                    // retry after a brief pause
+                    if (attempt == maxRetries - 1) {
+                        throw new RuntimeException(
+                                "Failed to capture snapshot after " + maxRetries
+                                + " attempts — thread keeps being resumed", e);
+                    }
+                    try { Thread.sleep(50); } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        throw new RuntimeException("Freeze interrupted during retry", ie);
+                    }
+                } finally {
+                    threadRef.resume();
+                }
             }
 
         } finally {

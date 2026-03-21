@@ -121,6 +121,9 @@ public final class Durable {
      * Restore a frozen thread from a snapshot, optionally starting it and
      * waiting for it to finish.
      *
+     * <p>If the restored thread throws an exception, it is rethrown as a
+     * {@link RuntimeException} from this method.</p>
+     *
      * @param snapshot the captured thread state
      * @param startThread if {@code true}, the thread is started
      * @param waitForThreadToFinish if {@code true} (and {@code startThread} is also
@@ -128,13 +131,32 @@ public final class Durable {
      * @return the restored Thread
      * @throws ai.jacc.durableThreads.exception.BytecodeMismatchException if bytecode has changed
      * @throws AgentNotLoadedException if the durable agent is not loaded
+     * @throws RuntimeException if the restored thread failed during execution
      * @throws InterruptedException if the current thread is interrupted while waiting
      */
     public static Thread restore(ThreadSnapshot snapshot, boolean startThread,
                                  boolean waitForThreadToFinish) throws InterruptedException {
-        Thread thread = restore(snapshot, startThread);
+        Thread thread = restore(snapshot);
+        final Throwable[] threadError = {null};
+        if (startThread && waitForThreadToFinish) {
+            thread.setUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
+                @Override
+                public void uncaughtException(Thread t, Throwable e) {
+                    threadError[0] = e;
+                }
+            });
+        }
+        if (startThread) {
+            thread.start();
+        }
         if (startThread && waitForThreadToFinish) {
             thread.join();
+            if (threadError[0] != null) {
+                if (threadError[0] instanceof RuntimeException) {
+                    throw (RuntimeException) threadError[0];
+                }
+                throw new RuntimeException("Restored thread failed", threadError[0]);
+            }
         }
         return thread;
     }
@@ -246,10 +268,17 @@ public final class Durable {
      */
     public static Thread restore(Path path, boolean startThread,
                                  boolean waitForThreadToFinish) throws InterruptedException {
-        Thread thread = restore(path, startThread);
-        if (startThread && waitForThreadToFinish) {
-            thread.join();
+        try (java.io.ObjectInputStream ois = new java.io.ObjectInputStream(
+                Files.newInputStream(path))) {
+            ThreadSnapshot snapshot = (ThreadSnapshot) ois.readObject();
+            return restore(snapshot, startThread, waitForThreadToFinish);
+        } catch (java.io.IOException e) {
+            throw new UncheckedIOException(
+                    "Failed to read snapshot from " + path, e);
+        } catch (ClassNotFoundException e) {
+            throw new RuntimeException(
+                    "Failed to deserialize snapshot from " + path
+                    + ": snapshot class not found", e);
         }
-        return thread;
     }
 }

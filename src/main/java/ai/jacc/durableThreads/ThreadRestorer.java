@@ -107,7 +107,13 @@ final class ThreadRestorer {
             } catch (ai.jacc.durableThreads.exception.ThreadFrozenError e) {
                 // Expected — thread was re-frozen
             } catch (Exception e) {
-                throw new RuntimeException("Failed to replay thread from snapshot", e);
+                // invokeBottomFrame uses reflection, so ThreadFrozenError may be
+                // wrapped in InvocationTargetException. Unwrap and suppress it.
+                if (hasCause(e, ai.jacc.durableThreads.exception.ThreadFrozenError.class)) {
+                    // Expected — thread was re-frozen via reflected call
+                } else {
+                    throw new RuntimeException("Failed to replay thread from snapshot", e);
+                }
             }
         }, threadName);
 
@@ -932,5 +938,17 @@ final class ThreadRestorer {
                     + ". The 'this' reference was not captured in the snapshot and Objenesis"
                     + " fallback failed.", e);
         }
+    }
+
+    /**
+     * Check if a throwable's cause chain contains an instance of the given type.
+     */
+    private static boolean hasCause(Throwable t, Class<? extends Throwable> type) {
+        for (Throwable cause = t; cause != null; cause = cause.getCause()) {
+            if (type.isInstance(cause)) {
+                return true;
+            }
+        }
+        return false;
     }
 }
