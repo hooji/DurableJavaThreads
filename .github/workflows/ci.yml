@@ -27,13 +27,7 @@ jobs:
           - os: ubuntu-latest
             java: '25'
             distribution: temurin
-          # macOS
-          - os: macos-latest
-            java: '8'
-            distribution: temurin
-          - os: macos-latest
-            java: '9'
-            distribution: zulu
+          # macOS (earliest available is 11 on ARM runners)
           - os: macos-latest
             java: '11'
             distribution: temurin
@@ -105,12 +99,6 @@ jobs:
             java: '25'
             distribution: temurin
           # macOS
-          - os: macos-latest
-            java: '8'
-            distribution: temurin
-          - os: macos-latest
-            java: '9'
-            distribution: zulu
           - os: macos-latest
             java: '11'
             distribution: temurin
