@@ -10,6 +10,7 @@ import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.Map;
 import java.util.function.Consumer;
 
 /**
@@ -78,6 +79,47 @@ public final class Durable {
      */
     public static void freeze(Path path) {
         freeze(new SnapshotFileWriter(path));
+    }
+
+    /**
+     * Freeze the current thread with named heap objects.
+     *
+     * <p>Named objects are tagged in the snapshot so they can be replaced with
+     * live objects during restore. The {@code "this"} reference of the calling
+     * frame is always auto-named unless explicitly provided in the map.</p>
+     *
+     * @param handler receives the captured snapshot for persistence
+     * @param namedObjects map of name → object for objects to tag in the snapshot
+     * @throws AgentNotLoadedException if the durable agent is not loaded
+     */
+    public static void freeze(Consumer<ThreadSnapshot> handler, Map<String, Object> namedObjects) {
+        if (!DurableAgent.isLoaded()) {
+            throw new AgentNotLoadedException();
+        }
+
+        ThreadFreezer.freeze(handler, namedObjects);
+    }
+
+    /**
+     * Freeze the current thread to a file with named heap objects.
+     *
+     * @param filePath the file to write the snapshot to
+     * @param namedObjects map of name → object for objects to tag in the snapshot
+     * @throws AgentNotLoadedException if the durable agent is not loaded
+     */
+    public static void freeze(String filePath, Map<String, Object> namedObjects) {
+        freeze(new SnapshotFileWriter(filePath), namedObjects);
+    }
+
+    /**
+     * Freeze the current thread to a file with named heap objects.
+     *
+     * @param path the file to write the snapshot to
+     * @param namedObjects map of name → object for objects to tag in the snapshot
+     * @throws AgentNotLoadedException if the durable agent is not loaded
+     */
+    public static void freeze(Path path, Map<String, Object> namedObjects) {
+        freeze(new SnapshotFileWriter(path), namedObjects);
     }
 
     /**
@@ -275,6 +317,144 @@ public final class Durable {
         } catch (java.io.IOException e) {
             throw new UncheckedIOException(
                     "Failed to read snapshot from " + path, e);
+        } catch (ClassNotFoundException e) {
+            throw new RuntimeException(
+                    "Failed to deserialize snapshot from " + path
+                    + ": snapshot class not found", e);
+        }
+    }
+
+    // ===================================================================
+    // Restore overloads with named replacement objects
+    // ===================================================================
+
+    /**
+     * Restore a frozen thread from a snapshot with named replacement objects.
+     *
+     * <p>Named objects in the snapshot that match keys in {@code namedReplacements}
+     * are replaced with the live objects from the map instead of being recreated.
+     * This allows the restored thread to reference existing live objects.</p>
+     *
+     * @param snapshot the captured thread state
+     * @param namedReplacements map of name → live object to substitute
+     * @return a Thread (not yet started) that will resume from the freeze point
+     * @throws RuntimeException if namedReplacements contains names not in the snapshot
+     */
+    public static Thread restore(ThreadSnapshot snapshot, Map<String, Object> namedReplacements) {
+        if (!DurableAgent.isLoaded()) {
+            throw new AgentNotLoadedException();
+        }
+        return ThreadRestorer.restore(snapshot, namedReplacements);
+    }
+
+    /**
+     * Restore a frozen thread from a snapshot with named replacements, optionally
+     * starting it and waiting for it to finish.
+     *
+     * @param snapshot the captured thread state
+     * @param namedReplacements map of name → live object to substitute
+     * @param startThread if {@code true}, the thread is started
+     * @param waitForThreadToFinish if {@code true} (and {@code startThread} is also
+     *        {@code true}), blocks until the restored thread completes
+     * @return the restored Thread
+     * @throws RuntimeException if namedReplacements contains names not in the snapshot
+     * @throws InterruptedException if the current thread is interrupted while waiting
+     */
+    public static Thread restore(ThreadSnapshot snapshot, Map<String, Object> namedReplacements,
+                                 boolean startThread,
+                                 boolean waitForThreadToFinish) throws InterruptedException {
+        Thread thread = restore(snapshot, namedReplacements);
+        final Throwable[] threadError = {null};
+        if (startThread && waitForThreadToFinish) {
+            thread.setUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
+                @Override
+                public void uncaughtException(Thread t, Throwable e) {
+                    threadError[0] = e;
+                }
+            });
+        }
+        if (startThread) {
+            thread.start();
+        }
+        if (startThread && waitForThreadToFinish) {
+            thread.join();
+            if (threadError[0] != null) {
+                if (threadError[0] instanceof RuntimeException) {
+                    throw (RuntimeException) threadError[0];
+                }
+                throw new RuntimeException("Restored thread failed", threadError[0]);
+            }
+        }
+        return thread;
+    }
+
+    /**
+     * Restore from a file with named replacement objects.
+     *
+     * @param filePath the file containing the serialized snapshot
+     * @param namedReplacements map of name → live object to substitute
+     * @return a Thread (not yet started) that will resume from the freeze point
+     */
+    public static Thread restore(String filePath, Map<String, Object> namedReplacements) {
+        return restore(Paths.get(filePath), namedReplacements);
+    }
+
+    /**
+     * Restore from a file with named replacement objects, optionally starting
+     * and waiting.
+     *
+     * @param filePath the file containing the serialized snapshot
+     * @param namedReplacements map of name → live object to substitute
+     * @param startThread if {@code true}, the thread is started
+     * @param waitForThreadToFinish if {@code true}, blocks until complete
+     * @return the restored Thread
+     * @throws InterruptedException if the current thread is interrupted while waiting
+     */
+    public static Thread restore(String filePath, Map<String, Object> namedReplacements,
+                                 boolean startThread,
+                                 boolean waitForThreadToFinish) throws InterruptedException {
+        return restore(Paths.get(filePath), namedReplacements, startThread, waitForThreadToFinish);
+    }
+
+    /**
+     * Restore from a file with named replacement objects.
+     *
+     * @param path the file containing the serialized snapshot
+     * @param namedReplacements map of name → live object to substitute
+     * @return a Thread (not yet started) that will resume from the freeze point
+     */
+    public static Thread restore(Path path, Map<String, Object> namedReplacements) {
+        try (ObjectInputStream ois = new ObjectInputStream(Files.newInputStream(path))) {
+            ThreadSnapshot snapshot = (ThreadSnapshot) ois.readObject();
+            return restore(snapshot, namedReplacements);
+        } catch (IOException e) {
+            throw new UncheckedIOException("Failed to read snapshot from " + path, e);
+        } catch (ClassNotFoundException e) {
+            throw new RuntimeException(
+                    "Failed to deserialize snapshot from " + path
+                    + ": snapshot class not found", e);
+        }
+    }
+
+    /**
+     * Restore from a file with named replacement objects, optionally starting
+     * and waiting.
+     *
+     * @param path the file containing the serialized snapshot
+     * @param namedReplacements map of name → live object to substitute
+     * @param startThread if {@code true}, the thread is started
+     * @param waitForThreadToFinish if {@code true}, blocks until complete
+     * @return the restored Thread
+     * @throws InterruptedException if the current thread is interrupted while waiting
+     */
+    public static Thread restore(Path path, Map<String, Object> namedReplacements,
+                                 boolean startThread,
+                                 boolean waitForThreadToFinish) throws InterruptedException {
+        try (ObjectInputStream ois = new ObjectInputStream(Files.newInputStream(path))) {
+            ThreadSnapshot snapshot = (ThreadSnapshot) ois.readObject();
+            return restore(snapshot, namedReplacements, startThread, waitForThreadToFinish);
+        } catch (IOException e) {
+            throw new UncheckedIOException("Failed to read snapshot from " + path, e);
         } catch (ClassNotFoundException e) {
             throw new RuntimeException(
                     "Failed to deserialize snapshot from " + path

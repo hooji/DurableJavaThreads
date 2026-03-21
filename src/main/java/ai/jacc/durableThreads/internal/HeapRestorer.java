@@ -28,18 +28,84 @@ public final class HeapRestorer {
      * @return mapping from snapshot object ID to restored Java object
      */
     public Map<Long, Object> restoreAll(List<ObjectSnapshot> heap) {
+        return restoreAll(heap, null);
+    }
+
+    /**
+     * Restore all objects from the snapshot heap, substituting named objects
+     * with live replacements from the provided map.
+     *
+     * @param heap the list of object snapshots
+     * @param namedReplacements map of name → live object to substitute (may be null)
+     * @return mapping from snapshot object ID to restored Java object
+     * @throws RuntimeException if namedReplacements contains names not found in the snapshot
+     */
+    public Map<Long, Object> restoreAll(List<ObjectSnapshot> heap,
+                                          Map<String, Object> namedReplacements) {
         // Index snapshots by ID
         for (ObjectSnapshot snap : heap) {
             snapshotMap.put(snap.id(), snap);
         }
 
-        // First pass: allocate all objects (without setting fields)
+        // Build index of named snapshot objects
+        Map<String, Long> nameToSnapId = new HashMap<>();
         for (ObjectSnapshot snap : heap) {
-            allocate(snap);
+            if (snap.name() != null) {
+                nameToSnapId.put(snap.name(), snap.id());
+            }
         }
 
-        // Second pass: set fields and array elements
+        // Validate: any name in namedReplacements must exist in the snapshot
+        if (namedReplacements != null) {
+            List<String> unknownNames = new java.util.ArrayList<>();
+            for (String name : namedReplacements.keySet()) {
+                if (!nameToSnapId.containsKey(name)) {
+                    unknownNames.add(name);
+                }
+            }
+            if (!unknownNames.isEmpty()) {
+                throw new RuntimeException(
+                        "Named replacement objects were provided for restore but "
+                        + "no objects with these names exist in the snapshot: "
+                        + unknownNames);
+            }
+        }
+
+        // First pass: allocate all objects (without setting fields).
+        // For named objects with replacements, use the replacement directly.
         for (ObjectSnapshot snap : heap) {
+            if (snap.name() != null && namedReplacements != null
+                    && namedReplacements.containsKey(snap.name())) {
+                // Use the live replacement object instead of creating a new one
+                restored.put(snap.id(), namedReplacements.get(snap.name()));
+            } else {
+                allocate(snap);
+            }
+        }
+
+        // Note any named snapshot objects that weren't replaced
+        if (!nameToSnapId.isEmpty()) {
+            List<String> unreplaced = new java.util.ArrayList<>();
+            for (String name : nameToSnapId.keySet()) {
+                if (namedReplacements == null || !namedReplacements.containsKey(name)) {
+                    unreplaced.add(name);
+                }
+            }
+            if (!unreplaced.isEmpty()) {
+                System.out.println("[DurableThreads] NOTE: No replacement objects were provided "
+                        + "for the following named objects found in this frozen thread: "
+                        + unreplaced);
+            }
+        }
+
+        // Second pass: set fields and array elements.
+        // Skip population for named replacement objects — they already have
+        // their correct state and internal references.
+        for (ObjectSnapshot snap : heap) {
+            if (snap.name() != null && namedReplacements != null
+                    && namedReplacements.containsKey(snap.name())) {
+                continue; // replacement object — don't modify it
+            }
             populate(snap);
         }
 

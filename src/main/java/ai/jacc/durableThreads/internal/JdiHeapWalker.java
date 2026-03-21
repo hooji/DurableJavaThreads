@@ -24,6 +24,23 @@ public final class JdiHeapWalker {
     private final Map<Long, byte[]> classStructureHashes = new HashMap<>();
 
     /**
+     * Maps JDI uniqueID to a user-assigned name. When an object with a matching
+     * uniqueID is captured, the resulting ObjectSnapshot gets the name assigned.
+     */
+    private final Map<Long, String> jdiIdToName = new HashMap<>();
+
+    /**
+     * Register a JDI object reference as a named object. When this object is
+     * encountered during heap walking, its ObjectSnapshot will carry the name.
+     *
+     * @param jdiUniqueId the JDI ObjectReference.uniqueID()
+     * @param name        the user-assigned name
+     */
+    public void registerNamedObject(long jdiUniqueId, String name) {
+        jdiIdToName.put(jdiUniqueId, name);
+    }
+
+    /**
      * Capture a JDI Value into the snapshot heap.
      *
      * @param value the JDI Value (may be null)
@@ -87,31 +104,34 @@ public final class JdiHeapWalker {
         long snapId = nextId++;
         jdiIdToSnapId.put(jdiId, snapId);
 
+        // Check if this object has a user-assigned name
+        String name = jdiIdToName.get(jdiId);
+
         ReferenceType refType = objRef.referenceType();
         String className = refType.name();
 
         if (objRef instanceof StringReference) {
-            captureString(snapId, (StringReference) objRef);
+            captureString(snapId, (StringReference) objRef, name);
         } else if (objRef instanceof ArrayReference) {
             // Convert JDI display name ("int[]", "java.lang.String[][]") to
             // JVM internal name ("[I", "[[Ljava.lang.String;") for Class.forName()
             String jvmArrayName = toJvmArrayName(className);
-            captureArray(snapId, (ArrayReference) objRef, jvmArrayName);
+            captureArray(snapId, (ArrayReference) objRef, jvmArrayName, name);
         } else {
-            captureRegularObject(snapId, objRef, refType, className);
+            captureRegularObject(snapId, objRef, refType, className, name);
         }
 
         return new HeapRef(snapId);
     }
 
-    private void captureString(long snapId, StringReference sr) {
+    private void captureString(long snapId, StringReference sr, String name) {
         Map<String, ObjectRef> fields = new LinkedHashMap<>();
         fields.put("value", new PrimitiveRef(sr.value()));
         snapshots.add(new ObjectSnapshot(snapId, "java.lang.String",
-                ObjectKind.STRING, fields, null, null));
+                ObjectKind.STRING, fields, null, null, name));
     }
 
-    private void captureArray(long snapId, ArrayReference arrRef, String className) {
+    private void captureArray(long snapId, ArrayReference arrRef, String className, String name) {
         List<Value> values = arrRef.getValues();
         ObjectRef[] elements = new ObjectRef[values.size()];
 
@@ -120,7 +140,7 @@ public final class JdiHeapWalker {
         }
 
         snapshots.add(new ObjectSnapshot(snapId, className,
-                ObjectKind.ARRAY, Collections.<String, ObjectRef>emptyMap(), elements, null));
+                ObjectKind.ARRAY, Collections.<String, ObjectRef>emptyMap(), elements, null, name));
     }
 
     /** Packages whose internal fields should not be walked (JDK internals). */
@@ -155,23 +175,23 @@ public final class JdiHeapWalker {
     ));
 
     private void captureRegularObject(long snapId, ObjectReference objRef,
-                                       ReferenceType refType, String className) {
+                                       ReferenceType refType, String className, String name) {
         // Known JDK collections: capture elements by walking internal storage
         if (CAPTURABLE_COLLECTIONS.contains(className)) {
-            captureCollection(snapId, objRef, refType, className);
+            captureCollection(snapId, objRef, refType, className, name);
             return;
         }
 
         // StringBuilder/StringBuffer: capture content via toString()
         if (TOSTRING_CAPTURABLE.contains(className)) {
-            captureStringBuilder(snapId, objRef, refType, className);
+            captureStringBuilder(snapId, objRef, refType, className, name);
             return;
         }
 
         // Other JDK internal types: store as opaque (inaccessible fields)
         if (isOpaqueType(className)) {
             snapshots.add(new ObjectSnapshot(snapId, className,
-                    ObjectKind.REGULAR, Collections.<String, ObjectRef>emptyMap(), null, null));
+                    ObjectKind.REGULAR, Collections.<String, ObjectRef>emptyMap(), null, null, name));
             return;
         }
 
@@ -213,7 +233,7 @@ public final class JdiHeapWalker {
         classStructureHashes.put(snapId, structureHash);
 
         snapshots.add(new ObjectSnapshot(snapId, className,
-                ObjectKind.REGULAR, fields, null, structureHash));
+                ObjectKind.REGULAR, fields, null, structureHash, name));
     }
 
     /**
@@ -222,7 +242,7 @@ public final class JdiHeapWalker {
      * can reconstruct it using the String constructor.
      */
     private void captureStringBuilder(long snapId, ObjectReference objRef,
-                                       ReferenceType refType, String className) {
+                                       ReferenceType refType, String className, String name) {
         String content = "";
         try {
             Method toStringMethod = refType.methodsByName("toString", "()Ljava/lang/String;").get(0);
@@ -278,7 +298,7 @@ public final class JdiHeapWalker {
         Map<String, ObjectRef> fields = new LinkedHashMap<>();
         fields.put("value", new PrimitiveRef(content));
         snapshots.add(new ObjectSnapshot(snapId, className,
-                ObjectKind.STRING, fields, null, null));
+                ObjectKind.STRING, fields, null, null, name));
     }
 
     /**
@@ -287,16 +307,16 @@ public final class JdiHeapWalker {
      * For Map: key/value pairs interleaved in arrayElements (k0,v0,k1,v1,...).
      */
     private void captureCollection(long snapId, ObjectReference objRef,
-                                    ReferenceType refType, String className) {
+                                    ReferenceType refType, String className, String name) {
         if (className.contains("Map")) {
-            captureMap(snapId, objRef, refType, className);
+            captureMap(snapId, objRef, refType, className, name);
         } else {
-            captureListOrSet(snapId, objRef, refType, className);
+            captureListOrSet(snapId, objRef, refType, className, name);
         }
     }
 
     private void captureListOrSet(long snapId, ObjectReference objRef,
-                                   ReferenceType refType, String className) {
+                                   ReferenceType refType, String className, String name) {
         List<ObjectRef> elements = new ArrayList<>();
 
         // Try to read size and elementData (ArrayList) or navigate linked structure
@@ -330,14 +350,14 @@ public final class JdiHeapWalker {
         }
 
         snapshots.add(new ObjectSnapshot(snapId, className,
-                ObjectKind.COLLECTION, Collections.<String, ObjectRef>emptyMap(), elements.toArray(new ObjectRef[0]), null));
+                ObjectKind.COLLECTION, Collections.<String, ObjectRef>emptyMap(), elements.toArray(new ObjectRef[0]), null, name));
     }
 
     private void captureMap(long snapId, ObjectReference objRef,
-                             ReferenceType refType, String className) {
+                             ReferenceType refType, String className, String name) {
         List<ObjectRef> pairs = extractMapEntries(objRef);
         snapshots.add(new ObjectSnapshot(snapId, className,
-                ObjectKind.COLLECTION, Collections.<String, ObjectRef>emptyMap(), pairs.toArray(new ObjectRef[0]), null));
+                ObjectKind.COLLECTION, Collections.<String, ObjectRef>emptyMap(), pairs.toArray(new ObjectRef[0]), null, name));
     }
 
     /** Extract key/value pairs from a HashMap-like structure via JDI. */

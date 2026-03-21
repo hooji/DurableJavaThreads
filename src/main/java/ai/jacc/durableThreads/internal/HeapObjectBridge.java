@@ -41,6 +41,13 @@ public final class HeapObjectBridge {
     }
 
     /**
+     * Remove a stored object by snapshot ID.
+     */
+    public static void remove(long snapshotId) {
+        objects.remove(String.valueOf(snapshotId));
+    }
+
+    /**
      * Clear all stored objects (call after restore completes).
      */
     public static void clear() {

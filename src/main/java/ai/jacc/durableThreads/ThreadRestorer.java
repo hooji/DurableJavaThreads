@@ -61,6 +61,10 @@ final class ThreadRestorer {
      * @return a Thread (not yet started) that will resume from the freeze point
      */
     static Thread restore(ThreadSnapshot snapshot) {
+        return restore(snapshot, null);
+    }
+
+    static Thread restore(ThreadSnapshot snapshot, Map<String, Object> namedReplacements) {
         // Step 0: Sanity-check the snapshot
         if (snapshot.frameCount() == 0) {
             throw new IllegalArgumentException(
@@ -83,7 +87,7 @@ final class ThreadRestorer {
 
         // Step 3: Rebuild the heap
         HeapRestorer heapRestorer = new HeapRestorer();
-        Map<Long, Object> restoredHeap = heapRestorer.restoreAll(snapshot.heap());
+        Map<Long, Object> restoredHeap = heapRestorer.restoreAll(snapshot.heap(), namedReplacements);
 
         // Step 3b: Populate the heap object bridge for JDI access
         HeapObjectBridge.clear();
