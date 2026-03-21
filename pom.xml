@@ -88,11 +88,6 @@
                 <configuration>
                     <source>1.8</source>
                     <target>1.8</target>
-                    <fork>true</fork>
-                    <compilerArgs>
-                        <arg>-J--add-modules=jdk.jdi</arg>
-                        <arg>-J--add-modules=jdk.attach</arg>
-                    </compilerArgs>
                 </configuration>
             </plugin>
 
@@ -162,8 +157,6 @@
                 <artifactId>maven-javadoc-plugin</artifactId>
                 <version>3.6.3</version>
                 <configuration>
-                    <source>8</source>
-                    <additionalOptions>--add-modules jdk.jdi</additionalOptions>
                     <doclint>none</doclint>
                     <quiet>true</quiet>
                 </configuration>
@@ -197,6 +190,53 @@
     </build>
 
     <profiles>
+        <!-- JDK 8: add tools.jar to classpath so the compiler can resolve com.sun.jdi -->
+        <profile>
+            <id>jdk8</id>
+            <activation>
+                <jdk>1.8</jdk>
+            </activation>
+            <dependencies>
+                <dependency>
+                    <groupId>com.sun</groupId>
+                    <artifactId>tools</artifactId>
+                    <version>1.8</version>
+                    <scope>system</scope>
+                    <systemPath>${java.home}/../lib/tools.jar</systemPath>
+                </dependency>
+            </dependencies>
+        </profile>
+
+        <!-- JDK 9+: add module flags so the compiler and javadoc can access jdk.jdi / jdk.attach -->
+        <profile>
+            <id>jdk9+</id>
+            <activation>
+                <jdk>[9,)</jdk>
+            </activation>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-compiler-plugin</artifactId>
+                        <configuration>
+                            <fork>true</fork>
+                            <compilerArgs>
+                                <arg>-J--add-modules=jdk.jdi</arg>
+                                <arg>-J--add-modules=jdk.attach</arg>
+                            </compilerArgs>
+                        </configuration>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-javadoc-plugin</artifactId>
+                        <configuration>
+                            <additionalOptions>--add-modules jdk.jdi</additionalOptions>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
         <!-- Stress testing: run E2E tests 20x each to detect intermittent failures.
              Usage: mvn verify -Pstress
              Requires: mvn package -DskipTests first -->

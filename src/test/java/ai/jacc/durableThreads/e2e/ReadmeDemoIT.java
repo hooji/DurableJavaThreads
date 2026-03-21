@@ -103,14 +103,15 @@ class ReadmeDemoIT {
         String java = Paths.get(javaHome, "bin", "java").toString();
         String classpath = tempDir.toAbsolutePath() + File.pathSeparator + agentJar;
 
-        ProcessBuilder freezePb = new ProcessBuilder(
+        List<String> freezeCmd = new ArrayList<>(Arrays.asList(
                 java,
                 "-javaagent:" + agentJar,
-                "-agentlib:jdwp=transport=dt_socket,server=y,suspend=n",
-                "--add-modules", "jdk.jdi",
-                "-cp", classpath,
-                "-D_JAVA_OPTIONS=",
-                "FreezeDemo");
+                "-agentlib:jdwp=transport=dt_socket,server=y,suspend=n"));
+        if (ChildJvm.javaSpecVersion() >= 9) {
+            freezeCmd.addAll(Arrays.asList("--add-modules", "jdk.jdi"));
+        }
+        freezeCmd.addAll(Arrays.asList("-cp", classpath, "-D_JAVA_OPTIONS=", "FreezeDemo"));
+        ProcessBuilder freezePb = new ProcessBuilder(freezeCmd);
         freezePb.directory(tempDir.toFile());
         freezePb.environment().remove("JAVA_TOOL_OPTIONS");
         Process freezeProc = freezePb.start();
@@ -143,14 +144,15 @@ class ReadmeDemoIT {
         assertTrue(Files.size(snapshotFile) > 100, "snapshot.dat should have content");
 
         // --- Run RestoreDemo ---
-        ProcessBuilder restorePb = new ProcessBuilder(
+        List<String> restoreCmd = new ArrayList<>(Arrays.asList(
                 java,
                 "-javaagent:" + agentJar,
-                "-agentlib:jdwp=transport=dt_socket,server=y,suspend=n",
-                "--add-modules", "jdk.jdi",
-                "-cp", classpath,
-                "-D_JAVA_OPTIONS=",
-                "RestoreDemo");
+                "-agentlib:jdwp=transport=dt_socket,server=y,suspend=n"));
+        if (ChildJvm.javaSpecVersion() >= 9) {
+            restoreCmd.addAll(Arrays.asList("--add-modules", "jdk.jdi"));
+        }
+        restoreCmd.addAll(Arrays.asList("-cp", classpath, "-D_JAVA_OPTIONS=", "RestoreDemo"));
+        ProcessBuilder restorePb = new ProcessBuilder(restoreCmd);
         restorePb.directory(tempDir.toFile());
         restorePb.environment().remove("JAVA_TOOL_OPTIONS");
         Process restoreProc = restorePb.start();

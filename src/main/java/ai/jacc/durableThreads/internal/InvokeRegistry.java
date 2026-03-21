@@ -1,5 +1,7 @@
 package ai.jacc.durableThreads.internal;
 
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -33,7 +35,7 @@ public final class InvokeRegistry {
      * Register the invoke offsets for a method after instrumentation.
      */
     public static void register(String key, List<Integer> offsets) {
-        INVOKE_OFFSETS.put(key, List.copyOf(offsets));
+        INVOKE_OFFSETS.put(key, Collections.unmodifiableList(new ArrayList<>(offsets)));
     }
 
     /**

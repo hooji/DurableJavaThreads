@@ -359,11 +359,11 @@ final class ThreadFreezer {
         private static final Set<Long> frozenThreads = Collections.synchronizedSet(new HashSet<>());
 
         static void markFrozen(Thread t) {
-            frozenThreads.add(t.threadId());
+            frozenThreads.add(t.getId());
         }
 
         static boolean isFrozen(Thread t) {
-            return frozenThreads.remove(t.threadId());
+            return frozenThreads.remove(t.getId());
         }
     }
 }

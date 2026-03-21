@@ -88,9 +88,11 @@ public final class ChildJvm {
             cmd.add("-agentlib:jdwp=transport=dt_socket,server=y,suspend=n");
         }
 
-        // Add JDI module
-        cmd.add("--add-modules");
-        cmd.add("jdk.jdi");
+        // Add JDI module (only on JDK 9+, where the module system exists)
+        if (javaSpecVersion() >= 9) {
+            cmd.add("--add-modules");
+            cmd.add("jdk.jdi");
+        }
 
         // Classpath
         cmd.add("-cp");
@@ -158,6 +160,16 @@ public final class ChildJvm {
                 try { ss.close(); } catch (IOException ignored) {}
             }
         }
+    }
+
+    /** Returns the major Java version (8, 9, 10, …, 25). */
+    static int javaSpecVersion() {
+        String v = System.getProperty("java.specification.version", "1.8");
+        // Java 8 reports "1.8"; Java 9+ reports "9", "10", etc.
+        if (v.startsWith("1.")) {
+            return Integer.parseInt(v.substring(2));
+        }
+        return Integer.parseInt(v);
     }
 
     private static String findAgentJar() {
