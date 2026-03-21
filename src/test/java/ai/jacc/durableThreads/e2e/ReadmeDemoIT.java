@@ -85,11 +85,8 @@ class ReadmeDemoIT {
         // --- Compile with javac -g (exactly as README instructs) ---
         String javaHome = System.getProperty("java.home");
         // On Java 8, java.home points to the JRE subdir; javac is in the parent bin/
-        Path javacPath = Paths.get(javaHome, "bin", "javac");
-        if (!Files.exists(javacPath)) {
-            javacPath = Paths.get(javaHome, "..", "bin", "javac").normalize();
-        }
-        String javac = javacPath.toString();
+        // On Windows, the executable is javac.exe so we check for both names.
+        String javac = resolveExecutable(javaHome, "javac");
 
         ProcessBuilder compilePb = new ProcessBuilder(
                 javac, "-g", "-cp", agentJar,
@@ -219,6 +216,24 @@ class ReadmeDemoIT {
         } catch (IOException e) {
             throw new RuntimeException("Cannot list target/ directory", e);
         }
+    }
+
+    /**
+     * Resolve a JDK executable (e.g. "javac") from java.home.
+     * Handles: Java 8 JRE layout (../bin/), Windows (.exe suffix).
+     */
+    private static String resolveExecutable(String javaHome, String name) {
+        // Try standard location first, then Java 8 fallback (java.home = jre/)
+        for (String base : new String[]{
+                Paths.get(javaHome, "bin").toString(),
+                Paths.get(javaHome, "..", "bin").normalize().toString()}) {
+            Path plain = Paths.get(base, name);
+            if (Files.exists(plain)) return plain.toString();
+            Path exe = Paths.get(base, name + ".exe");
+            if (Files.exists(exe)) return exe.toString();
+        }
+        // Fall back to unqualified name — let the OS resolve it
+        return Paths.get(javaHome, "bin", name).toString();
     }
 
     private static String readStream(java.io.InputStream is) {
