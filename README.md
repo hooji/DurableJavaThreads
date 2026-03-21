@@ -10,7 +10,7 @@ Durable Threads is a pure-Java library that captures the full execution state of
 
 ### Download
 
-Download [`durable-threads-0.4.0.jar`](https://github.com/hooji/DurableJavaThreads/releases/download/v0.4.0/durable-threads-0.4.0.jar) from the [latest release](https://github.com/hooji/DurableJavaThreads/releases/latest). This is a shaded jar that bundles all dependencies (ASM and Objenesis).
+Download [`durable-threads-1.0.0.jar`](https://github.com/hooji/DurableJavaThreads/releases/download/v1.0.0/durable-threads-1.0.0.jar) from the [latest release](https://github.com/hooji/DurableJavaThreads/releases/latest). This is a shaded jar that bundles all dependencies (ASM and Objenesis).
 
 ### Hello World
 
@@ -19,7 +19,7 @@ The main thread runs a loop from 0 to 10 and freezes itself at `i == 5`. A secon
 **FreezeDemo.java** — run this first:
 
 ```java
-import com.u1.durableThreads.Durable;
+import ai.jacc.durableThreads.Durable;
 
 public class FreezeDemo {
     public static void main(String[] args) throws Exception {
@@ -41,7 +41,7 @@ public class FreezeDemo {
 **RestoreDemo.java** — run this in a new JVM to resume:
 
 ```java
-import com.u1.durableThreads.Durable;
+import ai.jacc.durableThreads.Durable;
 
 public class RestoreDemo {
     public static void main(String[] args) throws Exception {
@@ -54,12 +54,12 @@ public class RestoreDemo {
 Both JVMs must be started with the agent and JDWP enabled:
 
 ```bash
-% javac -g -cp durable-threads-0.4.0.jar FreezeDemo.java RestoreDemo.java
+% javac -g -cp durable-threads-1.0.0.jar FreezeDemo.java RestoreDemo.java
 
-% java -javaagent:durable-threads-0.4.0.jar \
-       -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=127.0.0.1:0 \
-       --add-modules jdk.jdi,jdk.attach -Djdk.attach.allowAttachSelf=true \
-       -cp .:durable-threads-0.4.0.jar \
+% java -javaagent:durable-threads-1.0.0.jar \
+       -agentlib:jdwp=transport=dt_socket,server=y,suspend=n \
+       --add-modules jdk.jdi \
+       -cp .:durable-threads-1.0.0.jar \
        FreezeDemo
 i=0
 i=1
@@ -69,10 +69,10 @@ i=4
 i=5
 About to freeze!
 
-% java -javaagent:durable-threads-0.4.0.jar \
-       -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=127.0.0.1:0 \
-       --add-modules jdk.jdi,jdk.attach -Djdk.attach.allowAttachSelf=true \
-       -cp .:durable-threads-0.4.0.jar \
+% java -javaagent:durable-threads-1.0.0.jar \
+       -agentlib:jdwp=transport=dt_socket,server=y,suspend=n \
+       --add-modules jdk.jdi \
+       -cp .:durable-threads-1.0.0.jar \
        RestoreDemo
 Resumed!
 i=6
@@ -82,6 +82,8 @@ i=9
 i=10
 Done!
 ```
+
+The library automatically discovers the JDWP port — no need to specify an explicit `address=PORT`. If you prefer a fixed port, you can add `address=44892` (or any port) to the `-agentlib:jdwp` argument.
 
 The loop variable `i` was 5 when the thread froze. The restored thread resumes from the line after `freeze()` with `i == 5` and continues the loop to completion.
 
@@ -184,7 +186,7 @@ cd DurableJavaThreads
 mvn clean package -DskipTests
 ```
 
-This produces `target/durable-threads-0.4.0.jar` — a shaded jar that bundles ASM and Objenesis.
+This produces `target/durable-threads-1.0.0.jar` — a shaded jar that bundles ASM and Objenesis.
 
 ### Running Tests
 
@@ -211,16 +213,16 @@ mvn package -DskipTests && mvn failsafe:integration-test -Dit.test=PerformanceBe
 
 ```xml
 <dependency>
-    <groupId>com.u1</groupId>
+    <groupId>ai.jacc</groupId>
     <artifactId>durable-threads</artifactId>
-    <version>0.4.0</version>
+    <version>1.0.0</version>
 </dependency>
 ```
 
 ### Gradle
 
 ```groovy
-implementation 'com.u1:durable-threads:0.4.0'
+implementation 'ai.jacc:durable-threads:1.0.0'
 ```
 
 > **Note:** Durable Threads is not yet published to Maven Central. For now, download the jar from the [releases page](https://github.com/hooji/DurableJavaThreads/releases) or build from source.
@@ -228,7 +230,7 @@ implementation 'com.u1:durable-threads:0.4.0'
 ## Project Structure
 
 ```
-src/main/java/com/u1/durableThreads/
+src/main/java/ai/jacc/durableThreads/
 ├── Durable.java              # Public API
 ├── DurableAgent.java          # Java agent (premain)
 ├── DurableTransformer.java    # ClassFileTransformer
@@ -254,8 +256,8 @@ src/main/java/com/u1/durableThreads/
 ## Requirements
 
 - **Java 21+** — uses modern language features and JDI APIs
-- **JDWP** — the JVM must be started with `-agentlib:jdwp=...` for freeze/restore
-- **jdk.jdi and jdk.attach modules** — add `--add-modules jdk.jdi,jdk.attach -Djdk.attach.allowAttachSelf=true` to the command line
+- **JDWP** — the JVM must be started with `-agentlib:jdwp=transport=dt_socket,server=y,suspend=n`. The library auto-discovers the JDWP port on Linux (`/proc/net/tcp`), macOS (`lsof`), and Windows (`netstat`). You can also specify a fixed port with `address=PORT`
+- **jdk.jdi module** — add `--add-modules jdk.jdi` to the command line
 
 ## License
 
