@@ -88,12 +88,12 @@ class HelloWorldIT {
             // Restored thread must NOT replay pre-freeze output
             for (int i = 0; i <= 4; i++) {
                 String lineToCheck = "i=" + i;
-                assertFalse(restoreResult.stdout().lines().anyMatch(l -> l.equals(lineToCheck)),
+                assertFalse(java.util.Arrays.stream(restoreResult.stdout().split("\n")).anyMatch(l -> l.equals(lineToCheck)),
                         "Restore must not replay i=" + i + ". Stdout:\n" + restoreResult.stdout());
             }
 
             // Exact user output check (lines excluding RESTORE_COMPLETE)
-            java.util.List<String> userLines = restoreResult.stdout().lines()
+            java.util.List<String> userLines = java.util.Arrays.stream(restoreResult.stdout().split("\n"))
                     .filter(l -> !l.equals("RESTORE_COMPLETE") && !l.trim().isEmpty())
                     .filter(l -> !l.startsWith("Listening for transport dt_socket"))
                     .collect(java.util.stream.Collectors.toList());

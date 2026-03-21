@@ -176,14 +176,14 @@ class ReadmeDemoIT {
         // Restored thread must NOT replay pre-freeze output
         for (int i = 0; i <= 4; i++) {
             String lineToCheck = "i=" + i;
-            assertFalse(rOut.lines().anyMatch(l -> l.equals(lineToCheck)),
+            assertFalse(Arrays.stream(rOut.split("\n")).anyMatch(l -> l.equals(lineToCheck)),
                     "Restore must not replay i=" + i + ". Stdout:\n" + rOut);
         }
         assertFalse(rOut.contains("About to freeze!"),
                 "Restore must not replay 'About to freeze!'. Stdout:\n" + rOut);
 
         // Exact output check: only post-freeze lines
-        List<String> userLines = rOut.lines()
+        List<String> userLines = Arrays.stream(rOut.split("\n"))
                 .filter(l -> !l.trim().isEmpty())
                 .filter(l -> !l.startsWith("Listening for transport dt_socket"))
                 .collect(Collectors.toList());

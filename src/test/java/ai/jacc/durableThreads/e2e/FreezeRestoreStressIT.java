@@ -51,7 +51,7 @@ class FreezeRestoreStressIT {
      * the restored thread, excluding the RestoreProgram infrastructure lines.
      */
     private static java.util.List<String> extractUserOutput(String stdout) {
-        return stdout.lines()
+        return java.util.Arrays.stream(stdout.split("\n"))
                 .filter(line -> !line.startsWith("SNAPSHOT_LOADED="))
                 .filter(line -> !line.startsWith("FRAME_COUNT="))
                 .filter(line -> !line.equals("RESTORE_COMPLETE"))
