@@ -243,20 +243,27 @@ public final class JdiHeapWalker {
 
                 if (valueVal instanceof ArrayReference && count > 0) {
                     ArrayReference arr = (ArrayReference) valueVal;
-                    if (coder == 0) {
-                        // LATIN1: each byte is a char
+                    List<Value> vals = arr.getValues(0, Math.min(count, arr.length()));
+                    if (coderField == null || vals.get(0) instanceof CharValue) {
+                        // Java 8: value is a char[] array
+                        char[] chars = new char[count];
+                        for (int i = 0; i < count; i++) {
+                            chars[i] = (vals.get(i) instanceof CharValue) ? ((CharValue) vals.get(i)).value() : 0;
+                        }
+                        content = new String(chars);
+                    } else if (coder == 0) {
+                        // Java 9+ LATIN1: each byte is a char
                         byte[] bytes = new byte[count];
-                        List<Value> vals = arr.getValues(0, count);
                         for (int i = 0; i < count; i++) {
                             bytes[i] = (vals.get(i) instanceof ByteValue) ? ((ByteValue) vals.get(i)).value() : 0;
                         }
                         content = new String(bytes, java.nio.charset.StandardCharsets.ISO_8859_1);
                     } else {
-                        // UTF16: two bytes per char
+                        // Java 9+ UTF16: two bytes per char
                         byte[] bytes = new byte[count * 2];
-                        List<Value> vals = arr.getValues(0, count * 2);
+                        List<Value> utf16Vals = arr.getValues(0, count * 2);
                         for (int i = 0; i < count * 2; i++) {
-                            bytes[i] = (vals.get(i) instanceof ByteValue) ? ((ByteValue) vals.get(i)).value() : 0;
+                            bytes[i] = (utf16Vals.get(i) instanceof ByteValue) ? ((ByteValue) utf16Vals.get(i)).value() : 0;
                         }
                         content = new String(bytes, java.nio.charset.StandardCharsets.UTF_16LE);
                     }
