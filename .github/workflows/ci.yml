@@ -14,6 +14,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Linux
           - os: ubuntu-latest
             java: '8'
             distribution: temurin
@@ -21,6 +22,35 @@ jobs:
             java: '9'
             distribution: zulu
           - os: ubuntu-latest
+            java: '11'
+            distribution: temurin
+          - os: ubuntu-latest
+            java: '25'
+            distribution: temurin
+          # macOS
+          - os: macos-latest
+            java: '8'
+            distribution: temurin
+          - os: macos-latest
+            java: '9'
+            distribution: zulu
+          - os: macos-latest
+            java: '11'
+            distribution: temurin
+          - os: macos-latest
+            java: '25'
+            distribution: temurin
+          # Windows
+          - os: windows-latest
+            java: '8'
+            distribution: temurin
+          - os: windows-latest
+            java: '9'
+            distribution: zulu
+          - os: windows-latest
+            java: '11'
+            distribution: temurin
+          - os: windows-latest
             java: '25'
             distribution: temurin
 
@@ -61,6 +91,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Linux
           - os: ubuntu-latest
             java: '8'
             distribution: temurin
@@ -68,6 +99,35 @@ jobs:
             java: '9'
             distribution: zulu
           - os: ubuntu-latest
+            java: '11'
+            distribution: temurin
+          - os: ubuntu-latest
+            java: '25'
+            distribution: temurin
+          # macOS
+          - os: macos-latest
+            java: '8'
+            distribution: temurin
+          - os: macos-latest
+            java: '9'
+            distribution: zulu
+          - os: macos-latest
+            java: '11'
+            distribution: temurin
+          - os: macos-latest
+            java: '25'
+            distribution: temurin
+          # Windows
+          - os: windows-latest
+            java: '8'
+            distribution: temurin
+          - os: windows-latest
+            java: '9'
+            distribution: zulu
+          - os: windows-latest
+            java: '11'
+            distribution: temurin
+          - os: windows-latest
             java: '25'
             distribution: temurin
 
