@@ -2,7 +2,7 @@
 
 **Freeze, serialize, and resume Java threads across JVM restarts.**
 
-Durable Threads is a pure-Java library that captures the full execution state of a running thread — call stack, local variables, and heap objects — serializes it to a portable snapshot, and restores it in a new JVM process. No special JVM forks, no compiler plugins, no JVMTI native agents. It works on stock OpenJDK 21+.
+Durable Threads is a pure-Java library that captures the full execution state of a running thread — call stack, local variables, and heap objects — serializes it to a portable snapshot, and restores it in a new JVM process. No special JVM forks, no compiler plugins, no JVMTI native agents. It works on stock OpenJDK 8+.
 
 [![CI](https://github.com/hooji/DurableJavaThreads/actions/workflows/ci.yml/badge.svg)](https://github.com/hooji/DurableJavaThreads/actions/workflows/ci.yml)
 
@@ -165,19 +165,29 @@ For a deep dive into how bytecode offsets are computed and why the freeze/restor
 
 ### How It Compares
 
-| Feature | Durable Threads | Quasar/Loom | CRIU | Project Loom |
-|---|---|---|---|---|
-| Stock JVM | Yes | Quasar: No (agent + bytecode) | No (kernel module) | Yes (but no serialize) |
-| Serialize to disk | Yes | No | Yes (process-level) | No |
-| Cross-JVM restore | Yes | No | Limited | No |
-| Java 21+ | Yes | Quasar: abandoned | Yes | Yes |
-| Granularity | Thread | Fiber | Process | Thread |
+| Feature | Durable Threads | CRIU | CRaC |
+|---|---|---|---|
+| Stock JVM | Yes | Yes | No (special build) |
+| Granularity | Single thread | Entire process | Entire JVM |
+| Serialize to disk | Yes | Yes | Yes |
+| Cross-machine restore | Yes | Limited | No |
+| Linux-only | No | Yes | No |
+| Requires root | No | Yes | No |
+| Thread-level selectivity | Yes | No | No |
+
+**CRIU** (Checkpoint/Restore in Userspace) snapshots an entire Linux process. It's powerful but requires root, only works on Linux, and operates at process granularity — you can't freeze one thread while others continue.
+
+**CRaC** (Coordinated Restore at Checkpoint) is an OpenJDK project for fast JVM startup. It checkpoints the entire JVM, then restores it later. It requires a special JDK build (e.g., Azul Zulu with CRaC support) and is process-level, not thread-level.
+
+**Workflow engines** like Temporal, Cadence, and AWS Step Functions achieve "durable execution" by requiring you to structure code as explicit state machines or event handlers. They're production-proven but require rewriting your logic.
+
+**Durable Threads** is different: it captures a single thread's execution state from *inside* a stock JVM, serializes it portably, and restores it anywhere — even on a different machine. Your code stays straight-line Java.
 
 ## Building
 
 ### Prerequisites
 
-- Java 21 or later (OpenJDK / Temurin recommended)
+- Java 8 or later (OpenJDK / Temurin recommended)
 - Maven 3.9+
 
 ### Build from source
@@ -257,7 +267,7 @@ src/main/java/ai/jacc/durableThreads/
 
 ## Requirements
 
-- **Java 21+** — uses modern language features and JDI APIs
+- **Java 8+** — compiled to Java 8 bytecode; works on any JDK 8 or later
 - **JDWP** — the JVM must be started with `-agentlib:jdwp=transport=dt_socket,server=y,suspend=n`. The library auto-discovers the JDWP port on Linux (`/proc/net/tcp`), macOS (`lsof`), and Windows (`netstat`). You can also specify a fixed port with `address=PORT`
 - **jdk.jdi module** — add `--add-modules jdk.jdi` to the command line
 

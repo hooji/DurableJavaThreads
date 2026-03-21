@@ -88,11 +88,10 @@
                 <configuration>
                     <source>1.8</source>
                     <target>1.8</target>
+                    <fork>true</fork>
                     <compilerArgs>
-                        <arg>--add-modules</arg>
-                        <arg>jdk.jdi</arg>
-                        <arg>--add-modules</arg>
-                        <arg>jdk.attach</arg>
+                        <arg>-J--add-modules=jdk.jdi</arg>
+                        <arg>-J--add-modules=jdk.attach</arg>
                     </compilerArgs>
                 </configuration>
             </plugin>
