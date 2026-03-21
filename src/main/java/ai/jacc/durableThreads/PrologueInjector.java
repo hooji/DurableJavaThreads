@@ -553,9 +553,11 @@ public final class PrologueInjector extends ClassVisitor {
 
         private void pushDummyArguments(InvokeInfo info) {
             if (info.opcode != Opcodes.INVOKESTATIC && info.opcode != Opcodes.INVOKEDYNAMIC) {
+                // Use resolveReceiver to get the pre-stored heap-restored receiver
+                // for this frame, falling back to dummyInstance if unavailable.
                 target.visitLdcInsn(info.owner.replace('/', '.'));
                 target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                        "ai/jacc/durableThreads/ReplayState", "dummyInstance",
+                        "ai/jacc/durableThreads/ReplayState", "resolveReceiver",
                         "(Ljava/lang/String;)Ljava/lang/Object;", false);
                 target.visitTypeInsn(Opcodes.CHECKCAST, info.owner);
             }

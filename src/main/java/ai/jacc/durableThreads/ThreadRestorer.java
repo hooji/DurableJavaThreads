@@ -98,12 +98,16 @@ final class ThreadRestorer {
         // Step 4: Build replay state (now InvokeRegistry has the data)
         int[] resumeIndices = computeResumeIndices(snapshot);
 
-        // Step 4: Create the replay thread
+        // Step 4b: Pre-resolve receiver ("this") for each frame so resume stubs
+        // push the correct heap-restored object instead of a dummy instance.
+        Object[] frameReceivers = computeFrameReceivers(snapshot, heapRestorer);
+
+        // Step 5: Create the replay thread
         String threadName = snapshot.threadName() + "-restored";
         Thread replayThread = new Thread(() -> {
             // Activate replay mode with latch — resumePoint() will block
             // until the JDI worker sets locals and releases it
-            ReplayState.activateWithLatch(resumeIndices);
+            ReplayState.activateWithLatch(resumeIndices, frameReceivers);
 
             try {
                 FrameSnapshot bottomFrame = snapshot.bottomFrame();
@@ -197,6 +201,32 @@ final class ThreadRestorer {
         }
 
         return indices;
+    }
+
+    /**
+     * Pre-resolve the receiver ("this") for each frame from the snapshot.
+     *
+     * <p>Resume stubs need the correct receiver when re-invoking virtual/interface
+     * methods during replay. Without this, they would create an uninitialized
+     * dummy instance whose fields are all null/0 — which corrupts execution
+     * after the freeze point where the original code accesses {@code this}.</p>
+     *
+     * @return array of receivers indexed by frame (bottom=0), null entries for
+     *         static methods or frames where "this" was not captured
+     */
+    private static Object[] computeFrameReceivers(ThreadSnapshot snapshot,
+                                                   HeapRestorer heapRestorer) {
+        Object[] receivers = new Object[snapshot.frameCount()];
+        for (int i = 0; i < snapshot.frameCount(); i++) {
+            FrameSnapshot frame = snapshot.frames().get(i);
+            for (ai.jacc.durableThreads.snapshot.LocalVariable local : frame.locals()) {
+                if (local.slot() == 0 && "this".equals(local.name())) {
+                    receivers[i] = heapRestorer.resolve(local.value());
+                    break;
+                }
+            }
+        }
+        return receivers;
     }
 
     private static void invokeBottomFrame(FrameSnapshot bottomFrame,
