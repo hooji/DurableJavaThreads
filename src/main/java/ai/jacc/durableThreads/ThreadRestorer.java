@@ -283,24 +283,45 @@ final class ThreadRestorer {
                         // Snapshot frames are [bottom..top], so deepest = frameCount-1
                         int snapshotFrameIdx = frameCount - 1 - f;
 
-                        ThreadReference tr2 = waitForThreadAtMethod(vm, threadName,
-                                "localsReady", "ReplayState", 30_000);
-                        if (tr2 == null) {
+                        // Retry loop: after releasing the previous frame's latch, the
+                        // replay thread may still be WAITING inside the old localsReady()
+                        // call when we poll. We detect this via frame identity mismatch
+                        // and retry until the thread advances to the correct frame.
+                        long deadline = System.currentTimeMillis() + 30_000;
+                        boolean frameSet = false;
+                        while (!frameSet && System.currentTimeMillis() < deadline) {
+                            ThreadReference tr2 = waitForThreadAtMethod(vm, threadName,
+                                    "localsReady", "ReplayState",
+                                    deadline - System.currentTimeMillis());
+                            if (tr2 == null) {
+                                throw new RuntimeException(
+                                        "Timeout waiting for replay thread '" + threadName
+                                        + "' to reach localsReady() for frame " + f
+                                        + " (" + snapshot.frames().get(snapshotFrameIdx).className()
+                                        + "." + snapshot.frames().get(snapshotFrameIdx).methodName()
+                                        + "). The thread may have failed during re-execution.");
+                            }
+
+                            tr2.suspend();
+                            try {
+                                if (isCorrectFrame(tr2, snapshot.frames().get(snapshotFrameIdx))) {
+                                    setLocalsForSingleFrame(vm, tr2, snapshot,
+                                            restoredHeap, heapRestorer, snapshotFrameIdx);
+                                    ReplayState.releaseLocalsReady();
+                                    frameSet = true;
+                                }
+                                // else: thread is still in previous frame's localsReady(),
+                                // resume and retry after it advances
+                            } finally {
+                                tr2.resume();
+                            }
+                        }
+                        if (!frameSet) {
                             throw new RuntimeException(
-                                    "Timeout waiting for replay thread '" + threadName
-                                    + "' to reach localsReady() for frame " + f
+                                    "Timeout waiting for correct frame for " + f
                                     + " (" + snapshot.frames().get(snapshotFrameIdx).className()
                                     + "." + snapshot.frames().get(snapshotFrameIdx).methodName()
                                     + "). The thread may have failed during re-execution.");
-                        }
-
-                        tr2.suspend();
-                        try {
-                            setLocalsForSingleFrame(vm, tr2, snapshot,
-                                    restoredHeap, heapRestorer, snapshotFrameIdx);
-                            ReplayState.releaseLocalsReady();
-                        } finally {
-                            tr2.resume();
                         }
                     }
 
@@ -361,6 +382,36 @@ final class ThreadRestorer {
             }
         }
         return null;
+    }
+
+    /**
+     * Check if the first user frame on the JDI stack matches the expected snapshot frame.
+     * Used to detect when the replay thread is still in a previous frame's localsReady()
+     * vs. having advanced to the correct frame's localsReady().
+     * Thread must already be suspended.
+     */
+    private static boolean isCorrectFrame(ThreadReference tr, FrameSnapshot snapFrame) {
+        try {
+            List<StackFrame> jdiFrames = tr.frames(0, Math.min(15, tr.frameCount()));
+            for (StackFrame jdiFrame : jdiFrames) {
+                Location loc = jdiFrame.location();
+                String jdiClassName = loc.declaringType().name().replace('.', '/');
+                String jdiMethodName = loc.method().name();
+                // Skip infrastructure frames
+                if (jdiClassName.startsWith("ai/jacc/durableThreads/ReplayState")
+                        || jdiClassName.startsWith("java/")
+                        || jdiClassName.startsWith("jdk/")
+                        || jdiClassName.startsWith("sun/")) {
+                    continue;
+                }
+                // First user frame — check if it matches
+                return jdiClassName.equals(snapFrame.className())
+                        && jdiMethodName.equals(snapFrame.methodName());
+            }
+        } catch (IncompatibleThreadStateException e) {
+            // Can't read frames
+        }
+        return false;
     }
 
     /**
