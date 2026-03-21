@@ -56,8 +56,8 @@ class FreezeRestoreStressIT {
                 .filter(line -> !line.startsWith("FRAME_COUNT="))
                 .filter(line -> !line.equals("RESTORE_COMPLETE"))
                 .filter(line -> !line.startsWith("Listening for transport dt_socket"))
-                .filter(line -> !line.isBlank())
-                .toList();
+                .filter(line -> !line.trim().isEmpty())
+                .collect(java.util.stream.Collectors.toList());
     }
 
     // ===================================================================
@@ -87,8 +87,8 @@ class FreezeRestoreStressIT {
             assertRestoreSucceeded(restoreResult);
 
             // Exact output: only post-freeze lines, no replay
-            var userLines = extractUserOutput(restoreResult.stdout());
-            assertEquals(java.util.List.of("AFTER_FREEZE=42", "MESSAGE=hello-from-freeze"),
+            java.util.List<String> userLines = extractUserOutput(restoreResult.stdout());
+            assertEquals(java.util.Arrays.asList("AFTER_FREEZE=42", "MESSAGE=hello-from-freeze"),
                     userLines,
                     "Rep " + info.getCurrentRepetition()
                             + ": restore should produce only post-freeze lines. Got:\n"
@@ -124,8 +124,8 @@ class FreezeRestoreStressIT {
             assertRestoreSucceeded(restoreResult);
 
             // Exact output check for deep chain
-            var userLines = extractUserOutput(restoreResult.stdout());
-            assertEquals(java.util.List.of(
+            java.util.List<String> userLines = extractUserOutput(restoreResult.stdout());
+            assertEquals(java.util.Arrays.asList(
                     "INNER_AFTER=117", "MIDDLE_AFTER=117",
                     "OUTER_AFTER=217", "DEEP_RESULT=1217"),
                     userLines,
@@ -163,8 +163,8 @@ class FreezeRestoreStressIT {
             assertRestoreSucceeded(restoreResult);
 
             // Exact output check for loop
-            var userLines = extractUserOutput(restoreResult.stdout());
-            assertEquals(java.util.List.of(
+            java.util.List<String> userLines = extractUserOutput(restoreResult.stdout());
+            assertEquals(java.util.Arrays.asList(
                     "AFTER_FREEZE i=4 sum=10",
                     "ITERATION i=5 sum=15", "ITERATION i=6 sum=21",
                     "ITERATION i=7 sum=28", "ITERATION i=8 sum=36",
@@ -243,8 +243,8 @@ class FreezeRestoreStressIT {
             assertRestoreSucceeded(restoreResult);
 
             // Exact output check for return values
-            var userLines = extractUserOutput(restoreResult.stdout());
-            assertEquals(java.util.List.of(
+            java.util.List<String> userLines = extractUserOutput(restoreResult.stdout());
+            assertEquals(java.util.Arrays.asList(
                     "AFTER_FREEZE v1=15 v2=45 v3=43",
                     "AFTER_COMPUTE v4=21 v5=121",
                     "CHAIN_RESULT=245"),
