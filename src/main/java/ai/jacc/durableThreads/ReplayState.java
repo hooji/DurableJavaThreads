@@ -40,11 +40,24 @@ public final class ReplayState {
         int currentFrame;
         /** Total number of frames to replay. */
         final int frameCount;
+        /**
+         * Pre-resolved receiver ("this") for each frame, bottom to top.
+         * Used by resume stubs so they push the correct heap-restored receiver
+         * instead of a dummy instance. May be null if receivers were not provided
+         * (e.g. in unit tests). Individual entries may also be null for static
+         * methods or frames where "this" was not captured.
+         */
+        final Object[] frameReceivers;
 
         ReplayData(int[] resumeIndices) {
+            this(resumeIndices, null);
+        }
+
+        ReplayData(int[] resumeIndices, Object[] frameReceivers) {
             this.resumeIndices = resumeIndices;
             this.frameCount = resumeIndices.length;
             this.currentFrame = 0;
+            this.frameReceivers = frameReceivers;
         }
     }
 
@@ -195,10 +208,20 @@ public final class ReplayState {
      * @param resumeIndices invoke-index for each frame, bottom (0) to top
      */
     public static void activateWithLatch(int[] resumeIndices) {
+        activateWithLatch(resumeIndices, null);
+    }
+
+    /**
+     * Activate replay mode with blocking latches and pre-resolved frame receivers.
+     *
+     * @param resumeIndices invoke-index for each frame, bottom (0) to top
+     * @param frameReceivers pre-resolved receiver ("this") for each frame, or null
+     */
+    public static void activateWithLatch(int[] resumeIndices, Object[] frameReceivers) {
         restoreError = null;
         resumeLatch = new CountDownLatch(1);
         localsLatch = new CountDownLatch(1);
-        REPLAY.set(new ReplayData(resumeIndices));
+        REPLAY.set(new ReplayData(resumeIndices, frameReceivers));
     }
 
     /**
@@ -243,10 +266,32 @@ public final class ReplayState {
     public static double unboxDouble(Object o) { return ((Double) o).doubleValue(); }
 
     /**
+     * Resolve the receiver for the current frame during replay.
+     *
+     * <p>Resume stubs call this instead of {@link #dummyInstance(String)} to get
+     * the correct heap-restored receiver for virtual/interface method calls.
+     * Falls back to {@link #dummyInstance(String)} if no receiver was pre-stored
+     * (e.g. in unit tests or for frames where "this" was not captured).</p>
+     *
+     * <p>Must be called AFTER {@link #advanceFrame()} — the current frame index
+     * should point to the frame being re-invoked, not the caller.</p>
+     *
+     * @param className fully qualified class name (dot-separated), used as fallback
+     * @return the pre-stored receiver, or a dummy instance as fallback
+     */
+    public static Object resolveReceiver(String className) {
+        ReplayData data = REPLAY.get();
+        if (data != null && data.frameReceivers != null
+                && data.currentFrame < data.frameReceivers.length) {
+            Object receiver = data.frameReceivers[data.currentFrame];
+            if (receiver != null) return receiver;
+        }
+        return dummyInstance(className);
+    }
+
+    /**
      * Create a dummy (uninitialized) instance of the named class.
-     * Used by resume stubs to provide a non-null receiver for virtual/interface calls
-     * during replay. The instance is never actually used — the called method's prologue
-     * will immediately dispatch to replay logic.
+     * Used as a fallback when no pre-stored receiver is available.
      *
      * @param className fully qualified class name (dot-separated)
      * @return an uninitialized instance
