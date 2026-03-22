@@ -704,6 +704,17 @@ final class ThreadRestorer {
                                 e);
                     }
                     // Phase 1: non-parameter locals may not be in scope yet
+                } catch (com.sun.jdi.InternalException e) {
+                    // JDWP Error 35 (INVALID_SLOT): variable not in scope at current
+                    // BCI. In Phase 1 the thread is in the resume stub where
+                    // non-parameter locals haven't entered scope yet — this is expected.
+                    // In Phase 2 (requireAllLocals), this is a real error.
+                    if (requireAllLocals) {
+                        throw new RuntimeException(
+                                "Failed to set local '" + entry.jdiLocal().name() + "' in "
+                                + method.declaringType().name() + "." + method.name()
+                                + ": " + e.getMessage(), e);
+                    }
                 } catch (Exception e) {
                     throw new RuntimeException(
                             "Failed to set local '" + entry.jdiLocal().name() + "' in "

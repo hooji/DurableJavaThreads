@@ -81,6 +81,11 @@ public class FibonacciFreezeProgram {
                 }
             });
 
+            // In the restore JVM, the static 'frozen' flag starts as false.
+            // Re-set it here so recursive branches that re-enter fib(freezeAtN)
+            // don't attempt a second freeze (which would fail because the JDWP
+            // connection from the restore process is still active).
+            frozen = true;
             System.out.println("RESTORED at n=" + n);
             System.out.flush();
         }

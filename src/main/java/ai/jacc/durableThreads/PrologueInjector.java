@@ -46,6 +46,8 @@ public final class PrologueInjector extends ClassVisitor {
     private String className;
     /** method key ("name+desc") → number of original invokes that received indices. */
     private final java.util.Map<String, Integer> invokeCountsByMethod = new java.util.HashMap<>();
+    /** method key → set of invoke indices that are invokedynamic (no stub re-invoke). */
+    private final java.util.Map<String, java.util.Set<Integer>> indyIndicesByMethod = new java.util.HashMap<>();
 
     public PrologueInjector(ClassVisitor cv) {
         super(Opcodes.ASM9, cv);
@@ -61,6 +63,15 @@ public final class PrologueInjector extends ClassVisitor {
     public int getOriginalInvokeCount(String methodName, String methodDesc) {
         Integer n = invokeCountsByMethod.get(methodName + methodDesc);
         return n != null ? n : 0;
+    }
+
+    /**
+     * Returns the set of invoke indices that are invokedynamic in the given method.
+     * These stubs have no user re-invoke, so the raw scanner won't find them.
+     */
+    public java.util.Set<Integer> getInvokeDynamicIndices(String methodName, String methodDesc) {
+        java.util.Set<Integer> s = indyIndicesByMethod.get(methodName + methodDesc);
+        return s != null ? s : java.util.Collections.emptySet();
     }
 
     @Override
@@ -81,7 +92,7 @@ public final class PrologueInjector extends ClassVisitor {
         if ("<init>".equals(name)) return mv;
 
         return new PrologueMethodVisitor(access, name, descriptor, className, mv,
-                invokeCountsByMethod);
+                invokeCountsByMethod, indyIndicesByMethod);
     }
 
     private static class PrologueMethodVisitor extends MethodVisitor {
@@ -92,6 +103,7 @@ public final class PrologueInjector extends ClassVisitor {
         private final String className;
         private final MethodVisitor target;
         private final java.util.Map<String, Integer> invokeCountsOut;
+        private final java.util.Map<String, java.util.Set<Integer>> indyIndicesOut;
 
         private final List<InvokeInfo> invokeInfos = new ArrayList<>();
         private final List<Runnable> bufferedOps = new ArrayList<>();
@@ -132,7 +144,8 @@ public final class PrologueInjector extends ClassVisitor {
 
         PrologueMethodVisitor(int access, String name, String desc, String className,
                               MethodVisitor target,
-                              java.util.Map<String, Integer> invokeCountsOut) {
+                              java.util.Map<String, Integer> invokeCountsOut,
+                              java.util.Map<String, java.util.Set<Integer>> indyIndicesOut) {
             super(Opcodes.ASM9, null);
             this.methodAccess = access;
             this.methodName = name;
@@ -140,6 +153,7 @@ public final class PrologueInjector extends ClassVisitor {
             this.className = className;
             this.target = target;
             this.invokeCountsOut = invokeCountsOut;
+            this.indyIndicesOut = indyIndicesOut;
         }
 
         // --- Buffering ---
@@ -384,7 +398,7 @@ public final class PrologueInjector extends ClassVisitor {
                     simStack.clear();
                 }
             }
-            bufferedOps.add(() -> target.visitLabel(label));
+            bufferedOps.add(new LabelOp(label));
         }
         @Override public void visitLdcInsn(Object value) {
             if (!simLost) {
@@ -468,6 +482,18 @@ public final class PrologueInjector extends ClassVisitor {
             // Record the count before emitting — this is the authoritative number
             // of original-code invokes that received indices.
             invokeCountsOut.put(methodName + methodDesc, invokeCounter);
+
+            // Record which invoke indices are invokedynamic (their stubs have
+            // no user re-invoke, so the raw scanner won't find them).
+            java.util.Set<Integer> indySet = new java.util.HashSet<>();
+            for (InvokeInfo info : invokeInfos) {
+                if (info.opcode == Opcodes.INVOKEDYNAMIC) {
+                    indySet.add(info.index);
+                }
+            }
+            if (!indySet.isEmpty()) {
+                indyIndicesOut.put(methodName + methodDesc, indySet);
+            }
 
             if (!hasCode) {
                 target.visitEnd();
@@ -553,6 +579,10 @@ public final class PrologueInjector extends ClassVisitor {
         }
 
         private void emitFullPrologue() {
+            // Build per-invoke scope maps before emitting stubs so each stub
+            // initializes locals with types matching the target post-invoke label.
+            buildPerInvokeScopeMaps();
+
             int retValSlot = originalMaxLocals;
             Label originalCode = new Label();
 
@@ -631,7 +661,7 @@ public final class PrologueInjector extends ClassVisitor {
             // where all local variables are naturally in scope for JDI.
             target.visitMethodInsn(Opcodes.INVOKESTATIC,
                     "ai/jacc/durableThreads/ReplayState", "resumePoint", "()V", false);
-            emitLocalDefaults();
+            emitLocalDefaults(invokeIndex);
             // Deactivate replay so subsequent method calls in the original code
             // execute normally (not re-entering their resume stubs). In production,
             // JDI already deactivated replay between resumePoint() and localsReady(),
@@ -655,7 +685,7 @@ public final class PrologueInjector extends ClassVisitor {
             if (info.opcode == Opcodes.INVOKEDYNAMIC) {
                 target.visitMethodInsn(Opcodes.INVOKESTATIC,
                         "ai/jacc/durableThreads/ReplayState", "resumePoint", "()V", false);
-                emitLocalDefaults();
+                emitLocalDefaults(invokeIndex);
             } else {
                 pushDummyArguments(info);
                 target.visitMethodInsn(info.opcode, info.owner, info.name,
@@ -663,7 +693,7 @@ public final class PrologueInjector extends ClassVisitor {
                 // Box the return value and save it
                 boxReturnValue(Type.getReturnType(info.descriptor));
                 target.visitVarInsn(Opcodes.ASTORE, retValSlot);
-                emitLocalDefaults();
+                emitLocalDefaults(invokeIndex);
             }
 
             // Arm the localsReady gate BEFORE pushing sub-stack values
@@ -730,38 +760,99 @@ public final class PrologueInjector extends ClassVisitor {
         }
 
         /**
-         * Initialize non-parameter local slots to type-appropriate defaults.
-         * This ensures the verifier sees consistent types at post-invoke merge
-         * points where the resume stub and normal execution paths converge.
-         * Parameters are NOT initialized — they retain their values from the
-         * method call (or dummy values from the resume stub's re-invoke).
+         * Per-invoke type maps: for each invoke index, the correct type category
+         * for each local variable slot at that invoke's position in the code.
+         * Built once by {@link #buildPerInvokeScopeMaps()} before stubs are emitted.
          */
-        private void emitLocalDefaults() {
+        private java.util.Map<Integer, java.util.Map<Integer, Character>> perInvokeScopeMaps;
+
+        /**
+         * Build the per-invoke scope maps by walking through the buffered ops and
+         * tracking which local variables are in scope at each invoke position.
+         * This handles slot reuse (e.g., loop variable 'i' then StringBuilder 'sb'
+         * at the same slot) by using the LAST variable assigned to each slot
+         * before each invoke.
+         */
+        private void buildPerInvokeScopeMaps() {
             int paramSlots = 0;
-            if ((methodAccess & Opcodes.ACC_STATIC) == 0) {
-                paramSlots = 1;
+            if ((methodAccess & Opcodes.ACC_STATIC) == 0) paramSlots = 1;
+            for (Type t : Type.getArgumentTypes(methodDesc)) paramSlots += t.getSize();
+
+            perInvokeScopeMaps = new java.util.HashMap<>();
+
+            // Track which labels have been visited as we walk through buffered ops
+            java.util.Set<Label> visitedLabels = new java.util.HashSet<>();
+            for (Runnable op : bufferedOps) {
+                if (op instanceof LabelOp) {
+                    visitedLabels.add(((LabelOp) op).label);
+                } else if (op instanceof InvokeMarker || op instanceof InvokeDynamicMarker) {
+                    int idx = (op instanceof InvokeMarker)
+                            ? ((InvokeMarker) op).index
+                            : ((InvokeDynamicMarker) op).index;
+
+                    // Determine slot types at this invoke position
+                    java.util.Map<Integer, Character> slotTypes = new java.util.TreeMap<>();
+                    for (LocalVarInfo lv : localVars) {
+                        if (lv.index() >= paramSlots
+                                && visitedLabels.contains(lv.start())
+                                && !visitedLabels.contains(lv.end())) {
+                            // Variable is in scope: start visited, end not yet
+                            slotTypes.put(lv.index(), typeCategory(Type.getType(lv.desc())));
+                        }
+                    }
+                    // Fill remaining slots with reference default
+                    for (int i = paramSlots; i < originalMaxLocals; i++) {
+                        slotTypes.putIfAbsent(i, 'A');
+                    }
+                    perInvokeScopeMaps.put(idx, slotTypes);
+                }
             }
-            for (Type t : Type.getArgumentTypes(methodDesc)) {
-                paramSlots += t.getSize();
+        }
+
+        /**
+         * Initialize non-parameter local slots to type-appropriate defaults
+         * for a specific invoke target. The types are determined by which
+         * variables are in scope at the invoke's position in the original code.
+         */
+        private void emitLocalDefaults(int invokeIndex) {
+            java.util.Map<Integer, Character> slotCategories =
+                    perInvokeScopeMaps != null ? perInvokeScopeMaps.get(invokeIndex) : null;
+
+            if (slotCategories == null) {
+                // Fallback: use all locals
+                slotCategories = buildFallbackSlotCategories();
             }
 
-            // Build slot type map from LocalVarInfo (non-parameter slots only)
+            emitSlotDefaults(slotCategories);
+        }
+
+        /**
+         * Initialize non-parameter local slots to type-appropriate defaults.
+         * Fallback version used when per-invoke maps aren't available.
+         */
+        private void emitLocalDefaults() {
+            emitSlotDefaults(buildFallbackSlotCategories());
+        }
+
+        private java.util.Map<Integer, Character> buildFallbackSlotCategories() {
+            int paramSlots = 0;
+            if ((methodAccess & Opcodes.ACC_STATIC) == 0) paramSlots = 1;
+            for (Type t : Type.getArgumentTypes(methodDesc)) paramSlots += t.getSize();
+
             java.util.Map<Integer, Character> slotCategories = new java.util.TreeMap<>();
             for (LocalVarInfo lv : localVars) {
                 if (lv.index() >= paramSlots) {
                     slotCategories.putIfAbsent(lv.index(), typeCategory(Type.getType(lv.desc())));
                 }
             }
-
-            // Also initialize any compiler-generated temp slots not in LocalVarInfo
-            // (e.g., saved exceptions for finally handlers). Default to reference type
-            // since compiler temps are typically exception references.
             for (int i = paramSlots; i < originalMaxLocals; i++) {
                 slotCategories.putIfAbsent(i, 'A');
             }
+            return slotCategories;
+        }
 
-            // Skip wide-type second slots: if slot i is 'J' or 'D', slot i+1 is its
-            // second half and must NOT be independently initialized.
+        private void emitSlotDefaults(java.util.Map<Integer, Character> slotCategories) {
+            // Skip wide-type second slots
             java.util.Set<Integer> wideSeconds = new java.util.HashSet<>();
             for (java.util.Map.Entry<Integer, Character> entry : slotCategories.entrySet()) {
                 if (isWide(entry.getValue())) {
@@ -769,7 +860,6 @@ public final class PrologueInjector extends ClassVisitor {
                 }
             }
 
-            // Emit type-appropriate defaults for each non-parameter local slot
             for (java.util.Map.Entry<Integer, Character> entry : slotCategories.entrySet()) {
                 if (wideSeconds.contains(entry.getKey())) continue;
                 int s = entry.getKey();
@@ -988,6 +1078,12 @@ public final class PrologueInjector extends ClassVisitor {
         }
 
         // --- Marker types ---
+
+        final class LabelOp implements Runnable {
+            final Label label;
+            LabelOp(Label label) { this.label = label; }
+            @Override public void run() { target.visitLabel(label); }
+        }
 
         static final class InvokeMarker implements Runnable {
             private final int index;
