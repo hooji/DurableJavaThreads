@@ -1,6 +1,8 @@
 package ai.jacc.durableThreads;
 
 import com.sun.jdi.*;
+import com.sun.jdi.event.EventQueue;
+import com.sun.jdi.event.EventSet;
 import ai.jacc.durableThreads.exception.LambdaFrameException;
 import ai.jacc.durableThreads.exception.NonEmptyStackException;
 import ai.jacc.durableThreads.exception.ThreadFrozenError;
@@ -169,9 +171,22 @@ final class ThreadFreezer {
             // reusing a JDI connection from a prior freeze/restore cycle,
             // because the previous cycle's pending resume events can race
             // with our suspend.
+            //
+            // Mitigations:
+            // 1. Drain pending events from the JDI event queue before each attempt
+            //    to clear stale resume-triggering events from prior cycles.
+            // 2. Double-suspend (suspend count = 2) so a single spurious resume
+            //    doesn't drop the count to 0.
+            // 3. Exponential backoff with up to 10 retries.
             ThreadSnapshot snapshot = null;
-            int maxRetries = 5;
+            int maxRetries = 10;
             for (int attempt = 0; attempt < maxRetries; attempt++) {
+                // Drain any pending events that could trigger spurious resumes
+                drainPendingEvents(vm);
+
+                // Double suspend: suspend count = 2, so a single spurious
+                // resume (dropping count to 1) won't actually run the thread
+                threadRef.suspend();
                 threadRef.suspend();
                 try {
                     snapshot = captureSnapshot(vm, threadRef, targetThread.getName(), namedObjects);
@@ -182,17 +197,20 @@ final class ThreadFreezer {
                     break; // success
                 } catch (com.sun.jdi.InvalidStackFrameException e) {
                     // Thread was resumed between suspend and frame read —
-                    // retry after a brief pause
+                    // retry after a brief pause with exponential backoff
                     if (attempt == maxRetries - 1) {
                         throw new RuntimeException(
                                 "Failed to capture snapshot after " + maxRetries
                                 + " attempts — thread keeps being resumed", e);
                     }
-                    try { Thread.sleep(50); } catch (InterruptedException ie) {
+                    long backoff = 50L * (1L << Math.min(attempt, 4)); // 50, 100, 200, 400, 800ms
+                    try { Thread.sleep(backoff); } catch (InterruptedException ie) {
                         Thread.currentThread().interrupt();
                         throw new RuntimeException("Freeze interrupted during retry", ie);
                     }
                 } finally {
+                    // Match the double suspend with double resume
+                    threadRef.resume();
                     threadRef.resume();
                 }
             }
@@ -501,6 +519,30 @@ final class ThreadFreezer {
             return findFieldInType(((ClassType) type).superclass(), name);
         }
         return null;
+    }
+
+    /**
+     * Drain pending events from the JDI event queue without resuming threads.
+     * In multi-cycle freeze/restore scenarios, stale events from prior cycles
+     * can race with our thread suspension and cause InvalidStackFrameException.
+     */
+    private static void drainPendingEvents(VirtualMachine vm) {
+        EventQueue queue = vm.eventQueue();
+        while (true) {
+            try {
+                EventSet eventSet = queue.remove(1); // 1ms timeout (non-blocking)
+                if (eventSet == null) break;
+                // Discard without calling eventSet.resume() — we don't want
+                // to trigger any resumes. The suspend count from these events
+                // will be balanced by our explicit suspend/resume.
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            } catch (Exception e) {
+                // VMDisconnectedException or other — stop draining
+                break;
+            }
+        }
     }
 
     private static List<ai.jacc.durableThreads.snapshot.LocalVariable> captureLocals(StackFrame frame, JdiHeapWalker heapWalker) {
