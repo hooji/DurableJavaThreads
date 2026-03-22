@@ -135,7 +135,11 @@ public final class PrologueInjector extends ClassVisitor {
             bufferedOps.add(() -> target.visitTypeInsn(opcode, type));
         }
         @Override public void visitFieldInsn(int opcode, String owner, String name, String desc) {
-            bufferedOps.add(() -> target.visitFieldInsn(opcode, owner, name, desc));
+            if (opcode == Opcodes.PUTFIELD || opcode == Opcodes.PUTSTATIC) {
+                bufferedOps.add(new FieldWriteMarker(opcode, owner, name, desc));
+            } else {
+                bufferedOps.add(() -> target.visitFieldInsn(opcode, owner, name, desc));
+            }
         }
 
         @Override
@@ -428,10 +432,52 @@ public final class PrologueInjector extends ClassVisitor {
                     emitInvokeDynamicWithSkipCheck(skipSlot, marker.index,
                             marker.name, marker.descriptor,
                             marker.bootstrapMethodHandle, marker.bootstrapMethodArguments);
+                } else if (op instanceof FieldWriteMarker) {
+                    FieldWriteMarker marker = (FieldWriteMarker) op;
+                    emitFieldWriteWithSkipGuard(skipSlot, marker);
                 } else {
                     op.run();
                 }
             }
+        }
+
+        /**
+         * Emit a field write (PUTFIELD/PUTSTATIC) with a skip guard.
+         *
+         * <p>During the skip pass ({@code __skip >= 0}), field writes are suppressed
+         * to prevent side effects from re-executing original bytecode. The values
+         * that PUTFIELD/PUTSTATIC would consume are popped instead.</p>
+         *
+         * <p>During normal execution ({@code __skip == -1}), the field write
+         * executes normally — just a single not-taken branch overhead.</p>
+         */
+        private void emitFieldWriteWithSkipGuard(int skipSlot, FieldWriteMarker marker) {
+            Label doWrite = new Label();
+            Label afterWrite = new Label();
+
+            // Check: if __skip < 0 (normal execution), do the field write
+            target.visitVarInsn(Opcodes.ILOAD, skipSlot);
+            target.visitJumpInsn(Opcodes.IFLT, doWrite);
+
+            // SKIP PATH: pop the values that put{field,static} would consume
+            Type fieldType = Type.getType(marker.desc);
+            if (fieldType.getSize() == 2) {
+                // long/double value = 2 slots
+                target.visitInsn(Opcodes.POP2);
+            } else {
+                target.visitInsn(Opcodes.POP);
+            }
+            if (marker.opcode == Opcodes.PUTFIELD) {
+                // PUTFIELD also consumes the objectref
+                target.visitInsn(Opcodes.POP);
+            }
+            target.visitJumpInsn(Opcodes.GOTO, afterWrite);
+
+            // NORMAL PATH: execute the field write
+            target.visitLabel(doWrite);
+            target.visitFieldInsn(marker.opcode, marker.owner, marker.name, marker.desc);
+
+            target.visitLabel(afterWrite);
         }
 
         /**
@@ -847,6 +893,30 @@ public final class PrologueInjector extends ClassVisitor {
                         + ", descriptor=" + descriptor
                         + ", bootstrapMethodHandle=" + bootstrapMethodHandle
                         + ", bootstrapMethodArguments=" + Arrays.toString(bootstrapMethodArguments) + "]";
+            }
+        }
+
+        /**
+         * Marker for PUTFIELD/PUTSTATIC instructions. During the skip pass,
+         * field writes are suppressed to prevent side effects from re-executing
+         * original code. Instead of writing the field, the values on the operand
+         * stack are popped.
+         */
+        static final class FieldWriteMarker implements Runnable {
+            final int opcode;   // PUTFIELD or PUTSTATIC
+            final String owner;
+            final String name;
+            final String desc;
+
+            FieldWriteMarker(int opcode, String owner, String name, String desc) {
+                this.opcode = opcode;
+                this.owner = owner;
+                this.name = name;
+                this.desc = desc;
+            }
+
+            @Override public void run() {
+                throw new IllegalStateException("FieldWriteMarker must be handled");
             }
         }
     }
