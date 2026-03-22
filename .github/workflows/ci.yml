@@ -25,11 +25,29 @@ jobs:
             java: '11'
             distribution: temurin
           - os: ubuntu-latest
+            java: '17'
+            distribution: temurin
+          - os: ubuntu-latest
+            java: '21'
+            distribution: temurin
+          - os: ubuntu-latest
+            java: '24'
+            distribution: temurin
+          - os: ubuntu-latest
             java: '25'
             distribution: temurin
           # macOS (earliest available is 11 on ARM runners)
           - os: macos-latest
             java: '11'
+            distribution: temurin
+          - os: macos-latest
+            java: '17'
+            distribution: temurin
+          - os: macos-latest
+            java: '21'
+            distribution: temurin
+          - os: macos-latest
+            java: '24'
             distribution: temurin
           - os: macos-latest
             java: '25'
@@ -43,6 +61,15 @@ jobs:
             distribution: zulu
           - os: windows-latest
             java: '11'
+            distribution: temurin
+          - os: windows-latest
+            java: '17'
+            distribution: temurin
+          - os: windows-latest
+            java: '21'
+            distribution: temurin
+          - os: windows-latest
+            java: '24'
             distribution: temurin
           - os: windows-latest
             java: '25'
@@ -96,11 +123,29 @@ jobs:
             java: '11'
             distribution: temurin
           - os: ubuntu-latest
+            java: '17'
+            distribution: temurin
+          - os: ubuntu-latest
+            java: '21'
+            distribution: temurin
+          - os: ubuntu-latest
+            java: '24'
+            distribution: temurin
+          - os: ubuntu-latest
             java: '25'
             distribution: temurin
           # macOS
           - os: macos-latest
             java: '11'
+            distribution: temurin
+          - os: macos-latest
+            java: '17'
+            distribution: temurin
+          - os: macos-latest
+            java: '21'
+            distribution: temurin
+          - os: macos-latest
+            java: '24'
             distribution: temurin
           - os: macos-latest
             java: '25'
@@ -114,6 +159,15 @@ jobs:
             distribution: zulu
           - os: windows-latest
             java: '11'
+            distribution: temurin
+          - os: windows-latest
+            java: '17'
+            distribution: temurin
+          - os: windows-latest
+            java: '21'
+            distribution: temurin
+          - os: windows-latest
+            java: '24'
             distribution: temurin
           - os: windows-latest
             java: '25'
