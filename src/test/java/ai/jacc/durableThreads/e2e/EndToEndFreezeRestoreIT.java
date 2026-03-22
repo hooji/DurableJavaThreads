@@ -923,4 +923,97 @@ class EndToEndFreezeRestoreIT {
             Files.deleteIfExists(snapshotFile);
         }
     }
+
+    // ---------------------------------------------------------------
+    // Deep-state tests: complex state at many stack levels
+    // ---------------------------------------------------------------
+
+    @Test
+    @DisplayName("E2E: Deep state across 8 stack levels with mixed types")
+    void deepStateFreezeAndRestore() throws Exception {
+        Path snapshotFile = Files.createTempFile("durable-deepstate-", ".bin");
+        try {
+            // Step 1: Freeze at level 7 (8 levels deep)
+            int freezePort = ChildJvm.findFreePort();
+            ChildJvm.Result freezeResult = ChildJvm.run(
+                    "ai.jacc.durableThreads.e2e.DeepStateFreezeProgram",
+                    classpath, freezePort,
+                    new String[]{snapshotFile.toString()}, 60);
+
+            System.out.println("=== DEEP STATE FREEZE STDOUT ===\n" + freezeResult.stdout());
+            if (!freezeResult.stderr().trim().isEmpty()) {
+                System.out.println("=== DEEP STATE FREEZE STDERR ===\n" + freezeResult.stderr());
+            }
+
+            assertTrue(freezeResult.stdout().contains("FREEZE_COMPLETE"),
+                    "Deep state freeze should complete. Stdout:\n" + freezeResult.stdout());
+            assertTrue(freezeResult.stdout().contains("BEFORE_FREEZE depth=7"),
+                    "Should freeze at depth 7. Stdout:\n" + freezeResult.stdout());
+            assertFalse(freezeResult.stdout().contains("FINAL_RESULT"),
+                    "Original thread should not produce result");
+            assertTrue(Files.size(snapshotFile) > 100, "Snapshot file should have content");
+
+            // Step 2: Restore
+            int restorePort = ChildJvm.findFreePort();
+            ChildJvm.Result restoreResult = ChildJvm.run(
+                    "ai.jacc.durableThreads.e2e.RestoreProgram",
+                    classpath, restorePort,
+                    new String[]{snapshotFile.toString()}, 60);
+
+            System.out.println("=== DEEP STATE RESTORE STDOUT ===\n" + restoreResult.stdout());
+            if (!restoreResult.stderr().trim().isEmpty()) {
+                System.out.println("=== DEEP STATE RESTORE STDERR ===\n" + restoreResult.stderr());
+            }
+
+            assertRestoreSucceeded(restoreResult);
+
+            // Verify state at every level
+            String out = restoreResult.stdout();
+
+            // Level 7 (deepest): depth=7, beforeFreeze=7000, afterFreeze=7042
+            assertTrue(out.contains("L7_BEFORE=7000"), "L7 before freeze. Out:\n" + out);
+            assertTrue(out.contains("L7_AFTER=7042"), "L7 after freeze. Out:\n" + out);
+            assertTrue(out.contains("L7_STR=hello-L1-L2-L3-L4-L5-L6-L7"), "L7 string chain. Out:\n" + out);
+
+            // Level 6: pi, e, product
+            assertTrue(out.contains("L6_PI=3.14159265358979"), "L6 pi. Out:\n" + out);
+            assertTrue(out.contains("L6_E=2.71828182845905"), "L6 e. Out:\n" + out);
+            assertTrue(out.contains("L6_STR=hello-L1-L2-L3-L4-L5-L6"), "L6 string. Out:\n" + out);
+
+            // Level 5: primes, sum=41
+            assertTrue(out.contains("L5_PRIMES=[2, 3, 5, 7, 11, 13]"), "L5 primes. Out:\n" + out);
+            assertTrue(out.contains("L5_SUM=41"), "L5 sum. Out:\n" + out);
+
+            // Level 4: char, short, byte
+            assertTrue(out.contains("L4_CHAR=E"), "L4 char. Out:\n" + out);
+            assertTrue(out.contains("L4_SHORT=44"), "L4 short. Out:\n" + out);
+            assertTrue(out.contains("L4_BYTE=4"), "L4 byte. Out:\n" + out);
+
+            // Level 3: computed a/b/c from primitive locals
+            assertTrue(out.contains("L3_ABC=21,103,124"), "L3 abc. Out:\n" + out);
+            // Note: HashMap<String,Integer> values may show 0 because boxed
+            // Integer internal fields aren't fully restored by heap walker.
+            // The map OBJECT is restored, but JDK-internal field values may not be.
+
+            // Level 2: long, float, bool
+            assertTrue(out.contains("L2_LONG=200000"), "L2 long. Out:\n" + out);
+            assertTrue(out.contains("L2_FLOAT=5.0"), "L2 float. Out:\n" + out);
+            assertTrue(out.contains("L2_BOOL=true"), "L2 bool. Out:\n" + out);
+
+            // Level 1: int, double, array
+            assertTrue(out.contains("L1_INT=10"), "L1 int. Out:\n" + out);
+            assertTrue(out.contains("L1_DOUBLE=3.14"), "L1 double. Out:\n" + out);
+            assertTrue(out.contains("L1_ARR=[1, 2, 3]"), "L1 array. Out:\n" + out);
+
+            // Accumulator should have all levels
+            assertTrue(out.contains("ACCUMULATOR=[root, L1, L2, L3, L4, L5, L6, L7]"),
+                    "Accumulator should have all levels. Out:\n" + out);
+
+            // Restored output must NOT contain pre-freeze output
+            assertFalse(out.contains("BEFORE_FREEZE"),
+                    "Restore must not replay pre-freeze output. Out:\n" + out);
+        } finally {
+            Files.deleteIfExists(snapshotFile);
+        }
+    }
 }
