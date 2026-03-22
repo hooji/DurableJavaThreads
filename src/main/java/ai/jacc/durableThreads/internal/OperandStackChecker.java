@@ -102,6 +102,11 @@ public final class OperandStackChecker {
 
         if (insn instanceof MethodInsnNode) {
             MethodInsnNode methodInsn = (MethodInsnNode) insn;
+            // Skip ReplayState invokes — these are framework-injected (by PrologueInjector)
+            // and intentionally placed at post-invoke labels where the stack may be non-empty.
+            if ("ai/jacc/durableThreads/ReplayState".equals(methodInsn.owner)) {
+                return null;
+            }
             int expectedStackDepth = computeInvokeConsumedSlots(
                     methodInsn.getOpcode(), methodInsn.desc);
             int actualStackDepth = frame.getStackSize();

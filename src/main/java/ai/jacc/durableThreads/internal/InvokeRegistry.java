@@ -78,8 +78,11 @@ public final class InvokeRegistry {
         // Find the invoke instruction at or just before the given BCP.
         // The BCP from JDI may point to the invoke instruction itself or
         // to a position after it (if the thread was suspended after the call).
+        // Entries with value -1 are placeholders (e.g., invokedynamic stubs
+        // that have no re-invoke) and are skipped.
         for (int i = offsets.size() - 1; i >= 0; i--) {
-            if (offsets.get(i) <= bcp) {
+            int offset = offsets.get(i);
+            if (offset >= 0 && offset <= bcp) {
                 return i;
             }
         }

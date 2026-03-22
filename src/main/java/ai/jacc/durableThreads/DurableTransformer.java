@@ -39,6 +39,7 @@ public final class DurableTransformer implements ClassFileTransformer {
             "ai/jacc/durableThreads/ReplayState",
             "ai/jacc/durableThreads/ThreadFreezer",
             "ai/jacc/durableThreads/ThreadRestorer",
+            "ai/jacc/durableThreads/SnapshotFileWriter",
     };
 
     @Override
@@ -156,13 +157,33 @@ public final class DurableTransformer implements ClassFileTransformer {
             // is re-frozen, the JDI frame BCP may point to a resume stub invoke
             // (not the original code invoke). Since stub invoke i corresponds to
             // original invoke index i, we map them to the same indices.
+            //
+            // Invokedynamic stubs have no user re-invoke (they use resumePoint()
+            // instead), so the scanner finds fewer stub invokes than originalCount.
+            // We build a padded list with -1 at invokedynamic positions so the
+            // index in the list still corresponds to the invoke index.
             int stubCount = allOffsets.size() - originalCount;
-            if (stubCount > 0 && stubCount >= originalCount) {
-                // Stub invokes are the first `stubCount` entries. The last
-                // `originalCount` of those stubs map 1:1 to invoke indices.
-                List<Integer> stubOffsets = allOffsets.subList(
-                        stubCount - originalCount, stubCount);
-                InvokeRegistry.registerStubOffsets(key, new ArrayList<>(stubOffsets));
+            if (stubCount > 0) {
+                List<Integer> rawStubOffsets = allOffsets.subList(0, stubCount);
+                java.util.Set<Integer> indyIndices =
+                        injector.getInvokeDynamicIndices(method.name, method.desc);
+
+                if (indyIndices.isEmpty()) {
+                    // No invokedynamic — simple 1:1 mapping
+                    InvokeRegistry.registerStubOffsets(key, new ArrayList<>(rawStubOffsets));
+                } else {
+                    // Build padded list: insert -1 at invokedynamic positions
+                    List<Integer> paddedStubs = new ArrayList<>();
+                    int rawIdx = 0;
+                    for (int i = 0; i < originalCount; i++) {
+                        if (indyIndices.contains(i)) {
+                            paddedStubs.add(-1); // no stub re-invoke for invokedynamic
+                        } else {
+                            paddedStubs.add(rawStubOffsets.get(rawIdx++));
+                        }
+                    }
+                    InvokeRegistry.registerStubOffsets(key, paddedStubs);
+                }
             }
         }
     }
