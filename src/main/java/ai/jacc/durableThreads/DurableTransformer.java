@@ -39,6 +39,7 @@ public final class DurableTransformer implements ClassFileTransformer {
             "ai/jacc/durableThreads/ReplayState",
             "ai/jacc/durableThreads/ThreadFreezer",
             "ai/jacc/durableThreads/ThreadRestorer",
+            "ai/jacc/durableThreads/SnapshotFileWriter",
     };
 
     @Override

@@ -10,36 +10,36 @@ import java.util.Objects;
 /**
  * ASM-based bytecode transformer that injects the universal replay prologue.
  *
- * <h3>Architecture</h3>
+ * <h3>Architecture (Direct-Jump)</h3>
  * <pre>
  * METHOD ENTRY:
- *   __skip = -1
+ *   __retVal = null
  *   if (!isReplayThread()) goto ORIGINAL_CODE
  *   switch (currentResumeIndex()):
  *     case N: goto RESUME_N
  *
  * RESUME_N:
  *   if (isLastFrame) { resumePoint(); } else { advanceFrame(); invoke next; }
- *   __skip = N
- *   goto ORIGINAL_CODE
+ *   initLocalDefaults()                  // init non-param locals for verifier
+ *   localsReady()                        // block for JDI to set actual locals
+ *   [push return value if non-void]
+ *   goto POST_INVOKE_N                   // jump directly past the invoke
  *
  * ORIGINAL_CODE:
  *   ... original bytecode ...
- *   if (__skip &gt;= 0) { pop args; skip invoke 0 }
  *   invoke 0
  *   POST_INVOKE_0:
  *   ...
- *   if (__skip &gt;= 1) { pop args; [if target: __skip=-1, localsReady()] skip invoke 1 }
  *   invoke 1
  *   POST_INVOKE_1:
  *   ...
  * </pre>
  *
- * <p>During replay, __skip is set to the target invoke index. ALL invokes from
- * index 0 through __skip are skipped (no side effects from println, I/O, etc.).
- * When the target invoke itself is skipped, {@code ReplayState.localsReady()}
- * is called to block until the JDI worker sets local variables. Then execution
- * continues past the freeze point with correct locals.</p>
+ * <p>During replay, the resume stub jumps directly to the post-invoke label
+ * for the target invoke. No original code is re-executed, so there are no
+ * side effects from println, I/O, field writes, etc. The JDI worker sets
+ * all local variables at {@code localsReady()}, then execution continues
+ * past the freeze point with correct locals.</p>
  */
 public final class PrologueInjector extends ClassVisitor {
 
@@ -53,9 +53,9 @@ public final class PrologueInjector extends ClassVisitor {
 
     /**
      * Returns the number of original invokes that PrologueInjector assigned
-     * skip-check indices to in the given method.  This is the authoritative
-     * count — the raw bytecode scanner may see additional invokes in resume
-     * stubs, but only the last {@code getOriginalInvokeCount()} entries in
+     * indices to in the given method.  This is the authoritative count —
+     * the raw bytecode scanner may see additional invokes in resume stubs,
+     * but only the last {@code getOriginalInvokeCount()} entries in
      * the scanner's list correspond to the original code.
      */
     public int getOriginalInvokeCount(String methodName, String methodDesc) {
@@ -102,10 +102,33 @@ public final class PrologueInjector extends ClassVisitor {
         private int originalMaxLocals = 0;
 
         // Method-wide labels for extending local variable scope.
-        // By extending scope to cover resume stubs, JDI can set parameters
-        // at any BCI (needed for Phase 1 of two-phase restore).
         private Label methodStartLabel;
         private Label methodEndLabel;
+
+        // --- Operand stack simulator ---
+        // Tracks the type category of each stack entry during buffering so
+        // resume stubs can reconstruct the sub-stack (items below the invoke's
+        // args) at each post-invoke label for verifier-compatible merges.
+        private final List<Character> simStack = new ArrayList<>();
+        private boolean simLost = false; // true after GOTO/RETURN/ATHROW
+        private final java.util.Map<Integer, List<Character>> invokeSubStacks = new java.util.HashMap<>();
+        // Saved stack states at branch target labels for recovery after GOTO/RETURN
+        private final java.util.Map<Label, List<Character>> labelStacks = new java.util.IdentityHashMap<>();
+
+        private void simPush(char cat) { if (!simLost) simStack.add(cat); }
+        private char simPop() {
+            if (simLost || simStack.isEmpty()) return '?';
+            return simStack.remove(simStack.size() - 1);
+        }
+        private char simPeek() {
+            if (simLost || simStack.isEmpty()) return '?';
+            return simStack.get(simStack.size() - 1);
+        }
+        private void simMarkLost() { simStack.clear(); simLost = true; }
+        private void simSaveLabel(Label label) {
+            if (!simLost) labelStacks.putIfAbsent(label, new ArrayList<>(simStack));
+        }
+        private static boolean isWide(char c) { return c == 'J' || c == 'D'; }
 
         PrologueMethodVisitor(int access, String name, String desc, String className,
                               MethodVisitor target,
@@ -123,34 +146,183 @@ public final class PrologueInjector extends ClassVisitor {
 
         @Override public void visitCode() { hasCode = true; }
         @Override public void visitInsn(int opcode) {
+            if (!simLost) simulateInsn(opcode);
             bufferedOps.add(() -> target.visitInsn(opcode));
         }
+
+        private void simulateInsn(int opcode) {
+            switch (opcode) {
+                case Opcodes.ACONST_NULL: simPush('A'); break;
+                case Opcodes.ICONST_M1: case Opcodes.ICONST_0: case Opcodes.ICONST_1:
+                case Opcodes.ICONST_2: case Opcodes.ICONST_3: case Opcodes.ICONST_4:
+                case Opcodes.ICONST_5: simPush('I'); break;
+                case Opcodes.LCONST_0: case Opcodes.LCONST_1: simPush('J'); break;
+                case Opcodes.FCONST_0: case Opcodes.FCONST_1: case Opcodes.FCONST_2: simPush('F'); break;
+                case Opcodes.DCONST_0: case Opcodes.DCONST_1: simPush('D'); break;
+                case Opcodes.IALOAD: case Opcodes.BALOAD: case Opcodes.CALOAD:
+                case Opcodes.SALOAD: simPop(); simPop(); simPush('I'); break;
+                case Opcodes.LALOAD: simPop(); simPop(); simPush('J'); break;
+                case Opcodes.FALOAD: simPop(); simPop(); simPush('F'); break;
+                case Opcodes.DALOAD: simPop(); simPop(); simPush('D'); break;
+                case Opcodes.AALOAD: simPop(); simPop(); simPush('A'); break;
+                case Opcodes.IASTORE: case Opcodes.BASTORE: case Opcodes.CASTORE:
+                case Opcodes.SASTORE: case Opcodes.AASTORE: case Opcodes.FASTORE:
+                    simPop(); simPop(); simPop(); break;
+                case Opcodes.LASTORE: case Opcodes.DASTORE:
+                    simPop(); simPop(); simPop(); break;
+                case Opcodes.POP: simPop(); break;
+                case Opcodes.POP2:
+                    if (isWide(simPeek())) simPop(); else { simPop(); simPop(); } break;
+                case Opcodes.DUP: { char t = simPeek(); simPush(t); break; }
+                case Opcodes.DUP_X1: {
+                    char v1 = simPop(); char v2 = simPop();
+                    simPush(v1); simPush(v2); simPush(v1); break;
+                }
+                case Opcodes.DUP_X2: {
+                    char v1 = simPop();
+                    if (isWide(simPeek())) {
+                        char v2 = simPop();
+                        simPush(v1); simPush(v2); simPush(v1);
+                    } else {
+                        char v2 = simPop(); char v3 = simPop();
+                        simPush(v1); simPush(v3); simPush(v2); simPush(v1);
+                    }
+                    break;
+                }
+                case Opcodes.DUP2: {
+                    if (isWide(simPeek())) {
+                        simPush(simPeek());
+                    } else {
+                        char v1 = simPop(); char v2 = simPeek();
+                        simPush(v1); simPush(v2); simPush(v1);
+                    }
+                    break;
+                }
+                case Opcodes.DUP2_X1: {
+                    if (isWide(simPeek())) {
+                        char v1 = simPop(); char v2 = simPop();
+                        simPush(v1); simPush(v2); simPush(v1);
+                    } else {
+                        char v1 = simPop(); char v2 = simPop(); char v3 = simPop();
+                        simPush(v2); simPush(v1); simPush(v3); simPush(v2); simPush(v1);
+                    }
+                    break;
+                }
+                case Opcodes.DUP2_X2: simMarkLost(); break; // rare; punt
+                case Opcodes.SWAP: {
+                    char v1 = simPop(); char v2 = simPop();
+                    simPush(v1); simPush(v2); break;
+                }
+                case Opcodes.IADD: case Opcodes.ISUB: case Opcodes.IMUL: case Opcodes.IDIV:
+                case Opcodes.IREM: case Opcodes.IAND: case Opcodes.IOR: case Opcodes.IXOR:
+                case Opcodes.ISHL: case Opcodes.ISHR: case Opcodes.IUSHR:
+                    simPop(); simPop(); simPush('I'); break;
+                case Opcodes.LADD: case Opcodes.LSUB: case Opcodes.LMUL: case Opcodes.LDIV:
+                case Opcodes.LREM: case Opcodes.LAND: case Opcodes.LOR: case Opcodes.LXOR:
+                case Opcodes.LSHL: case Opcodes.LSHR: case Opcodes.LUSHR:
+                    simPop(); simPop(); simPush('J'); break;
+                case Opcodes.FADD: case Opcodes.FSUB: case Opcodes.FMUL: case Opcodes.FDIV:
+                case Opcodes.FREM: simPop(); simPop(); simPush('F'); break;
+                case Opcodes.DADD: case Opcodes.DSUB: case Opcodes.DMUL: case Opcodes.DDIV:
+                case Opcodes.DREM: simPop(); simPop(); simPush('D'); break;
+                case Opcodes.INEG: case Opcodes.I2B: case Opcodes.I2C: case Opcodes.I2S:
+                    simPop(); simPush('I'); break;
+                case Opcodes.LNEG: simPop(); simPush('J'); break;
+                case Opcodes.FNEG: simPop(); simPush('F'); break;
+                case Opcodes.DNEG: simPop(); simPush('D'); break;
+                case Opcodes.I2L: simPop(); simPush('J'); break;
+                case Opcodes.I2F: simPop(); simPush('F'); break;
+                case Opcodes.I2D: simPop(); simPush('D'); break;
+                case Opcodes.L2I: simPop(); simPush('I'); break;
+                case Opcodes.L2F: simPop(); simPush('F'); break;
+                case Opcodes.L2D: simPop(); simPush('D'); break;
+                case Opcodes.F2I: simPop(); simPush('I'); break;
+                case Opcodes.F2L: simPop(); simPush('J'); break;
+                case Opcodes.F2D: simPop(); simPush('D'); break;
+                case Opcodes.D2I: simPop(); simPush('I'); break;
+                case Opcodes.D2L: simPop(); simPush('J'); break;
+                case Opcodes.D2F: simPop(); simPush('F'); break;
+                case Opcodes.LCMP: simPop(); simPop(); simPush('I'); break;
+                case Opcodes.FCMPL: case Opcodes.FCMPG:
+                    simPop(); simPop(); simPush('I'); break;
+                case Opcodes.DCMPL: case Opcodes.DCMPG:
+                    simPop(); simPop(); simPush('I'); break;
+                case Opcodes.IRETURN: case Opcodes.LRETURN: case Opcodes.FRETURN:
+                case Opcodes.DRETURN: case Opcodes.ARETURN: case Opcodes.RETURN:
+                case Opcodes.ATHROW: simMarkLost(); break;
+                case Opcodes.ARRAYLENGTH: simPop(); simPush('I'); break;
+                case Opcodes.MONITORENTER: case Opcodes.MONITOREXIT: simPop(); break;
+                default: break; // NOP etc.
+            }
+        }
         @Override public void visitIntInsn(int opcode, int operand) {
+            if (!simLost) {
+                switch (opcode) {
+                    case Opcodes.BIPUSH: case Opcodes.SIPUSH: simPush('I'); break;
+                    case Opcodes.NEWARRAY: simPop(); simPush('A'); break;
+                }
+            }
             bufferedOps.add(() -> target.visitIntInsn(opcode, operand));
         }
         @Override public void visitVarInsn(int opcode, int varIndex) {
+            if (!simLost) {
+                switch (opcode) {
+                    case Opcodes.ILOAD: simPush('I'); break;
+                    case Opcodes.LLOAD: simPush('J'); break;
+                    case Opcodes.FLOAD: simPush('F'); break;
+                    case Opcodes.DLOAD: simPush('D'); break;
+                    case Opcodes.ALOAD: simPush('A'); break;
+                    case Opcodes.ISTORE: case Opcodes.FSTORE: case Opcodes.ASTORE: simPop(); break;
+                    case Opcodes.LSTORE: case Opcodes.DSTORE: simPop(); break;
+                }
+            }
             bufferedOps.add(() -> target.visitVarInsn(opcode, varIndex));
         }
         @Override public void visitTypeInsn(int opcode, String type) {
+            if (!simLost) {
+                switch (opcode) {
+                    case Opcodes.NEW: simPush('A'); break;
+                    case Opcodes.ANEWARRAY: simPop(); simPush('A'); break;
+                    case Opcodes.CHECKCAST: /* pop A, push A — no net change */ break;
+                    case Opcodes.INSTANCEOF: simPop(); simPush('I'); break;
+                }
+            }
             bufferedOps.add(() -> target.visitTypeInsn(opcode, type));
         }
         @Override public void visitFieldInsn(int opcode, String owner, String name, String desc) {
-            if (opcode == Opcodes.PUTFIELD || opcode == Opcodes.PUTSTATIC) {
-                bufferedOps.add(new FieldWriteMarker(opcode, owner, name, desc));
-            } else {
-                bufferedOps.add(() -> target.visitFieldInsn(opcode, owner, name, desc));
+            if (!simLost) {
+                char fcat = typeCategory(Type.getType(desc));
+                switch (opcode) {
+                    case Opcodes.GETSTATIC: simPush(fcat); break;
+                    case Opcodes.PUTSTATIC: simPop(); break;
+                    case Opcodes.GETFIELD: simPop(); simPush(fcat); break;
+                    case Opcodes.PUTFIELD: simPop(); simPop(); break;
+                }
             }
+            bufferedOps.add(() -> target.visitFieldInsn(opcode, owner, name, desc));
         }
 
         @Override
         public void visitMethodInsn(int opcode, String owner, String name, String desc,
                                     boolean isInterface) {
-            // Skip-check can't wrap invokespecial <init> — the verifier tracks
-            // uninitialized objects from NEW and requires <init> to be called on
-            // all paths. A skip-check branch would leave the object uninitialized.
             boolean isConstructorCall = (opcode == Opcodes.INVOKESPECIAL && "<init>".equals(name));
+
+            // Stack simulation: compute sub-stack before popping args
+            if (!simLost) {
+                int argEntries = Type.getArgumentTypes(desc).length;
+                if (opcode != Opcodes.INVOKESTATIC) argEntries++; // receiver
+
+                if (!isConstructorCall) {
+                    int subSize = Math.max(0, simStack.size() - argEntries);
+                    invokeSubStacks.put(invokeCounter, new ArrayList<>(simStack.subList(0, subSize)));
+                }
+
+                for (int i = 0; i < argEntries; i++) simPop();
+                Type retType = Type.getReturnType(desc);
+                if (retType.getSort() != Type.VOID) simPush(typeCategory(retType));
+            }
+
             if (isConstructorCall) {
-                // Emit directly, no skip-check, no invoke index
                 bufferedOps.add(() -> target.visitMethodInsn(opcode, owner, name, desc, isInterface));
                 return;
             }
@@ -163,33 +335,101 @@ public final class PrologueInjector extends ClassVisitor {
         @Override
         public void visitInvokeDynamicInsn(String name, String desc,
                                            Handle bsmHandle, Object... bsmArgs) {
+            if (!simLost) {
+                int argEntries = Type.getArgumentTypes(desc).length;
+                int subSize = Math.max(0, simStack.size() - argEntries);
+                invokeSubStacks.put(invokeCounter, new ArrayList<>(simStack.subList(0, subSize)));
+                for (int i = 0; i < argEntries; i++) simPop();
+                Type retType = Type.getReturnType(desc);
+                if (retType.getSort() != Type.VOID) simPush(typeCategory(retType));
+            }
             int idx = invokeCounter++;
             invokeInfos.add(new InvokeInfo(idx, Opcodes.INVOKEDYNAMIC, null, name, desc, false));
             bufferedOps.add(new InvokeDynamicMarker(idx, name, desc, bsmHandle, bsmArgs));
         }
 
         @Override public void visitJumpInsn(int opcode, Label label) {
+            if (!simLost) {
+                switch (opcode) {
+                    case Opcodes.IFEQ: case Opcodes.IFNE: case Opcodes.IFLT:
+                    case Opcodes.IFGE: case Opcodes.IFGT: case Opcodes.IFLE:
+                    case Opcodes.IFNULL: case Opcodes.IFNONNULL:
+                        simPop();
+                        simSaveLabel(label); // branch target sees post-pop stack
+                        break;
+                    case Opcodes.IF_ICMPEQ: case Opcodes.IF_ICMPNE: case Opcodes.IF_ICMPLT:
+                    case Opcodes.IF_ICMPGE: case Opcodes.IF_ICMPGT: case Opcodes.IF_ICMPLE:
+                    case Opcodes.IF_ACMPEQ: case Opcodes.IF_ACMPNE:
+                        simPop(); simPop();
+                        simSaveLabel(label);
+                        break;
+                    case Opcodes.GOTO:
+                        simSaveLabel(label); // save stack before losing track
+                        simMarkLost();
+                        break;
+                    case Opcodes.JSR: simPush('A'); break;
+                }
+            }
             bufferedOps.add(() -> target.visitJumpInsn(opcode, label));
         }
         @Override public void visitLabel(Label label) {
+            if (simLost) {
+                List<Character> saved = labelStacks.get(label);
+                if (saved != null) {
+                    simLost = false;
+                    simStack.clear();
+                    simStack.addAll(saved);
+                } else {
+                    simLost = false;
+                    simStack.clear();
+                }
+            }
             bufferedOps.add(() -> target.visitLabel(label));
         }
         @Override public void visitLdcInsn(Object value) {
+            if (!simLost) {
+                if (value instanceof Integer) simPush('I');
+                else if (value instanceof Long) simPush('J');
+                else if (value instanceof Float) simPush('F');
+                else if (value instanceof Double) simPush('D');
+                else simPush('A'); // String, Type, Handle, ConstantDynamic
+            }
             bufferedOps.add(() -> target.visitLdcInsn(value));
         }
         @Override public void visitIincInsn(int varIndex, int increment) {
+            // No stack change
             bufferedOps.add(() -> target.visitIincInsn(varIndex, increment));
         }
         @Override public void visitTableSwitchInsn(int min, int max, Label dflt, Label... labels) {
+            if (!simLost) {
+                simPop(); // consume int key
+                simSaveLabel(dflt);
+                for (Label l : labels) simSaveLabel(l);
+            }
+            simMarkLost(); // multiple branch targets
             bufferedOps.add(() -> target.visitTableSwitchInsn(min, max, dflt, labels));
         }
         @Override public void visitLookupSwitchInsn(Label dflt, int[] keys, Label[] labels) {
+            if (!simLost) {
+                simPop();
+                simSaveLabel(dflt);
+                for (Label l : labels) simSaveLabel(l);
+            }
+            simMarkLost();
             bufferedOps.add(() -> target.visitLookupSwitchInsn(dflt, keys, labels));
         }
         @Override public void visitMultiANewArrayInsn(String desc, int numDimensions) {
+            if (!simLost) {
+                for (int i = 0; i < numDimensions; i++) simPop();
+                simPush('A');
+            }
             bufferedOps.add(() -> target.visitMultiANewArrayInsn(desc, numDimensions));
         }
         @Override public void visitTryCatchBlock(Label start, Label end, Label handler, String type) {
+            // Exception handler entry: stack = [exception_reference]
+            List<Character> handlerStack = new ArrayList<>();
+            handlerStack.add('A');
+            labelStacks.putIfAbsent(handler, handlerStack);
             bufferedOps.add(() -> target.visitTryCatchBlock(start, end, handler, type));
         }
         @Override public void visitLocalVariable(String name, String desc, String sig,
@@ -226,7 +466,7 @@ public final class PrologueInjector extends ClassVisitor {
         @Override
         public void visitEnd() {
             // Record the count before emitting — this is the authoritative number
-            // of original-code invokes that received skip-check indices.
+            // of original-code invokes that received indices.
             invokeCountsOut.put(methodName + methodDesc, invokeCounter);
 
             if (!hasCode) {
@@ -235,12 +475,11 @@ public final class PrologueInjector extends ClassVisitor {
             }
 
             target.visitCode();
-            int skipSlot = originalMaxLocals;
 
             if (invokeInfos.isEmpty()) {
                 emitNoInvokePrologue();
             } else {
-                emitFullPrologue(skipSlot);
+                emitFullPrologue();
             }
 
             // Emit deduplicated local variables with method-wide scope
@@ -253,7 +492,9 @@ public final class PrologueInjector extends ClassVisitor {
         /**
          * Emit local variable debug info. Method parameters get method-wide scope
          * so JDI can set them at resume stub BCIs (Phase 1 of two-phase restore).
-         * Non-parameter locals keep their original scope to avoid InconsistentDebugInfoException.
+         * Non-parameter locals keep their original scope — they are set in Phase 2
+         * when the thread is at localsReady() in the original code section where
+         * the original scopes naturally apply.
          */
         private void emitLocalVariables() {
             if (methodStartLabel == null || methodEndLabel == null) {
@@ -311,9 +552,15 @@ public final class PrologueInjector extends ClassVisitor {
             target.visitLabel(methodEndLabel);
         }
 
-        private void emitFullPrologue(int skipSlot) {
-            int retValSlot = skipSlot + 1; // Object slot for boxed return values
+        private void emitFullPrologue() {
+            int retValSlot = originalMaxLocals;
             Label originalCode = new Label();
+
+            // Pre-create post-invoke labels for direct-jump targets
+            Label[] postInvokeLabels = new Label[invokeInfos.size()];
+            for (int i = 0; i < postInvokeLabels.length; i++) {
+                postInvokeLabels[i] = new Label();
+            }
 
             // Method-wide labels for extending local variable scope
             methodStartLabel = new Label();
@@ -321,10 +568,6 @@ public final class PrologueInjector extends ClassVisitor {
             target.visitLabel(methodStartLabel);
 
             // --- PROLOGUE ---
-
-            // __skip = -1
-            target.visitInsn(Opcodes.ICONST_M1);
-            target.visitVarInsn(Opcodes.ISTORE, skipSlot);
 
             // __retVal = null (boxed return value from resume stub)
             target.visitInsn(Opcodes.ACONST_NULL);
@@ -348,47 +591,59 @@ public final class PrologueInjector extends ClassVisitor {
             // --- RESUME STUBS ---
             for (int i = 0; i < invokeInfos.size(); i++) {
                 target.visitLabel(resumeLabels[i]);
-                emitResumeStub(i, invokeInfos.get(i), skipSlot, retValSlot, originalCode);
+                emitResumeStub(i, invokeInfos.get(i), retValSlot, postInvokeLabels[i]);
             }
 
-            // --- ORIGINAL CODE with inline skip checks ---
+            // --- ORIGINAL CODE with post-invoke labels ---
             target.visitLabel(originalCode);
-            emitOriginalCodeWithSkipChecks(skipSlot, retValSlot);
+            emitOriginalCode(postInvokeLabels);
 
             // End label for method-wide local variable scope
             target.visitLabel(methodEndLabel);
         }
 
         /**
-         * Resume stub: rebuild call stack (or resumePoint for deepest frame),
-         * set __skip = invokeIndex, goto originalCode.
+         * Resume stub: direct-jump approach.
          *
-         * <p>After resumePoint() returns, the resume stub sets __skip and jumps
-         * to the original code. The original code re-executes but ALL invokes
-         * from index 0 through __skip are skipped (no side effects). When the
-         * target invoke is reached, localsReady() blocks for JDI to set locals.</p>
+         * <p>For the deepest frame: {@code resumePoint()} blocks, then local
+         * defaults are initialized (for verifier compatibility), then
+         * {@code localsReady()} blocks for JDI to set actual values, then a
+         * dummy return value is pushed (if non-void) and we jump directly to
+         * the post-invoke label.</p>
          *
-         * <p>For non-deepest frames, the resume stub re-invokes the inner method
-         * and boxes its return value into {@code retValSlot}. The skip path in
-         * the original code then unboxes it instead of pushing a dummy default,
-         * preserving return value propagation across the call chain.</p>
+         * <p>For non-deepest frames: the inner method is re-invoked to rebuild
+         * the call stack. Its return value is boxed and saved. After
+         * {@code localsReady()}, the return value is unboxed and pushed,
+         * then we jump to the post-invoke label.</p>
          */
         private void emitResumeStub(int invokeIndex, InvokeInfo info,
-                                    int skipSlot, int retValSlot, Label originalCode) {
+                                    int retValSlot, Label postInvokeLabel) {
+            List<Character> subStack = invokeSubStacks.getOrDefault(invokeIndex,
+                    java.util.Collections.emptyList());
             Label notLastFrame = new Label();
 
             target.visitMethodInsn(Opcodes.INVOKESTATIC,
                     "ai/jacc/durableThreads/ReplayState", "isLastFrame", "()Z", false);
             target.visitJumpInsn(Opcodes.IFEQ, notLastFrame);
 
-            // Deepest frame: resumePoint(), set __skip, goto originalCode
+            // Deepest frame: resumePoint(), init locals, deactivate replay, push sub-stack + return, goto postInvoke
+            // localsReady() is called at the postInvoke label in the original code
+            // where all local variables are naturally in scope for JDI.
             target.visitMethodInsn(Opcodes.INVOKESTATIC,
                     "ai/jacc/durableThreads/ReplayState", "resumePoint", "()V", false);
-            emitIntConst(invokeIndex);
-            target.visitVarInsn(Opcodes.ISTORE, skipSlot);
-            target.visitJumpInsn(Opcodes.GOTO, originalCode);
+            emitLocalDefaults();
+            // Deactivate replay so subsequent method calls in the original code
+            // execute normally (not re-entering their resume stubs). In production,
+            // JDI already deactivated replay between resumePoint() and localsReady(),
+            // so this is a harmless no-op. In tests without JDI, this prevents
+            // infinite recursion from replay-mode re-entry.
+            target.visitMethodInsn(Opcodes.INVOKESTATIC,
+                    "ai/jacc/durableThreads/ReplayState", "deactivate", "()V", false);
+            pushSubStackDefaults(subStack);
+            pushDummyReturnValue(info.descriptor);
+            target.visitJumpInsn(Opcodes.GOTO, postInvokeLabel);
 
-            // Not deepest: advance, re-invoke, box return value, set __skip, goto originalCode
+            // Not deepest: advance, re-invoke, box return, init locals, push sub-stack + unbox, goto postInvoke
             target.visitLabel(notLastFrame);
             target.visitMethodInsn(Opcodes.INVOKESTATIC,
                     "ai/jacc/durableThreads/ReplayState", "advanceFrame", "()V", false);
@@ -396,45 +651,66 @@ public final class PrologueInjector extends ClassVisitor {
             if (info.opcode == Opcodes.INVOKEDYNAMIC) {
                 target.visitMethodInsn(Opcodes.INVOKESTATIC,
                         "ai/jacc/durableThreads/ReplayState", "resumePoint", "()V", false);
+                emitLocalDefaults();
+                pushSubStackDefaults(subStack);
+                pushDummyReturnValue(info.descriptor);
             } else {
                 pushDummyArguments(info);
                 target.visitMethodInsn(info.opcode, info.owner, info.name,
                         info.descriptor, info.isInterface);
-                // Box the return value and save it for the skip path
+                // Box the return value and save it
                 boxReturnValue(Type.getReturnType(info.descriptor));
                 target.visitVarInsn(Opcodes.ASTORE, retValSlot);
+                emitLocalDefaults();
+                pushSubStackDefaults(subStack);
+                unboxReturnValue(Type.getReturnType(info.descriptor), retValSlot);
             }
 
-            emitIntConst(invokeIndex);
-            target.visitVarInsn(Opcodes.ISTORE, skipSlot);
-            target.visitJumpInsn(Opcodes.GOTO, originalCode);
+            target.visitJumpInsn(Opcodes.GOTO, postInvokeLabel);
         }
 
         /**
-         * Emit original code with skip checks inserted right before each invoke.
-         *
-         * <p>Key change: the skip check uses {@code __skip >= index} instead of
-         * {@code __skip == index}. This skips ALL invokes from index 0 through
-         * the target invoke, preventing re-execution of side effects during replay.</p>
-         *
-         * <p>When the target invoke itself is reached ({@code __skip == index}),
-         * the skip check also calls {@code localsReady()} to block until the JDI
-         * worker sets local variables. At this point, all locals are in scope.</p>
+         * Push type-appropriate default values to reconstruct the sub-stack
+         * (items that were on the operand stack below the invoke's arguments
+         * on the normal execution path). This ensures the stack height and
+         * types match at the post-invoke merge point.
          */
-        private void emitOriginalCodeWithSkipChecks(int skipSlot, int retValSlot) {
+        private void pushSubStackDefaults(List<Character> subStack) {
+            for (char cat : subStack) {
+                switch (cat) {
+                    case 'I': target.visitInsn(Opcodes.ICONST_0); break;
+                    case 'J': target.visitInsn(Opcodes.LCONST_0); break;
+                    case 'F': target.visitInsn(Opcodes.FCONST_0); break;
+                    case 'D': target.visitInsn(Opcodes.DCONST_0); break;
+                    case 'A': target.visitInsn(Opcodes.ACONST_NULL); break;
+                }
+            }
+        }
+
+        /**
+         * Emit original code with post-invoke labels and localsReady() calls
+         * inserted after each invoke. The localsReady() call is where the JDI
+         * worker sets local variables (Phase 2). On the normal path (no replay),
+         * localsLatch is null so localsReady() returns immediately (zero cost).
+         * On the replay path (jumped from resume stub), localsReady() blocks
+         * until JDI sets locals and releases the latch.
+         */
+        private void emitOriginalCode(Label[] postInvokeLabels) {
             for (Runnable op : bufferedOps) {
                 if (op instanceof InvokeMarker) {
                     InvokeMarker marker = (InvokeMarker) op;
-                    emitInvokeWithSkipCheck(skipSlot, retValSlot, marker.index, marker.opcode,
-                            marker.owner, marker.name, marker.descriptor, marker.isInterface);
+                    target.visitMethodInsn(marker.opcode, marker.owner, marker.name,
+                            marker.descriptor, marker.isInterface);
+                    target.visitLabel(postInvokeLabels[marker.index]);
+                    target.visitMethodInsn(Opcodes.INVOKESTATIC,
+                            RS, "localsReady", "()V", false);
                 } else if (op instanceof InvokeDynamicMarker) {
                     InvokeDynamicMarker marker = (InvokeDynamicMarker) op;
-                    emitInvokeDynamicWithSkipCheck(skipSlot, marker.index,
-                            marker.name, marker.descriptor,
+                    target.visitInvokeDynamicInsn(marker.name, marker.descriptor,
                             marker.bootstrapMethodHandle, marker.bootstrapMethodArguments);
-                } else if (op instanceof FieldWriteMarker) {
-                    FieldWriteMarker marker = (FieldWriteMarker) op;
-                    emitFieldWriteWithSkipGuard(skipSlot, marker);
+                    target.visitLabel(postInvokeLabels[marker.index]);
+                    target.visitMethodInsn(Opcodes.INVOKESTATIC,
+                            RS, "localsReady", "()V", false);
                 } else {
                     op.run();
                 }
@@ -442,156 +718,84 @@ public final class PrologueInjector extends ClassVisitor {
         }
 
         /**
-         * Emit a field write (PUTFIELD/PUTSTATIC) with a skip guard.
-         *
-         * <p>During the skip pass ({@code __skip >= 0}), field writes are suppressed
-         * to prevent side effects from re-executing original bytecode. The values
-         * that PUTFIELD/PUTSTATIC would consume are popped instead.</p>
-         *
-         * <p>During normal execution ({@code __skip == -1}), the field write
-         * executes normally — just a single not-taken branch overhead.</p>
+         * Initialize non-parameter local slots to type-appropriate defaults.
+         * This ensures the verifier sees consistent types at post-invoke merge
+         * points where the resume stub and normal execution paths converge.
+         * Parameters are NOT initialized — they retain their values from the
+         * method call (or dummy values from the resume stub's re-invoke).
          */
-        private void emitFieldWriteWithSkipGuard(int skipSlot, FieldWriteMarker marker) {
-            Label doWrite = new Label();
-            Label afterWrite = new Label();
-
-            // Check: if __skip < 0 (normal execution), do the field write
-            target.visitVarInsn(Opcodes.ILOAD, skipSlot);
-            target.visitJumpInsn(Opcodes.IFLT, doWrite);
-
-            // SKIP PATH: pop the values that put{field,static} would consume
-            Type fieldType = Type.getType(marker.desc);
-            if (fieldType.getSize() == 2) {
-                // long/double value = 2 slots
-                target.visitInsn(Opcodes.POP2);
-            } else {
-                target.visitInsn(Opcodes.POP);
+        private void emitLocalDefaults() {
+            int paramSlots = 0;
+            if ((methodAccess & Opcodes.ACC_STATIC) == 0) {
+                paramSlots = 1;
             }
-            if (marker.opcode == Opcodes.PUTFIELD) {
-                // PUTFIELD also consumes the objectref
-                target.visitInsn(Opcodes.POP);
-            }
-            target.visitJumpInsn(Opcodes.GOTO, afterWrite);
-
-            // NORMAL PATH: execute the field write
-            target.visitLabel(doWrite);
-            target.visitFieldInsn(marker.opcode, marker.owner, marker.name, marker.desc);
-
-            target.visitLabel(afterWrite);
-        }
-
-        /**
-         * Emit skip check + invoke + postInvoke label.
-         *
-         * <pre>
-         *   if (__skip &lt; index) goto doInvoke       // skip if __skip &gt;= index
-         *   pop receiver+args
-         *   if (__skip != index) goto afterSync       // only sync at target invoke
-         *   __skip = -1
-         *   localsReady()                              // block for JDI to set locals
-         *   unbox __retVal → push actual return        // preserve return value from resume stub
-         *   goto postInvoke
-         * afterSync:
-         *   push dummy return                          // non-target skipped invoke: dummy is fine
-         *   goto postInvoke
-         * doInvoke:
-         *   invoke
-         * postInvoke:
-         * </pre>
-         */
-        private void emitInvokeWithSkipCheck(int skipSlot, int retValSlot, int index,
-                                              int opcode, String owner, String name,
-                                              String desc, boolean isInterface) {
-            Label postInvoke = new Label();
-            Label doInvoke = new Label();
-            Label afterSync = new Label();
-
-            // Skip check: if __skip >= index, skip this invoke
-            target.visitVarInsn(Opcodes.ILOAD, skipSlot);
-            emitIntConst(index);
-            target.visitJumpInsn(Opcodes.IF_ICMPLT, doInvoke); // __skip < index → don't skip
-
-            // SKIP PATH: pop args from stack
-            popInvokeArgs(opcode, desc);
-
-            // Check if this is the target invoke (__skip == index)
-            target.visitVarInsn(Opcodes.ILOAD, skipSlot);
-            emitIntConst(index);
-            target.visitJumpInsn(Opcodes.IF_ICMPNE, afterSync); // __skip != index → skip sync
-
-            // TARGET INVOKE: reset __skip and block for JDI to set locals
-            target.visitInsn(Opcodes.ICONST_M1);
-            target.visitVarInsn(Opcodes.ISTORE, skipSlot);
-            target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                    "ai/jacc/durableThreads/ReplayState", "localsReady", "()V", false);
-
-            // Unbox the return value saved by the resume stub
-            unboxReturnValue(Type.getReturnType(desc), retValSlot);
-            target.visitJumpInsn(Opcodes.GOTO, postInvoke);
-
-            target.visitLabel(afterSync);
-            // Non-target skipped invoke: dummy return is fine (locals overwritten by JDI later)
-            pushDummyReturnValue(desc);
-            target.visitJumpInsn(Opcodes.GOTO, postInvoke);
-
-            // NORMAL PATH: execute the invoke
-            target.visitLabel(doInvoke);
-            target.visitMethodInsn(opcode, owner, name, desc, isInterface);
-
-            target.visitLabel(postInvoke);
-        }
-
-        private void emitInvokeDynamicWithSkipCheck(int skipSlot, int index,
-                                                     String name, String desc,
-                                                     Handle bsmHandle, Object[] bsmArgs) {
-            Label postInvoke = new Label();
-            Label doInvoke = new Label();
-            Label afterSync = new Label();
-
-            // Skip check: if __skip >= index, skip this invoke
-            target.visitVarInsn(Opcodes.ILOAD, skipSlot);
-            emitIntConst(index);
-            target.visitJumpInsn(Opcodes.IF_ICMPLT, doInvoke);
-
-            // SKIP PATH
-            popInvokeArgs(Opcodes.INVOKESTATIC, desc); // invokedynamic has no receiver
-
-            // Check if this is the target invoke
-            target.visitVarInsn(Opcodes.ILOAD, skipSlot);
-            emitIntConst(index);
-            target.visitJumpInsn(Opcodes.IF_ICMPNE, afterSync);
-
-            // TARGET: reset __skip and block for locals
-            target.visitInsn(Opcodes.ICONST_M1);
-            target.visitVarInsn(Opcodes.ISTORE, skipSlot);
-            target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                    "ai/jacc/durableThreads/ReplayState", "localsReady", "()V", false);
-
-            target.visitLabel(afterSync);
-            pushDummyReturnValue(desc);
-            target.visitJumpInsn(Opcodes.GOTO, postInvoke);
-
-            // NORMAL PATH
-            target.visitLabel(doInvoke);
-            target.visitInvokeDynamicInsn(name, desc, bsmHandle, bsmArgs);
-
-            target.visitLabel(postInvoke);
-        }
-
-        /**
-         * Pop the receiver (for non-static) and all arguments from the stack.
-         */
-        private void popInvokeArgs(int opcode, String desc) {
-            Type[] argTypes = Type.getArgumentTypes(desc);
-
-            // Pop arguments (rightmost first, they're on top of stack)
-            for (int i = argTypes.length - 1; i >= 0; i--) {
-                popValue(argTypes[i]);
+            for (Type t : Type.getArgumentTypes(methodDesc)) {
+                paramSlots += t.getSize();
             }
 
-            // Pop receiver for non-static invokes
-            if (opcode != Opcodes.INVOKESTATIC && opcode != Opcodes.INVOKEDYNAMIC) {
-                target.visitInsn(Opcodes.POP);
+            // Build slot type map from LocalVarInfo (non-parameter slots only)
+            java.util.Map<Integer, Character> slotCategories = new java.util.TreeMap<>();
+            for (LocalVarInfo lv : localVars) {
+                if (lv.index() >= paramSlots) {
+                    slotCategories.putIfAbsent(lv.index(), typeCategory(Type.getType(lv.desc())));
+                }
+            }
+
+            // Also initialize any compiler-generated temp slots not in LocalVarInfo
+            // (e.g., saved exceptions for finally handlers). Default to reference type
+            // since compiler temps are typically exception references.
+            for (int i = paramSlots; i < originalMaxLocals; i++) {
+                slotCategories.putIfAbsent(i, 'A');
+            }
+
+            // Skip wide-type second slots: if slot i is 'J' or 'D', slot i+1 is its
+            // second half and must NOT be independently initialized.
+            java.util.Set<Integer> wideSeconds = new java.util.HashSet<>();
+            for (java.util.Map.Entry<Integer, Character> entry : slotCategories.entrySet()) {
+                if (isWide(entry.getValue())) {
+                    wideSeconds.add(entry.getKey() + 1);
+                }
+            }
+
+            // Emit type-appropriate defaults for each non-parameter local slot
+            for (java.util.Map.Entry<Integer, Character> entry : slotCategories.entrySet()) {
+                if (wideSeconds.contains(entry.getKey())) continue;
+                int s = entry.getKey();
+                char cat = entry.getValue();
+                switch (cat) {
+                    case 'I':
+                        target.visitInsn(Opcodes.ICONST_0);
+                        target.visitVarInsn(Opcodes.ISTORE, s);
+                        break;
+                    case 'J':
+                        target.visitInsn(Opcodes.LCONST_0);
+                        target.visitVarInsn(Opcodes.LSTORE, s);
+                        break;
+                    case 'F':
+                        target.visitInsn(Opcodes.FCONST_0);
+                        target.visitVarInsn(Opcodes.FSTORE, s);
+                        break;
+                    case 'D':
+                        target.visitInsn(Opcodes.DCONST_0);
+                        target.visitVarInsn(Opcodes.DSTORE, s);
+                        break;
+                    case 'A':
+                        target.visitInsn(Opcodes.ACONST_NULL);
+                        target.visitVarInsn(Opcodes.ASTORE, s);
+                        break;
+                }
+            }
+        }
+
+        private static char typeCategory(Type t) {
+            switch (t.getSort()) {
+                case Type.BOOLEAN: case Type.BYTE: case Type.CHAR:
+                case Type.SHORT: case Type.INT:
+                    return 'I';
+                case Type.LONG: return 'J';
+                case Type.FLOAT: return 'F';
+                case Type.DOUBLE: return 'D';
+                default: return 'A';
             }
         }
 
@@ -616,20 +820,6 @@ public final class PrologueInjector extends ClassVisitor {
             Type retType = Type.getReturnType(desc);
             if (retType.getSort() != Type.VOID) {
                 pushDefaultValue(retType);
-            }
-        }
-
-        private void popValue(Type type) {
-            switch (type.getSort()) {
-                case Type.VOID:
-                    break;
-                case Type.LONG:
-                case Type.DOUBLE:
-                    target.visitInsn(Opcodes.POP2);
-                    break;
-                default:
-                    target.visitInsn(Opcodes.POP);
-                    break;
             }
         }
 
@@ -893,30 +1083,6 @@ public final class PrologueInjector extends ClassVisitor {
                         + ", descriptor=" + descriptor
                         + ", bootstrapMethodHandle=" + bootstrapMethodHandle
                         + ", bootstrapMethodArguments=" + Arrays.toString(bootstrapMethodArguments) + "]";
-            }
-        }
-
-        /**
-         * Marker for PUTFIELD/PUTSTATIC instructions. During the skip pass,
-         * field writes are suppressed to prevent side effects from re-executing
-         * original code. Instead of writing the field, the values on the operand
-         * stack are popped.
-         */
-        static final class FieldWriteMarker implements Runnable {
-            final int opcode;   // PUTFIELD or PUTSTATIC
-            final String owner;
-            final String name;
-            final String desc;
-
-            FieldWriteMarker(int opcode, String owner, String name, String desc) {
-                this.opcode = opcode;
-                this.owner = owner;
-                this.name = name;
-                this.desc = desc;
-            }
-
-            @Override public void run() {
-                throw new IllegalStateException("FieldWriteMarker must be handled");
             }
         }
     }

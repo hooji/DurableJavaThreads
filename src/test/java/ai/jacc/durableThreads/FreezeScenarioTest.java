@@ -205,11 +205,13 @@ class FreezeScenarioTest {
             Method m = clazz.getMethod("loopWithFreezeOnFifth", int[].class);
             int result = (int) m.invoke(null, counters);
 
-            // In replay mode, the skip-check replaces FreezePoint.hit() with a no-op.
-            // The rest of the code executes normally.
+            // In direct-jump replay, the resume stub jumps past hit() to the
+            // post-invoke label. Locals are defaults (loop counter i=0), so the
+            // loop re-executes from i=0 and hits i==4 again, calling hit() once.
+            // In production, JDI sets i to its frozen value, avoiding the re-entry.
             assertEquals(10, result, "Loop should still complete all iterations");
-            assertEquals(0, FreezePoint.hitCount,
-                    "FreezePoint.hit() should be SKIPPED in replay mode");
+            assertEquals(1, FreezePoint.hitCount,
+                    "hit() called once when loop re-enters i==4 (no JDI to set locals)");
         } finally {
             ReplayState.deactivate();
         }
