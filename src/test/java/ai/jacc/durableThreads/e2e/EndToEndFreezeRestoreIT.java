@@ -989,11 +989,9 @@ class EndToEndFreezeRestoreIT {
             assertTrue(out.contains("L4_SHORT=44"), "L4 short. Out:\n" + out);
             assertTrue(out.contains("L4_BYTE=4"), "L4 byte. Out:\n" + out);
 
-            // Level 3: computed a/b/c from primitive locals
+            // Level 3: computed a/b/c from primitive locals + HashMap values
             assertTrue(out.contains("L3_ABC=21,103,124"), "L3 abc. Out:\n" + out);
-            // Note: HashMap<String,Integer> values may show 0 because boxed
-            // Integer internal fields aren't fully restored by heap walker.
-            // The map OBJECT is restored, but JDK-internal field values may not be.
+            assertTrue(out.contains("L3_MAP=21,103,124"), "L3 map with boxed Integer values. Out:\n" + out);
 
             // Level 2: long, float, bool
             assertTrue(out.contains("L2_LONG=200000"), "L2 long. Out:\n" + out);

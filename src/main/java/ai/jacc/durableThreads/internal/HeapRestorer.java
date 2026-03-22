@@ -163,6 +163,14 @@ public final class HeapRestorer {
                 break;
             }
             case REGULAR: {
+                // Boxed primitives: create directly from the captured value field
+                // instead of Objenesis, since their final 'value' field can't be
+                // set reflectively on Java 16+ without --add-opens.
+                Object boxed = tryCreateBoxedPrimitive(snap);
+                if (boxed != null) {
+                    obj = boxed;
+                    break;
+                }
                 try {
                     Class<?> clazz = Class.forName(snap.className());
                     obj = OBJENESIS.newInstance(clazz);
@@ -193,7 +201,10 @@ public final class HeapRestorer {
                 populateCollection(obj, snap);
                 break;
             case REGULAR:
-                populateRegularObject(obj, snap);
+                // Boxed primitives were fully created during allocation
+                if (tryCreateBoxedPrimitive(snap) == null) {
+                    populateRegularObject(obj, snap);
+                }
                 break;
         }
     }
@@ -263,6 +274,32 @@ public final class HeapRestorer {
             } else {
                 Array.set(array, i, value);
             }
+        }
+    }
+
+    /**
+     * Try to create a boxed primitive (Integer, Long, etc.) from the snapshot's
+     * captured 'value' field. Returns null if the snapshot isn't a boxed primitive.
+     */
+    private static Object tryCreateBoxedPrimitive(ObjectSnapshot snap) {
+        String cn = snap.className();
+        String valueKey = cn + ".value";
+        ObjectRef valRef = snap.fields().get(valueKey);
+        if (valRef == null) return null;
+
+        Object rawValue = (valRef instanceof PrimitiveRef) ? ((PrimitiveRef) valRef).value() : null;
+        if (rawValue == null) return null;
+
+        switch (cn) {
+            case "java.lang.Integer":    return (rawValue instanceof Number) ? ((Number) rawValue).intValue() : null;
+            case "java.lang.Long":       return (rawValue instanceof Number) ? ((Number) rawValue).longValue() : null;
+            case "java.lang.Double":     return (rawValue instanceof Number) ? ((Number) rawValue).doubleValue() : null;
+            case "java.lang.Float":      return (rawValue instanceof Number) ? ((Number) rawValue).floatValue() : null;
+            case "java.lang.Short":      return (rawValue instanceof Number) ? ((Number) rawValue).shortValue() : null;
+            case "java.lang.Byte":       return (rawValue instanceof Number) ? ((Number) rawValue).byteValue() : null;
+            case "java.lang.Character":  return (rawValue instanceof Character) ? rawValue : null;
+            case "java.lang.Boolean":    return (rawValue instanceof Boolean) ? rawValue : null;
+            default: return null;
         }
     }
 
