@@ -28,6 +28,13 @@ public final class DurableTransformer implements ClassFileTransformer {
             "jdk/",
             "sun/",
             "com/sun/",
+            // IDE runtime agents — instrumenting these corrupts their bytecode
+            // (COMPUTE_FRAMES cannot resolve their class hierarchies)
+            "com/intellij/",
+            "org/jetbrains/",
+            "eclipse/",
+            "org/eclipse/",
+            "com/microsoft/",
     };
 
     /** Specific library classes that must NOT be instrumented (to avoid recursion). */
@@ -95,9 +102,12 @@ public final class DurableTransformer implements ClassFileTransformer {
 
             return instrumented;
         } catch (Exception e) {
-            throw new RuntimeException(
-                    "[DurableThreads] Failed to instrument class "
-                    + className.replace('/', '.') + ": " + e.getMessage(), e);
+            // Don't throw — a RuntimeException from transform() kills class loading
+            // entirely. Instead, skip instrumentation for this class so it loads
+            // untransformed. This is a safety net for classes we failed to filter.
+            System.err.println("[DurableThreads] WARNING: skipping instrumentation of "
+                    + className.replace('/', '.') + ": " + e.getMessage());
+            return null;
         }
     }
 
