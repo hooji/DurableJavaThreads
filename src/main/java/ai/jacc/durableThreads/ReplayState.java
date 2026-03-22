@@ -14,14 +14,25 @@ public final class ReplayState {
     private static final ThreadLocal<ReplayData> REPLAY = new ThreadLocal<>();
 
     /**
+     * Lock that serializes latch operations. Both the replay thread (localsReady,
+     * resumePoint) and the JDI worker (release, activate) must hold this lock
+     * when reading or writing latch references. This prevents the race where the
+     * replay thread recreates a latch after the JDI worker already counted down
+     * the old one, causing the next frame's localsReady() to block forever.
+     */
+    private static final Object LATCH_LOCK = new Object();
+
+    /**
      * Latch that the replay thread blocks on inside {@link #resumePoint()}.
      * The JDI worker counts it down after deactivating replay mode (Phase 1).
+     * Guarded by {@link #LATCH_LOCK}.
      */
     private static volatile CountDownLatch resumeLatch;
 
     /**
      * Latch that the replay thread blocks on inside {@link #localsReady()}.
      * The JDI worker counts it down after setting local variables via JDI (Phase 2).
+     * Guarded by {@link #LATCH_LOCK}.
      */
     private static volatile CountDownLatch localsLatch;
 
@@ -171,15 +182,19 @@ public final class ReplayState {
         if (!localsAwaitArmed.get()) return;
         localsAwaitArmed.set(false);
 
-        CountDownLatch latch = localsLatch;
-        if (latch != null) {
-            try {
-                latch.await();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
+        synchronized (LATCH_LOCK) {
+            CountDownLatch latch = localsLatch;
+            if (latch != null) {
+                try {
+                    latch.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                // Recreate the latch so the NEXT frame's localsReady() call blocks.
+                // Safe because we hold LATCH_LOCK, so releaseLocalsReady() can't
+                // race with us between await-return and latch recreation.
+                localsLatch = new CountDownLatch(1);
             }
-            // Recreate the latch so the NEXT frame's localsReady() call blocks.
-            localsLatch = new CountDownLatch(1);
         }
         // Check if the JDI worker signalled a restore failure
         String error = restoreError;
@@ -195,9 +210,11 @@ public final class ReplayState {
      * variables via JDI (Phase 2).
      */
     public static void releaseLocalsReady() {
-        CountDownLatch latch = localsLatch;
-        if (latch != null) {
-            latch.countDown();
+        synchronized (LATCH_LOCK) {
+            CountDownLatch latch = localsLatch;
+            if (latch != null) {
+                latch.countDown();
+            }
         }
     }
 
@@ -235,9 +252,11 @@ public final class ReplayState {
      * @param frameReceivers pre-resolved receiver ("this") for each frame, or null
      */
     public static void activateWithLatch(int[] resumeIndices, Object[] frameReceivers) {
-        restoreError = null;
-        resumeLatch = new CountDownLatch(1);
-        localsLatch = new CountDownLatch(1);
+        synchronized (LATCH_LOCK) {
+            restoreError = null;
+            resumeLatch = new CountDownLatch(1);
+            localsLatch = new CountDownLatch(1);
+        }
         REPLAY.set(new ReplayData(resumeIndices, frameReceivers));
     }
 

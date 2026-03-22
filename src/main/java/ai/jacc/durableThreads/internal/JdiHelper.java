@@ -461,36 +461,40 @@ public final class JdiHelper {
      * @param port the JDWP port
      * @return the VirtualMachine connection
      */
+    private static final Object JDI_CONNECT_LOCK = new Object();
+
     public static VirtualMachine connect(int port) {
-        VirtualMachine vm;
+        synchronized (JDI_CONNECT_LOCK) {
+            VirtualMachine vm;
 
-        // Reuse existing keep-alive connection (from prior freeze/restore)
-        VirtualMachine alive = keepAliveVm;
-        if (alive != null) {
-            try {
-                // Verify the connection is still usable by calling a lightweight method
-                alive.allThreads();
-                return alive;
-            } catch (Exception e) {
-                // Connection is dead — fall through to reconnect
-                keepAliveVm = null;
+            // Reuse existing keep-alive connection (from prior freeze/restore)
+            VirtualMachine alive = keepAliveVm;
+            if (alive != null) {
+                try {
+                    // Verify the connection is still usable by calling a lightweight method
+                    alive.allThreads();
+                    return alive;
+                } catch (Exception e) {
+                    // Connection is dead — fall through to reconnect
+                    keepAliveVm = null;
+                }
             }
-        }
 
-        // Return cached connection from discovery if available
-        VirtualMachine cached = cachedVm;
-        if (cached != null) {
-            cachedVm = null;
-            vm = cached;
-        } else {
-            vm = jdiConnect(port, 0);
-        }
+            // Return cached connection from discovery if available
+            VirtualMachine cached = cachedVm;
+            if (cached != null) {
+                cachedVm = null;
+                vm = cached;
+            } else {
+                vm = jdiConnect(port, 0);
+            }
 
-        // Keep a strong static reference so the VM (and its socket) is never
-        // GC'd. Without this, GC during shutdown closes the socket, JDWP
-        // re-listens, and prints a spurious "Listening..." message on stderr.
-        keepAliveVm = vm;
-        return vm;
+            // Keep a strong static reference so the VM (and its socket) is never
+            // GC'd. Without this, GC during shutdown closes the socket, JDWP
+            // re-listens, and prints a spurious "Listening..." message on stderr.
+            keepAliveVm = vm;
+            return vm;
+        }
     }
 
     /**

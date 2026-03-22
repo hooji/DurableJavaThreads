@@ -26,6 +26,12 @@ import java.util.function.Consumer;
  */
 final class ThreadFreezer {
 
+    /**
+     * Serializes freeze operations so concurrent freeze/restore cycles
+     * don't interfere with each other's JDI connections and thread state.
+     */
+    static final Object FREEZE_LOCK = new Object();
+
     private ThreadFreezer() {}
 
     /**
@@ -139,6 +145,13 @@ final class ThreadFreezer {
 
     private static void performFreeze(Thread targetThread, Consumer<ThreadSnapshot> handler,
                                        Map<String, Object> namedObjects) {
+        synchronized (FREEZE_LOCK) {
+            performFreezeInternal(targetThread, handler, namedObjects);
+        }
+    }
+
+    private static void performFreezeInternal(Thread targetThread, Consumer<ThreadSnapshot> handler,
+                                               Map<String, Object> namedObjects) {
         // Connect to this JVM via JDI
         int port = JdiHelper.detectJdwpPort();
         if (port < 0) {
