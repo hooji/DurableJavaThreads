@@ -481,6 +481,8 @@ final class ThreadRestorer {
     private static boolean isAtMethod(ThreadReference tr, String targetMethodName,
                                        String targetClassName) {
         try {
+            // Double-suspend for resilience against spurious JDI resumes
+            tr.suspend();
             tr.suspend();
             try {
                 List<StackFrame> frames = tr.frames(0, Math.min(10, tr.frameCount()));
@@ -496,9 +498,12 @@ final class ThreadRestorer {
                 }
             } finally {
                 tr.resume();
+                tr.resume();
             }
         } catch (IncompatibleThreadStateException e) {
             // Can't read frames — not yet in proper state
+        } catch (com.sun.jdi.InvalidStackFrameException e) {
+            // Thread was resumed despite double-suspend — will retry in polling loop
         }
         return false;
     }

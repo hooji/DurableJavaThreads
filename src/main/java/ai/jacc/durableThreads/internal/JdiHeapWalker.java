@@ -734,6 +734,21 @@ public final class JdiHeapWalker {
      */
     private void captureEnum(long snapId, ObjectReference objRef,
                               ReferenceType refType, String className, String name) {
+        // On Java 8, enum constants with method overrides are anonymous subclasses
+        // (e.g., TimeUnit$3 instead of TimeUnit). Use the actual enum class name
+        // so that Enum.valueOf() works during restore.
+        String enumClassName = className;
+        if (refType instanceof ClassType) {
+            ClassType ct = (ClassType) refType;
+            while (ct.superclass() != null) {
+                if (ct.superclass().name().equals("java.lang.Enum")) {
+                    enumClassName = ct.name();
+                    break;
+                }
+                ct = ct.superclass();
+            }
+        }
+
         // Read the 'name' field from java.lang.Enum
         String constantName = "";
         com.sun.jdi.Field nameField = findField(refType, "name");
@@ -745,7 +760,7 @@ public final class JdiHeapWalker {
         }
         Map<String, ObjectRef> fields = new LinkedHashMap<>();
         fields.put("value", new PrimitiveRef(constantName));
-        snapshots.add(new ObjectSnapshot(snapId, className,
+        snapshots.add(new ObjectSnapshot(snapId, enumClassName,
                 ObjectKind.STRING, fields, null, null, name));
     }
 

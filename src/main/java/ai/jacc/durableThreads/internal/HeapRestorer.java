@@ -358,12 +358,17 @@ public final class HeapRestorer {
     private static Object tryCreateEnum(String className, String constantName) {
         try {
             Class<?> clazz = Class.forName(className);
-            if (clazz.isEnum()) {
+            // Walk up to find the actual enum class. On Java 8, enum constants
+            // with method overrides are anonymous subclasses (e.g., TimeUnit$3)
+            // where isEnum() returns false. The actual enum is the superclass.
+            while (clazz != null && !clazz.isEnum()) {
+                clazz = clazz.getSuperclass();
+            }
+            if (clazz != null && clazz.isEnum()) {
                 return Enum.valueOf((Class<Enum>) clazz, constantName);
             }
         } catch (ClassNotFoundException e) {
-            throw new RuntimeException("Cannot restore enum '" + className
-                    + "': class not found", e);
+            // Not a loadable class — not an enum
         } catch (IllegalArgumentException e) {
             throw new RuntimeException("Cannot restore enum '" + className
                     + "': constant '" + constantName + "' not found. "
