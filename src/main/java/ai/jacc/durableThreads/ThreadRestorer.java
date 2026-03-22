@@ -294,15 +294,31 @@ final class ThreadRestorer {
                                 + "during replay prologue execution.");
                     }
 
+                    // Pre-load all classes referenced by snapshot locals so that
+                    // ClassNotLoadedException never occurs during setValue().
+                    // This must happen BEFORE any frame manipulation because
+                    // forceLoadClass uses invokeMethod which resumes the thread
+                    // and invalidates cached StackFrame references.
+                    // The thread must be suspended for invokeMethod to work.
+                    tr.suspend();
+                    try {
+                        preloadSnapshotClasses(vm, tr, snapshot);
+                    } finally {
+                        tr.resume();
+                    }
+
                     // Phase 1a: Set method parameters in all user frames so that
                     // when original code re-executes, control flow matches the
                     // original execution (e.g., loop counters, branch conditions).
                     // Only parameters (always in scope) are set here; non-parameter
                     // locals are set in Phase 2 when the thread is at localsReady().
+                    // Double-suspend for resilience against spurious JDI resumes.
+                    tr.suspend();
                     tr.suspend();
                     try {
                         setLocalsViaJdi(vm, tr, snapshot, restoredHeap, heapRestorer, false);
                     } finally {
+                        tr.resume();
                         tr.resume();
                     }
 
@@ -342,6 +358,8 @@ final class ThreadRestorer {
                                         + "). The thread may have failed during re-execution.");
                             }
 
+                            // Double-suspend for resilience against spurious JDI resumes
+                            tr2.suspend();
                             tr2.suspend();
                             try {
                                 if (isCorrectFrame(tr2, snapshot.frames().get(snapshotFrameIdx))) {
@@ -353,6 +371,7 @@ final class ThreadRestorer {
                                 // else: thread is still in previous frame's localsReady(),
                                 // resume and retry after it advances
                             } finally {
+                                tr2.resume();
                                 tr2.resume();
                             }
                         }
@@ -690,19 +709,18 @@ final class ThreadRestorer {
                 try {
                     jdiFrame.setValue(entry.jdiLocal(), entry.jdiValue());
                 } catch (ClassNotLoadedException cnle) {
-                    // The target JVM hasn't loaded this class yet.
-                    // Force-load it via Class.forName() in the target JVM and retry.
-                    String className = cnle.className();
-                    forceLoadClass(vm, threadRef, className);
-                    try {
-                        jdiFrame.setValue(entry.jdiLocal(), entry.jdiValue());
-                    } catch (InvalidTypeException | ClassNotLoadedException retryEx) {
+                    // Classes should have been pre-loaded by preloadSnapshotClasses().
+                    // If we still get this, it means pre-loading failed. We cannot
+                    // call forceLoadClass here because invokeMethod would resume the
+                    // thread and invalidate all cached StackFrame references.
+                    if (requireAllLocals) {
                         throw new RuntimeException(
-                                "Type mismatch setting local '" + entry.jdiLocal().name() + "' in "
+                                "Class not loaded for local '" + entry.jdiLocal().name() + "' in "
                                 + method.declaringType().name() + "." + method.name()
-                                + ": " + retryEx.getMessage()
-                                + " (class force-load was attempted)", retryEx);
+                                + ": " + cnle.className()
+                                + ". Pre-loading may have failed.", cnle);
                     }
+                    // Phase 1: skip this local, it will be retried in Phase 2
                 } catch (InvalidTypeException e) {
                     throw new RuntimeException(
                             "Type mismatch setting local '" + entry.jdiLocal().name() + "' in "
@@ -754,6 +772,33 @@ final class ThreadRestorer {
      * because the target JVM hasn't loaded the class yet (e.g., JDK enums like TimeUnit
      * that aren't referenced by the restore program).
      */
+    /**
+     * Pre-load all classes referenced by snapshot local variable types.
+     * This prevents ClassNotLoadedException during setValue() later, which
+     * is critical because forceLoadClass uses invokeMethod (which resumes
+     * the thread and invalidates cached StackFrame references).
+     */
+    private static void preloadSnapshotClasses(VirtualMachine vm, ThreadReference threadRef,
+                                                ThreadSnapshot snapshot) {
+        Set<String> classNames = new LinkedHashSet<>();
+        for (FrameSnapshot frame : snapshot.frames()) {
+            for (ai.jacc.durableThreads.snapshot.LocalVariable local : frame.locals()) {
+                String sig = local.typeDescriptor();
+                if (sig != null && sig.startsWith("L") && sig.endsWith(";")) {
+                    // Convert type signature "Ljava/util/concurrent/TimeUnit;" to class name
+                    String className = sig.substring(1, sig.length() - 1).replace('/', '.');
+                    classNames.add(className);
+                }
+            }
+        }
+
+        for (String className : classNames) {
+            // Check if already loaded
+            if (!vm.classesByName(className).isEmpty()) continue;
+            forceLoadClass(vm, threadRef, className);
+        }
+    }
+
     private static void forceLoadClass(VirtualMachine vm, ThreadReference threadRef,
                                         String className) {
         try {
