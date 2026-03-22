@@ -1,6 +1,7 @@
 package ai.jacc.durableThreads.internal;
 
 import com.sun.jdi.*;
+import ai.jacc.durableThreads.exception.UncapturableTypeException;
 import ai.jacc.durableThreads.snapshot.*;
 
 import java.util.*;
@@ -253,11 +254,29 @@ public final class JdiHeapWalker {
             return;
         }
 
-        // Other JDK internal types: store as opaque (inaccessible fields)
-        if (isOpaqueType(className)) {
+        // Enums (any package, including JDK enums like TimeUnit, Thread.State):
+        // capture by constant name so they can be restored via Enum.valueOf().
+        // Must be checked before both the opaque gate AND regular field walking,
+        // because enum identity (==) would break if restored via Objenesis.
+        if (isEnum(refType)) {
+            captureEnum(snapId, objRef, refType, className, name);
+            return;
+        }
+
+        // java.lang.Object itself has no fields — safe to capture as-is.
+        // (Commonly appears as HashSet's internal PRESENT sentinel.)
+        if ("java.lang.Object".equals(className)) {
             snapshots.add(new ObjectSnapshot(snapId, className,
                     ObjectKind.REGULAR, Collections.<String, ObjectRef>emptyMap(), null, null, name));
             return;
+        }
+
+        // FAIL-FAST: unknown JDK-internal types cannot be captured or restored
+        // correctly. Throw now so the user can fix the problem, rather than
+        // silently producing a snapshot that would restore with wrong values.
+        if (isOpaqueType(className)) {
+            throw new UncapturableTypeException(className,
+                    getOpaqueTypeAdvice(className));
         }
 
         Map<String, ObjectRef> fields = new LinkedHashMap<>();
@@ -694,6 +713,102 @@ public final class JdiHeapWalker {
         if (f == null) return 0;
         Value v = obj.getValue(f);
         return (v instanceof ByteValue) ? ((ByteValue) v).value() : 0;
+    }
+
+    /**
+     * Check whether a JDI type is an enum (extends java.lang.Enum).
+     */
+    private static boolean isEnum(ReferenceType refType) {
+        if (!(refType instanceof ClassType)) return false;
+        ClassType ct = ((ClassType) refType).superclass();
+        while (ct != null) {
+            if (ct.name().equals("java.lang.Enum")) return true;
+            ct = ct.superclass();
+        }
+        return false;
+    }
+
+    /**
+     * Capture an enum constant by its name. Stored as STRING kind so that
+     * HeapRestorer can reconstruct via {@code Enum.valueOf(Class, name)}.
+     */
+    private void captureEnum(long snapId, ObjectReference objRef,
+                              ReferenceType refType, String className, String name) {
+        // Read the 'name' field from java.lang.Enum
+        String constantName = "";
+        com.sun.jdi.Field nameField = findField(refType, "name");
+        if (nameField != null) {
+            Value v = objRef.getValue(nameField);
+            if (v instanceof StringReference) {
+                constantName = ((StringReference) v).value();
+            }
+        }
+        Map<String, ObjectRef> fields = new LinkedHashMap<>();
+        fields.put("value", new PrimitiveRef(constantName));
+        snapshots.add(new ObjectSnapshot(snapId, className,
+                ObjectKind.STRING, fields, null, null, name));
+    }
+
+    /**
+     * Return user-facing advice for why a specific opaque JDK type can't be
+     * frozen and what the user should do about it.
+     */
+    private static String getOpaqueTypeAdvice(String className) {
+        // Optional types
+        if (className.equals("java.util.Optional")
+                || className.startsWith("java.util.Optional")) {
+            return "Optional<T> cannot be frozen because its final 'value' field "
+                    + "cannot be set after construction. Use T directly (with null for "
+                    + "empty) instead of wrapping in Optional.";
+        }
+
+        // Unmodifiable/immutable collection wrappers
+        if (className.startsWith("java.util.Collections$Unmodifiable")
+                || className.startsWith("java.util.Collections$Singleton")
+                || className.startsWith("java.util.Collections$Empty")
+                || className.startsWith("java.util.ImmutableCollections$")) {
+            return "Unmodifiable/immutable collection wrappers cannot be frozen "
+                    + "because their immutability contract cannot be preserved on "
+                    + "restore. Use a mutable collection (ArrayList, HashMap, etc.) "
+                    + "in the frozen thread instead.";
+        }
+
+        // Thread, ClassLoader, etc. — fundamentally non-serializable
+        if (className.equals("java.lang.Thread")
+                || className.equals("java.lang.ThreadGroup")) {
+            return "Thread objects cannot be frozen. Remove Thread references "
+                    + "from local variables reachable by the frozen thread.";
+        }
+        if (className.contains("ClassLoader")) {
+            return "ClassLoader objects cannot be frozen. Remove ClassLoader "
+                    + "references from local variables reachable by the frozen thread.";
+        }
+
+        // I/O and network types
+        if (className.startsWith("java.io.") || className.startsWith("java.nio.")) {
+            return "I/O types (streams, channels, files) hold native resources "
+                    + "that cannot be serialized. Remove I/O object references from "
+                    + "local variables reachable by the frozen thread, or close them "
+                    + "before freezing.";
+        }
+        if (className.startsWith("java.net.") && !className.equals("java.net.URI")) {
+            return "Network types (sockets, connections) hold native resources "
+                    + "that cannot be serialized. Remove network object references "
+                    + "from local variables reachable by the frozen thread.";
+        }
+
+        // Regex Pattern
+        if (className.equals("java.util.regex.Pattern")) {
+            return "Pattern cannot be frozen because its compiled internal state "
+                    + "cannot be restored. Store the pattern string instead and "
+                    + "recompile with Pattern.compile() after restore.";
+        }
+
+        // Generic fallback
+        return "This is a JDK-internal type whose fields cannot be read or "
+                + "restored correctly. Avoid using this type in local variables or "
+                + "fields reachable from the frozen thread. If you believe this type "
+                + "should be supported, please file an issue.";
     }
 
     /**

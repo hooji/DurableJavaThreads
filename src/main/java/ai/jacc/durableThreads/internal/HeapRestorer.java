@@ -346,8 +346,30 @@ public final class HeapRestorer {
             case "java.net.URI":
                 return java.net.URI.create(value);
             default:
-                return null;
+                // Check for enum types — restore by looking up the constant by name
+                return tryCreateEnum(className, value);
         }
+    }
+
+    /**
+     * Try to restore an enum constant by name. Returns null if not an enum.
+     */
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static Object tryCreateEnum(String className, String constantName) {
+        try {
+            Class<?> clazz = Class.forName(className);
+            if (clazz.isEnum()) {
+                return Enum.valueOf((Class<Enum>) clazz, constantName);
+            }
+        } catch (ClassNotFoundException e) {
+            throw new RuntimeException("Cannot restore enum '" + className
+                    + "': class not found", e);
+        } catch (IllegalArgumentException e) {
+            throw new RuntimeException("Cannot restore enum '" + className
+                    + "': constant '" + constantName + "' not found. "
+                    + "The enum may have changed since the snapshot was taken.", e);
+        }
+        return null;
     }
 
     private void populateRegularObject(Object obj, ObjectSnapshot snap) {

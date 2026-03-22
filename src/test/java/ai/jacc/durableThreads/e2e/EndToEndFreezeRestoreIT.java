@@ -1105,4 +1105,117 @@ class EndToEndFreezeRestoreIT {
             Files.deleteIfExists(snapshotFile);
         }
     }
+
+    @Test
+    @DisplayName("E2E: Enum types survive freeze/restore with correct identity (==)")
+    void enumFreezeAndRestore() throws Exception {
+        Path snapshotFile = Files.createTempFile("durable-enum-", ".bin");
+        try {
+            // Step 1: Freeze with enum locals
+            int freezePort = ChildJvm.findFreePort();
+            ChildJvm.Result freezeResult = ChildJvm.run(
+                    "ai.jacc.durableThreads.e2e.EnumFreezeProgram",
+                    classpath, freezePort,
+                    new String[]{snapshotFile.toString()}, 60);
+
+            System.out.println("=== ENUM FREEZE STDOUT ===\n" + freezeResult.stdout());
+            if (!freezeResult.stderr().trim().isEmpty()) {
+                System.out.println("=== ENUM FREEZE STDERR ===\n" + freezeResult.stderr());
+            }
+
+            assertTrue(freezeResult.stdout().contains("FREEZE_COMPLETE"),
+                    "Enum freeze should complete. Stdout:\n" + freezeResult.stdout());
+            assertFalse(freezeResult.stdout().contains("COLOR="),
+                    "Original thread should not continue past freeze");
+            assertTrue(Files.size(snapshotFile) > 100, "Snapshot file should have content");
+
+            // Step 2: Restore in a NEW JVM
+            int restorePort = ChildJvm.findFreePort();
+            ChildJvm.Result restoreResult = ChildJvm.run(
+                    "ai.jacc.durableThreads.e2e.RestoreProgram",
+                    classpath, restorePort,
+                    new String[]{snapshotFile.toString()}, 60);
+
+            System.out.println("=== ENUM RESTORE STDOUT ===\n" + restoreResult.stdout());
+            if (!restoreResult.stderr().trim().isEmpty()) {
+                System.out.println("=== ENUM RESTORE STDERR ===\n" + restoreResult.stderr());
+            }
+
+            assertRestoreSucceeded(restoreResult);
+            String out = restoreResult.stdout();
+
+            // Identity checks (==) — the most critical enum semantic
+            assertTrue(out.contains("COLOR_IS_RED=true"),
+                    "Enum == identity for Color.RED. Out:\n" + out);
+            assertTrue(out.contains("DIR_IS_EAST=true"),
+                    "Enum == identity for Direction.EAST. Out:\n" + out);
+            assertTrue(out.contains("UNIT_IS_SECONDS=true"),
+                    "Enum == identity for TimeUnit.SECONDS. Out:\n" + out);
+
+            // Values
+            assertTrue(out.contains("COLOR=RED"), "Color name. Out:\n" + out);
+            assertTrue(out.contains("COLOR_TEMP=warm"), "Custom enum field. Out:\n" + out);
+            assertTrue(out.contains("COLOR_ORDINAL=0"), "Enum ordinal. Out:\n" + out);
+            assertTrue(out.contains("DIR=EAST"), "Direction name. Out:\n" + out);
+            assertTrue(out.contains("UNIT=SECONDS"), "TimeUnit name. Out:\n" + out);
+
+            // Switch statement (depends on enum identity)
+            assertTrue(out.contains("SWITCH=matched-red"),
+                    "Switch on enum should work. Out:\n" + out);
+
+            // Enum keys in HashMap
+            assertTrue(out.contains("MAP_RED=5"), "Map with enum key RED. Out:\n" + out);
+            assertTrue(out.contains("MAP_GREEN=3"), "Map with enum key GREEN. Out:\n" + out);
+            assertTrue(out.contains("MAP_BLUE=7"), "Map with enum key BLUE. Out:\n" + out);
+
+            // Enum values in HashSet
+            assertTrue(out.contains("SET_CONTAINS_NORTH=true"), "Set contains NORTH. Out:\n" + out);
+            assertTrue(out.contains("SET_CONTAINS_EAST=true"), "Set contains EAST. Out:\n" + out);
+            assertTrue(out.contains("SET_CONTAINS_SOUTH=false"), "Set does not contain SOUTH. Out:\n" + out);
+
+            // No pre-freeze output
+            assertFalse(out.contains("BEFORE_FREEZE"),
+                    "Restore must not replay pre-freeze output. Out:\n" + out);
+        } finally {
+            Files.deleteIfExists(snapshotFile);
+        }
+    }
+
+    @Test
+    @DisplayName("E2E: Freeze fails fast on unsupported types (Optional)")
+    void unsupportedTypeFailsFast() throws Exception {
+        Path snapshotFile = Files.createTempFile("durable-unsupported-", ".bin");
+        try {
+            int freezePort = ChildJvm.findFreePort();
+            ChildJvm.Result result = ChildJvm.run(
+                    "ai.jacc.durableThreads.e2e.UnsupportedTypeFreezeProgram",
+                    classpath, freezePort,
+                    new String[]{snapshotFile.toString()}, 60);
+
+            System.out.println("=== UNSUPPORTED TYPE STDOUT ===\n" + result.stdout());
+            if (!result.stderr().trim().isEmpty()) {
+                System.out.println("=== UNSUPPORTED TYPE STDERR ===\n" + result.stderr());
+            }
+
+            // Freeze should NOT succeed
+            assertFalse(result.stdout().contains("FREEZE_COMPLETE"),
+                    "Freeze must not succeed with unsupported type. Stdout:\n" + result.stdout());
+
+            // Should NOT continue past freeze (no AFTER_FREEZE output)
+            assertFalse(result.stdout().contains("AFTER_FREEZE"),
+                    "Thread must not continue past failed freeze. Stdout:\n" + result.stdout());
+
+            // The exception should mention the unsupported type and be an UncapturableTypeException
+            String allOutput = result.stdout() + result.stderr();
+            assertTrue(allOutput.contains("UncapturableTypeException")
+                            || allOutput.contains("java.util.Optional"),
+                    "Error should mention the unsupported type. Output:\n" + allOutput);
+
+            // Snapshot file should be empty or not written
+            assertTrue(!Files.exists(snapshotFile) || Files.size(snapshotFile) == 0,
+                    "Snapshot file should not be written on failure");
+        } finally {
+            Files.deleteIfExists(snapshotFile);
+        }
+    }
 }
