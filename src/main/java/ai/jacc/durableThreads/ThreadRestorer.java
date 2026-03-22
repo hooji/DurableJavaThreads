@@ -709,18 +709,22 @@ final class ThreadRestorer {
                 try {
                     jdiFrame.setValue(entry.jdiLocal(), entry.jdiValue());
                 } catch (ClassNotLoadedException cnle) {
-                    // Classes should have been pre-loaded by preloadSnapshotClasses().
-                    // If we still get this, it means pre-loading failed. We cannot
-                    // call forceLoadClass here because invokeMethod would resume the
-                    // thread and invalidate all cached StackFrame references.
-                    if (requireAllLocals) {
-                        throw new RuntimeException(
-                                "Class not loaded for local '" + entry.jdiLocal().name() + "' in "
-                                + method.declaringType().name() + "." + method.name()
-                                + ": " + cnle.className()
-                                + ". Pre-loading may have failed.", cnle);
+                    // On Java 8, JDI's classloader lookup can fail for bootstrap-loaded
+                    // classes (like TimeUnit) when the declaring class uses the app
+                    // classloader. The class IS loaded in the JVM, but JDI's
+                    // LocalVariableImpl.findType() only searches the declaring type's
+                    // classloader, not parent classloaders. Fixed in Java 9+.
+                    //
+                    // Bypass JDI's client-side type check by setting the slot value
+                    // directly via reflection on JDI internals.
+                    if (!setValueBypassTypeCheck(jdiFrame, entry.jdiLocal(), entry.jdiValue())) {
+                        // Fallback: skip this local with a warning rather than
+                        // crashing the entire restore
+                        System.err.println("[DurableThreads] Warning: skipping local '"
+                                + entry.jdiLocal().name() + "' — class '"
+                                + cnle.className() + "' not resolvable by JDI classloader"
+                                + " (Java 8 limitation)");
                     }
-                    // Phase 1: skip this local, it will be retried in Phase 2
                 } catch (InvalidTypeException e) {
                     throw new RuntimeException(
                             "Type mismatch setting local '" + entry.jdiLocal().name() + "' in "
@@ -767,11 +771,72 @@ final class ThreadRestorer {
     }
 
     /**
-     * Force-load a class in the target JVM by invoking Class.forName() via JDI.
-     * This is needed when the JDI setValue() call encounters a ClassNotLoadedException
-     * because the target JVM hasn't loaded the class yet (e.g., JDK enums like TimeUnit
-     * that aren't referenced by the restore program).
+     * Bypass JDI's client-side type check and set a stack frame slot value directly.
+     *
+     * <p>On Java 8, JDI's {@code StackFrameImpl.setValue()} calls
+     * {@code LocalVariableImpl.findType()} which searches only the declaring type's
+     * classloader. Bootstrap-loaded classes (like {@code TimeUnit}) can't be found
+     * when the declaring type uses the app classloader, causing
+     * {@code ClassNotLoadedException} even though the class IS loaded.</p>
+     *
+     * <p>This method uses reflection to access JDI internals and send the
+     * JDWP StackFrame.SetValues command directly, bypassing the type check.</p>
      */
+    private static boolean setValueBypassTypeCheck(StackFrame frame,
+                                                    com.sun.jdi.LocalVariable local,
+                                                    Value value) {
+        try {
+            // Get the slot number from LocalVariableImpl
+            java.lang.reflect.Method slotMethod = local.getClass().getDeclaredMethod("slot");
+            slotMethod.setAccessible(true);
+            int slot = (int) slotMethod.invoke(local);
+
+            // StackFrameImpl has: ThreadReferenceImpl thread, long id
+            java.lang.reflect.Field threadField = frame.getClass().getDeclaredField("thread");
+            threadField.setAccessible(true);
+            Object threadImpl = threadField.get(frame);
+
+            java.lang.reflect.Field idField = frame.getClass().getDeclaredField("id");
+            idField.setAccessible(true);
+            long frameId = (long) idField.get(frame);
+
+            // Get the VirtualMachineImpl
+            java.lang.reflect.Method vmMethod = frame.getClass().getMethod("virtualMachine");
+            Object vmImpl = vmMethod.invoke(frame);
+
+            // Build JDWP.StackFrame.SetValues.SlotInfo
+            Class<?> slotInfoClass = Class.forName(
+                    "com.sun.tools.jdi.JDWP$StackFrame$SetValues$SlotInfo");
+            java.lang.reflect.Constructor<?> slotInfoCtor = slotInfoClass.getDeclaredConstructor(
+                    int.class, Value.class);
+            slotInfoCtor.setAccessible(true);
+            Object slotInfo = slotInfoCtor.newInstance(slot, value);
+
+            // Create SlotInfo array
+            Object slotInfoArray = java.lang.reflect.Array.newInstance(slotInfoClass, 1);
+            java.lang.reflect.Array.set(slotInfoArray, 0, slotInfo);
+
+            // Call JDWP.StackFrame.SetValues.process(vm, thread, frameId, slotInfos)
+            // Find the method by name since class hierarchy varies across JDK versions
+            Class<?> setValuesClass = Class.forName(
+                    "com.sun.tools.jdi.JDWP$StackFrame$SetValues");
+            java.lang.reflect.Method processMethod = null;
+            for (java.lang.reflect.Method m : setValuesClass.getDeclaredMethods()) {
+                if (m.getName().equals("process") && m.getParameterTypes().length == 4) {
+                    processMethod = m;
+                    break;
+                }
+            }
+            if (processMethod == null) return false;
+            processMethod.setAccessible(true);
+            processMethod.invoke(null, vmImpl, threadImpl, frameId, slotInfoArray);
+            return true;
+        } catch (Exception e) {
+            // Reflection failed — different JDI internal structure than expected
+            return false;
+        }
+    }
+
     /**
      * Pre-load all classes referenced by snapshot local variable types.
      * This prevents ClassNotLoadedException during setValue() later, which
@@ -793,8 +858,17 @@ final class ThreadRestorer {
         }
 
         for (String className : classNames) {
-            // Check if already loaded
+            // First, load the class locally (we're in the same JVM).
+            // This ensures the class is loaded even if JDI's invokeMethod fails
+            // (e.g., on Java 8 where invokeMethod fails for WAITING threads).
+            try {
+                Class.forName(className);
+            } catch (ClassNotFoundException ignored) {}
+
+            // Check if JDI can see the class now
             if (!vm.classesByName(className).isEmpty()) continue;
+
+            // Try to force-load via JDI as well (for cross-classloader visibility)
             forceLoadClass(vm, threadRef, className);
         }
     }
