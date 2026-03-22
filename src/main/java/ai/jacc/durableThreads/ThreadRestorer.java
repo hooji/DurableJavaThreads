@@ -689,7 +689,21 @@ final class ThreadRestorer {
             for (LocalEntry entry : entries) {
                 try {
                     jdiFrame.setValue(entry.jdiLocal(), entry.jdiValue());
-                } catch (InvalidTypeException | ClassNotLoadedException e) {
+                } catch (ClassNotLoadedException cnle) {
+                    // The target JVM hasn't loaded this class yet.
+                    // Force-load it via Class.forName() in the target JVM and retry.
+                    String className = cnle.className();
+                    forceLoadClass(vm, threadRef, className);
+                    try {
+                        jdiFrame.setValue(entry.jdiLocal(), entry.jdiValue());
+                    } catch (InvalidTypeException | ClassNotLoadedException retryEx) {
+                        throw new RuntimeException(
+                                "Type mismatch setting local '" + entry.jdiLocal().name() + "' in "
+                                + method.declaringType().name() + "." + method.name()
+                                + ": " + retryEx.getMessage()
+                                + " (class force-load was attempted)", retryEx);
+                    }
+                } catch (InvalidTypeException e) {
                     throw new RuntimeException(
                             "Type mismatch setting local '" + entry.jdiLocal().name() + "' in "
                             + method.declaringType().name() + "." + method.name()
@@ -731,6 +745,37 @@ final class ThreadRestorer {
                     // already collected after setValue — harmless
                 }
             }
+        }
+    }
+
+    /**
+     * Force-load a class in the target JVM by invoking Class.forName() via JDI.
+     * This is needed when the JDI setValue() call encounters a ClassNotLoadedException
+     * because the target JVM hasn't loaded the class yet (e.g., JDK enums like TimeUnit
+     * that aren't referenced by the restore program).
+     */
+    private static void forceLoadClass(VirtualMachine vm, ThreadReference threadRef,
+                                        String className) {
+        try {
+            // Find java.lang.Class in the target JVM
+            List<ReferenceType> classTypes = vm.classesByName("java.lang.Class");
+            if (classTypes.isEmpty()) return;
+            ClassType classType = (ClassType) classTypes.get(0);
+
+            // Find the forName(String) method
+            List<Method> forNameMethods = classType.methodsByName("forName",
+                    "(Ljava/lang/String;)Ljava/lang/Class;");
+            if (forNameMethods.isEmpty()) return;
+
+            // Invoke Class.forName(className) in the target JVM
+            StringReference classNameRef = vm.mirrorOf(className);
+            classType.invokeMethod(threadRef, forNameMethods.get(0),
+                    java.util.Collections.singletonList(classNameRef),
+                    ObjectReference.INVOKE_SINGLE_THREADED);
+        } catch (Exception e) {
+            // Non-fatal: the retry after this will produce a clear error
+            System.err.println("[DurableThreads] Warning: failed to force-load class '"
+                    + className + "' in target JVM: " + e.getMessage());
         }
     }
 

@@ -1,6 +1,7 @@
 package ai.jacc.durableThreads.internal;
 
 import com.sun.jdi.*;
+import ai.jacc.durableThreads.exception.UncapturableTypeException;
 import ai.jacc.durableThreads.snapshot.*;
 
 import java.util.*;
@@ -156,6 +157,31 @@ public final class JdiHeapWalker {
         BOXED_PRIMITIVES.put("java.lang.Boolean", "Z");
     }
 
+    /**
+     * Immutable JDK types that can be captured via their toString() representation
+     * and reconstructed via parse/valueOf on restore. These have final fields that
+     * cannot be set reflectively on Java 16+, so Objenesis won't work.
+     */
+    private static final Set<String> TOSTRING_IMMUTABLES = new HashSet<>(Arrays.asList(
+            "java.math.BigDecimal",
+            "java.math.BigInteger",
+            "java.util.UUID",
+            "java.time.LocalDate",
+            "java.time.LocalTime",
+            "java.time.LocalDateTime",
+            "java.time.Instant",
+            "java.time.Duration",
+            "java.time.ZonedDateTime",
+            "java.time.OffsetDateTime",
+            "java.time.Period",
+            "java.time.Year",
+            "java.time.YearMonth",
+            "java.time.MonthDay",
+            "java.time.ZoneId",
+            "java.time.ZoneOffset",
+            "java.net.URI"
+    ));
+
     /** Packages whose internal fields should not be walked (JDK internals). */
     private static final String[] OPAQUE_PACKAGES = {
             "java.", "javax.", "jdk.", "sun.", "com.sun."
@@ -221,11 +247,36 @@ public final class JdiHeapWalker {
             }
         }
 
-        // Other JDK internal types: store as opaque (inaccessible fields)
-        if (isOpaqueType(className)) {
+        // Immutable JDK types (BigDecimal, UUID, java.time.*, etc.):
+        // capture via toString() so they can be reconstructed via parse/valueOf.
+        if (TOSTRING_IMMUTABLES.contains(className)) {
+            captureImmutableViaToString(snapId, objRef, refType, className, name);
+            return;
+        }
+
+        // Enums (any package, including JDK enums like TimeUnit, Thread.State):
+        // capture by constant name so they can be restored via Enum.valueOf().
+        // Must be checked before both the opaque gate AND regular field walking,
+        // because enum identity (==) would break if restored via Objenesis.
+        if (isEnum(refType)) {
+            captureEnum(snapId, objRef, refType, className, name);
+            return;
+        }
+
+        // java.lang.Object itself has no fields — safe to capture as-is.
+        // (Commonly appears as HashSet's internal PRESENT sentinel.)
+        if ("java.lang.Object".equals(className)) {
             snapshots.add(new ObjectSnapshot(snapId, className,
                     ObjectKind.REGULAR, Collections.<String, ObjectRef>emptyMap(), null, null, name));
             return;
+        }
+
+        // FAIL-FAST: unknown JDK-internal types cannot be captured or restored
+        // correctly. Throw now so the user can fix the problem, rather than
+        // silently producing a snapshot that would restore with wrong values.
+        if (isOpaqueType(className)) {
+            throw new UncapturableTypeException(className,
+                    getOpaqueTypeAdvice(className));
         }
 
         Map<String, ObjectRef> fields = new LinkedHashMap<>();
@@ -332,6 +383,432 @@ public final class JdiHeapWalker {
         fields.put("value", new PrimitiveRef(content));
         snapshots.add(new ObjectSnapshot(snapId, className,
                 ObjectKind.STRING, fields, null, null, name));
+    }
+
+    /**
+     * Capture an immutable JDK type by reading its string representation via JDI
+     * field access. The string is stored as the "value" field so HeapRestorer can
+     * reconstruct the object via parse/valueOf.
+     *
+     * <p>We read internal fields to build the string rather than invoking toString()
+     * (which requires a running thread). Each type has its own internal layout.</p>
+     */
+    private void captureImmutableViaToString(long snapId, ObjectReference objRef,
+                                              ReferenceType refType, String className, String name) {
+        String strValue = readImmutableAsString(objRef, refType, className);
+        Map<String, ObjectRef> fields = new LinkedHashMap<>();
+        fields.put("value", new PrimitiveRef(strValue));
+        snapshots.add(new ObjectSnapshot(snapId, className,
+                ObjectKind.STRING, fields, null, null, name));
+    }
+
+    /**
+     * Read the string representation of an immutable JDK object via JDI field access.
+     * Falls back to reading fields and formatting manually to avoid invoking methods
+     * on the suspended thread.
+     */
+    private String readImmutableAsString(ObjectReference objRef,
+                                          ReferenceType refType, String className) {
+        try {
+            switch (className) {
+                case "java.math.BigDecimal":
+                    return readBigDecimalAsString(objRef, refType);
+                case "java.math.BigInteger":
+                    return readBigIntegerAsString(objRef, refType);
+                case "java.util.UUID":
+                    return readUuidAsString(objRef, refType);
+                case "java.net.URI":
+                    return readUriAsString(objRef, refType);
+                default:
+                    // java.time.* types — read via internal fields
+                    return readJavaTimeAsString(objRef, refType, className);
+            }
+        } catch (Exception e) {
+            throw new RuntimeException(
+                    "Cannot capture immutable " + className + " via JDI field access. "
+                    + "Thread freeze cannot proceed with incomplete state.", e);
+        }
+    }
+
+    private String readBigIntegerAsString(ObjectReference objRef, ReferenceType refType) {
+        // BigInteger stores: int signum, int[] mag
+        com.sun.jdi.Field signumField = findField(refType, "signum");
+        com.sun.jdi.Field magField = findField(refType, "mag");
+        if (signumField == null || magField == null) return "0";
+
+        Value signumVal = objRef.getValue(signumField);
+        int signum = (signumVal instanceof IntegerValue) ? ((IntegerValue) signumVal).value() : 0;
+        if (signum == 0) return "0";
+
+        Value magVal = objRef.getValue(magField);
+        if (!(magVal instanceof ArrayReference)) return "0";
+        ArrayReference magArr = (ArrayReference) magVal;
+
+        // Reconstruct the magnitude as a hex string and parse
+        int len = magArr.length();
+        int[] mag = new int[len];
+        List<Value> magValues = magArr.getValues();
+        for (int i = 0; i < len; i++) {
+            mag[i] = (magValues.get(i) instanceof IntegerValue)
+                    ? ((IntegerValue) magValues.get(i)).value() : 0;
+        }
+        java.math.BigInteger bi = new java.math.BigInteger(signum, magToBytes(mag));
+        return bi.toString();
+    }
+
+    private static byte[] magToBytes(int[] mag) {
+        byte[] bytes = new byte[mag.length * 4];
+        for (int i = 0; i < mag.length; i++) {
+            bytes[i * 4]     = (byte) (mag[i] >>> 24);
+            bytes[i * 4 + 1] = (byte) (mag[i] >>> 16);
+            bytes[i * 4 + 2] = (byte) (mag[i] >>> 8);
+            bytes[i * 4 + 3] = (byte) mag[i];
+        }
+        return bytes;
+    }
+
+    private String readBigDecimalAsString(ObjectReference objRef, ReferenceType refType) {
+        // BigDecimal stores: BigInteger intVal, int scale, String stringCache (may be null)
+        // Try stringCache first
+        com.sun.jdi.Field cacheField = findField(refType, "stringCache");
+        if (cacheField != null) {
+            Value cacheVal = objRef.getValue(cacheField);
+            if (cacheVal instanceof StringReference) {
+                return ((StringReference) cacheVal).value();
+            }
+        }
+
+        // Reconstruct from intVal + scale
+        com.sun.jdi.Field intValField = findField(refType, "intVal");
+        com.sun.jdi.Field scaleField = findField(refType, "scale");
+        com.sun.jdi.Field intCompactField = findField(refType, "intCompact");
+
+        int scale = 0;
+        if (scaleField != null) {
+            Value scaleVal = objRef.getValue(scaleField);
+            scale = (scaleVal instanceof IntegerValue) ? ((IntegerValue) scaleVal).value() : 0;
+        }
+
+        // Try intCompact first (used for small values)
+        if (intCompactField != null) {
+            Value compactVal = objRef.getValue(intCompactField);
+            if (compactVal instanceof LongValue) {
+                long compact = ((LongValue) compactVal).value();
+                if (compact != Long.MIN_VALUE) { // Long.MIN_VALUE means "use intVal"
+                    return java.math.BigDecimal.valueOf(compact, scale).toString();
+                }
+            }
+        }
+
+        // Fall back to intVal BigInteger
+        if (intValField != null) {
+            Value intValObj = objRef.getValue(intValField);
+            if (intValObj instanceof ObjectReference) {
+                ObjectReference biRef = (ObjectReference) intValObj;
+                String biStr = readBigIntegerAsString(biRef, biRef.referenceType());
+                return new java.math.BigDecimal(new java.math.BigInteger(biStr), scale).toString();
+            }
+        }
+
+        return "0";
+    }
+
+    private String readUuidAsString(ObjectReference objRef, ReferenceType refType) {
+        com.sun.jdi.Field msbField = findField(refType, "mostSigBits");
+        com.sun.jdi.Field lsbField = findField(refType, "leastSigBits");
+        long msb = 0, lsb = 0;
+        if (msbField != null) {
+            Value v = objRef.getValue(msbField);
+            msb = (v instanceof LongValue) ? ((LongValue) v).value() : 0;
+        }
+        if (lsbField != null) {
+            Value v = objRef.getValue(lsbField);
+            lsb = (v instanceof LongValue) ? ((LongValue) v).value() : 0;
+        }
+        return new java.util.UUID(msb, lsb).toString();
+    }
+
+    private String readUriAsString(ObjectReference objRef, ReferenceType refType) {
+        com.sun.jdi.Field strField = findField(refType, "string");
+        if (strField != null) {
+            Value v = objRef.getValue(strField);
+            if (v instanceof StringReference) {
+                return ((StringReference) v).value();
+            }
+        }
+        return "";
+    }
+
+    private String readJavaTimeAsString(ObjectReference objRef,
+                                         ReferenceType refType, String className) {
+        switch (className) {
+            case "java.time.LocalDate": {
+                int year = getIntField(objRef, refType, "year");
+                short month = getShortField(objRef, refType, "month");
+                short day = getShortField(objRef, refType, "day");
+                return java.time.LocalDate.of(year, month, day).toString();
+            }
+            case "java.time.LocalTime": {
+                byte hour = getByteField(objRef, refType, "hour");
+                byte minute = getByteField(objRef, refType, "minute");
+                byte second = getByteField(objRef, refType, "second");
+                int nano = getIntField(objRef, refType, "nano");
+                return java.time.LocalTime.of(hour, minute, second, nano).toString();
+            }
+            case "java.time.LocalDateTime": {
+                // LocalDateTime has date (LocalDate) and time (LocalTime) fields
+                com.sun.jdi.Field dateField = findField(refType, "date");
+                com.sun.jdi.Field timeField = findField(refType, "time");
+                String datePart = "1970-01-01";
+                String timePart = "00:00";
+                if (dateField != null) {
+                    Value dv = objRef.getValue(dateField);
+                    if (dv instanceof ObjectReference) {
+                        ObjectReference dateRef = (ObjectReference) dv;
+                        datePart = readJavaTimeAsString(dateRef, dateRef.referenceType(), "java.time.LocalDate");
+                    }
+                }
+                if (timeField != null) {
+                    Value tv = objRef.getValue(timeField);
+                    if (tv instanceof ObjectReference) {
+                        ObjectReference timeRef = (ObjectReference) tv;
+                        timePart = readJavaTimeAsString(timeRef, timeRef.referenceType(), "java.time.LocalTime");
+                    }
+                }
+                return datePart + "T" + timePart;
+            }
+            case "java.time.Instant": {
+                long seconds = getLongField(objRef, refType, "seconds");
+                int nanos = getIntField(objRef, refType, "nanos");
+                return java.time.Instant.ofEpochSecond(seconds, nanos).toString();
+            }
+            case "java.time.Duration": {
+                long seconds = getLongField(objRef, refType, "seconds");
+                int nanos = getIntField(objRef, refType, "nanos");
+                return java.time.Duration.ofSeconds(seconds, nanos).toString();
+            }
+            case "java.time.ZonedDateTime": {
+                // ZonedDateTime has dateTime (LocalDateTime), offset (ZoneOffset), zone (ZoneId)
+                com.sun.jdi.Field dtField = findField(refType, "dateTime");
+                com.sun.jdi.Field zoneField = findField(refType, "zone");
+                String dtStr = "1970-01-01T00:00";
+                String zoneStr = "UTC";
+                if (dtField != null) {
+                    Value dv = objRef.getValue(dtField);
+                    if (dv instanceof ObjectReference) {
+                        ObjectReference dtRef = (ObjectReference) dv;
+                        dtStr = readJavaTimeAsString(dtRef, dtRef.referenceType(), "java.time.LocalDateTime");
+                    }
+                }
+                if (zoneField != null) {
+                    Value zv = objRef.getValue(zoneField);
+                    if (zv instanceof ObjectReference) {
+                        ObjectReference zoneRef = (ObjectReference) zv;
+                        zoneStr = readZoneId(zoneRef, zoneRef.referenceType());
+                    }
+                }
+                return java.time.ZonedDateTime.of(
+                        java.time.LocalDateTime.parse(dtStr),
+                        java.time.ZoneId.of(zoneStr)).toString();
+            }
+            case "java.time.OffsetDateTime": {
+                com.sun.jdi.Field dtField = findField(refType, "dateTime");
+                com.sun.jdi.Field offsetField = findField(refType, "offset");
+                String dtStr = "1970-01-01T00:00";
+                String offsetStr = "Z";
+                if (dtField != null) {
+                    Value dv = objRef.getValue(dtField);
+                    if (dv instanceof ObjectReference) {
+                        ObjectReference dtRef = (ObjectReference) dv;
+                        dtStr = readJavaTimeAsString(dtRef, dtRef.referenceType(), "java.time.LocalDateTime");
+                    }
+                }
+                if (offsetField != null) {
+                    Value ov = objRef.getValue(offsetField);
+                    if (ov instanceof ObjectReference) {
+                        ObjectReference oRef = (ObjectReference) ov;
+                        offsetStr = readZoneOffset(oRef, oRef.referenceType());
+                    }
+                }
+                return java.time.OffsetDateTime.of(
+                        java.time.LocalDateTime.parse(dtStr),
+                        java.time.ZoneOffset.of(offsetStr)).toString();
+            }
+            case "java.time.Period": {
+                int years = getIntField(objRef, refType, "years");
+                int months = getIntField(objRef, refType, "months");
+                int days = getIntField(objRef, refType, "days");
+                return java.time.Period.of(years, months, days).toString();
+            }
+            case "java.time.Year": {
+                int year = getIntField(objRef, refType, "year");
+                return java.time.Year.of(year).toString();
+            }
+            case "java.time.YearMonth": {
+                int year = getIntField(objRef, refType, "year");
+                int month = getIntField(objRef, refType, "month");
+                return java.time.YearMonth.of(year, month).toString();
+            }
+            case "java.time.MonthDay": {
+                int month = getIntField(objRef, refType, "month");
+                int day = getIntField(objRef, refType, "day");
+                return java.time.MonthDay.of(month, day).toString();
+            }
+            case "java.time.ZoneOffset": {
+                return readZoneOffset(objRef, refType);
+            }
+            case "java.time.ZoneId": {
+                return readZoneId(objRef, refType);
+            }
+            default:
+                throw new RuntimeException("Unsupported immutable type: " + className);
+        }
+    }
+
+    private String readZoneOffset(ObjectReference objRef, ReferenceType refType) {
+        int totalSeconds = getIntField(objRef, refType, "totalSeconds");
+        return java.time.ZoneOffset.ofTotalSeconds(totalSeconds).toString();
+    }
+
+    private String readZoneId(ObjectReference objRef, ReferenceType refType) {
+        // ZoneId is abstract — concrete impls are ZoneOffset and ZoneRegion
+        String actualClass = objRef.referenceType().name();
+        if (actualClass.equals("java.time.ZoneOffset")) {
+            return readZoneOffset(objRef, objRef.referenceType());
+        }
+        // ZoneRegion has an "id" field
+        com.sun.jdi.Field idField = findField(objRef.referenceType(), "id");
+        if (idField != null) {
+            Value v = objRef.getValue(idField);
+            if (v instanceof StringReference) {
+                return ((StringReference) v).value();
+            }
+        }
+        return "UTC";
+    }
+
+    private int getIntField(ObjectReference obj, ReferenceType type, String fieldName) {
+        com.sun.jdi.Field f = findField(type, fieldName);
+        if (f == null) return 0;
+        Value v = obj.getValue(f);
+        return (v instanceof IntegerValue) ? ((IntegerValue) v).value() : 0;
+    }
+
+    private long getLongField(ObjectReference obj, ReferenceType type, String fieldName) {
+        com.sun.jdi.Field f = findField(type, fieldName);
+        if (f == null) return 0;
+        Value v = obj.getValue(f);
+        return (v instanceof LongValue) ? ((LongValue) v).value() : 0;
+    }
+
+    private short getShortField(ObjectReference obj, ReferenceType type, String fieldName) {
+        com.sun.jdi.Field f = findField(type, fieldName);
+        if (f == null) return 0;
+        Value v = obj.getValue(f);
+        return (v instanceof ShortValue) ? ((ShortValue) v).value() : 0;
+    }
+
+    private byte getByteField(ObjectReference obj, ReferenceType type, String fieldName) {
+        com.sun.jdi.Field f = findField(type, fieldName);
+        if (f == null) return 0;
+        Value v = obj.getValue(f);
+        return (v instanceof ByteValue) ? ((ByteValue) v).value() : 0;
+    }
+
+    /**
+     * Check whether a JDI type is an enum (extends java.lang.Enum).
+     */
+    private static boolean isEnum(ReferenceType refType) {
+        if (!(refType instanceof ClassType)) return false;
+        ClassType ct = ((ClassType) refType).superclass();
+        while (ct != null) {
+            if (ct.name().equals("java.lang.Enum")) return true;
+            ct = ct.superclass();
+        }
+        return false;
+    }
+
+    /**
+     * Capture an enum constant by its name. Stored as STRING kind so that
+     * HeapRestorer can reconstruct via {@code Enum.valueOf(Class, name)}.
+     */
+    private void captureEnum(long snapId, ObjectReference objRef,
+                              ReferenceType refType, String className, String name) {
+        // Read the 'name' field from java.lang.Enum
+        String constantName = "";
+        com.sun.jdi.Field nameField = findField(refType, "name");
+        if (nameField != null) {
+            Value v = objRef.getValue(nameField);
+            if (v instanceof StringReference) {
+                constantName = ((StringReference) v).value();
+            }
+        }
+        Map<String, ObjectRef> fields = new LinkedHashMap<>();
+        fields.put("value", new PrimitiveRef(constantName));
+        snapshots.add(new ObjectSnapshot(snapId, className,
+                ObjectKind.STRING, fields, null, null, name));
+    }
+
+    /**
+     * Return user-facing advice for why a specific opaque JDK type can't be
+     * frozen and what the user should do about it.
+     */
+    private static String getOpaqueTypeAdvice(String className) {
+        // Optional types
+        if (className.equals("java.util.Optional")
+                || className.startsWith("java.util.Optional")) {
+            return "Optional<T> cannot be frozen because its final 'value' field "
+                    + "cannot be set after construction. Use T directly (with null for "
+                    + "empty) instead of wrapping in Optional.";
+        }
+
+        // Unmodifiable/immutable collection wrappers
+        if (className.startsWith("java.util.Collections$Unmodifiable")
+                || className.startsWith("java.util.Collections$Singleton")
+                || className.startsWith("java.util.Collections$Empty")
+                || className.startsWith("java.util.ImmutableCollections$")) {
+            return "Unmodifiable/immutable collection wrappers cannot be frozen "
+                    + "because their immutability contract cannot be preserved on "
+                    + "restore. Use a mutable collection (ArrayList, HashMap, etc.) "
+                    + "in the frozen thread instead.";
+        }
+
+        // Thread, ClassLoader, etc. — fundamentally non-serializable
+        if (className.equals("java.lang.Thread")
+                || className.equals("java.lang.ThreadGroup")) {
+            return "Thread objects cannot be frozen. Remove Thread references "
+                    + "from local variables reachable by the frozen thread.";
+        }
+        if (className.contains("ClassLoader")) {
+            return "ClassLoader objects cannot be frozen. Remove ClassLoader "
+                    + "references from local variables reachable by the frozen thread.";
+        }
+
+        // I/O and network types
+        if (className.startsWith("java.io.") || className.startsWith("java.nio.")) {
+            return "I/O types (streams, channels, files) hold native resources "
+                    + "that cannot be serialized. Remove I/O object references from "
+                    + "local variables reachable by the frozen thread, or close them "
+                    + "before freezing.";
+        }
+        if (className.startsWith("java.net.") && !className.equals("java.net.URI")) {
+            return "Network types (sockets, connections) hold native resources "
+                    + "that cannot be serialized. Remove network object references "
+                    + "from local variables reachable by the frozen thread.";
+        }
+
+        // Regex Pattern
+        if (className.equals("java.util.regex.Pattern")) {
+            return "Pattern cannot be frozen because its compiled internal state "
+                    + "cannot be restored. Store the pattern string instead and "
+                    + "recompile with Pattern.compile() after restore.";
+        }
+
+        // Generic fallback
+        return "This is a JDK-internal type whose fields cannot be read or "
+                + "restored correctly. Avoid using this type in local variables or "
+                + "fields reachable from the frozen thread. If you believe this type "
+                + "should be supported, please file an issue.";
     }
 
     /**
