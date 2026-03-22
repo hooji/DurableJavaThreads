@@ -1014,4 +1014,95 @@ class EndToEndFreezeRestoreIT {
             Files.deleteIfExists(snapshotFile);
         }
     }
+
+    @Test
+    @DisplayName("E2E: Immutable JDK types survive freeze/restore (BigDecimal, UUID, java.time, URI)")
+    void immutableTypesFreezeAndRestore() throws Exception {
+        Path snapshotFile = Files.createTempFile("durable-immutables-", ".bin");
+        try {
+            // Step 1: Freeze with immutable type locals
+            int freezePort = ChildJvm.findFreePort();
+            ChildJvm.Result freezeResult = ChildJvm.run(
+                    "ai.jacc.durableThreads.e2e.ImmutableTypesFreezeProgram",
+                    classpath, freezePort,
+                    new String[]{snapshotFile.toString()}, 60);
+
+            System.out.println("=== IMMUTABLE TYPES FREEZE STDOUT ===\n" + freezeResult.stdout());
+            if (!freezeResult.stderr().trim().isEmpty()) {
+                System.out.println("=== IMMUTABLE TYPES FREEZE STDERR ===\n" + freezeResult.stderr());
+            }
+
+            assertTrue(freezeResult.stdout().contains("FREEZE_COMPLETE"),
+                    "Immutable types freeze should complete. Stdout:\n" + freezeResult.stdout());
+            assertTrue(freezeResult.stdout().contains("BEFORE_FREEZE"),
+                    "Should print before freeze. Stdout:\n" + freezeResult.stdout());
+            assertFalse(freezeResult.stdout().contains("PRICE="),
+                    "Original thread should not continue past freeze");
+            assertTrue(Files.size(snapshotFile) > 100, "Snapshot file should have content");
+
+            // Step 2: Restore in a NEW JVM
+            int restorePort = ChildJvm.findFreePort();
+            ChildJvm.Result restoreResult = ChildJvm.run(
+                    "ai.jacc.durableThreads.e2e.RestoreProgram",
+                    classpath, restorePort,
+                    new String[]{snapshotFile.toString()}, 60);
+
+            System.out.println("=== IMMUTABLE TYPES RESTORE STDOUT ===\n" + restoreResult.stdout());
+            if (!restoreResult.stderr().trim().isEmpty()) {
+                System.out.println("=== IMMUTABLE TYPES RESTORE STDERR ===\n" + restoreResult.stderr());
+            }
+
+            assertRestoreSucceeded(restoreResult);
+            String out = restoreResult.stdout();
+
+            // BigDecimal / BigInteger
+            assertTrue(out.contains("PRICE=199.99"), "BigDecimal price. Out:\n" + out);
+            assertTrue(out.contains("TAX=0.0825"), "BigDecimal tax. Out:\n" + out);
+            assertTrue(out.contains("BIGNUM=123456789012345678901234567890"),
+                    "BigInteger. Out:\n" + out);
+
+            // Verify BigDecimal arithmetic still works after restore
+            assertTrue(out.contains("TOTAL=216.489175"),
+                    "BigDecimal arithmetic after restore. Out:\n" + out);
+
+            // UUID
+            assertTrue(out.contains("UUID=550e8400-e29b-41d4-a716-446655440000"),
+                    "UUID. Out:\n" + out);
+
+            // java.time types
+            assertTrue(out.contains("DATE=2025-06-15"), "LocalDate. Out:\n" + out);
+            assertTrue(out.contains("TIME=14:30:45.123456789"), "LocalTime. Out:\n" + out);
+            assertTrue(out.contains("DATETIME=2025-06-15T14:30:45.123456789"),
+                    "LocalDateTime. Out:\n" + out);
+            assertTrue(out.contains("INSTANT="), "Instant present. Out:\n" + out);
+            assertTrue(out.contains("DURATION=PT2H30M15S"), "Duration. Out:\n" + out);
+            assertTrue(out.contains("PERIOD=P1Y6M15D"), "Period. Out:\n" + out);
+
+            // ZonedDateTime — verify it contains the zone
+            assertTrue(out.contains("ZONED=") && out.contains("America/New_York"),
+                    "ZonedDateTime with timezone. Out:\n" + out);
+
+            // URI
+            assertTrue(out.contains("URI=https://example.com/api/v1/resource?id=42"),
+                    "URI. Out:\n" + out);
+
+            // Collections containing immutables
+            assertTrue(out.contains("MAP_ITEM1=29.99"),
+                    "BigDecimal in HashMap. Out:\n" + out);
+            assertTrue(out.contains("MAP_ITEM2=49.50"),
+                    "BigDecimal in HashMap. Out:\n" + out);
+            assertTrue(out.contains("UUIDS=2,11111111-1111-1111-1111-111111111111,22222222-2222-2222-2222-222222222222"),
+                    "UUIDs in ArrayList. Out:\n" + out);
+
+            // Marker from inner frame
+            assertTrue(out.contains("MARKER=42"),
+                    "Inner frame local. Out:\n" + out);
+
+            // Restored output must NOT contain pre-freeze output
+            assertFalse(out.contains("BEFORE_FREEZE"),
+                    "Restore must not replay pre-freeze output. Out:\n" + out);
+        } finally {
+            Files.deleteIfExists(snapshotFile);
+        }
+    }
 }

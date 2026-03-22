@@ -132,7 +132,8 @@ public final class HeapRestorer {
         Object obj;
         switch (snap.kind()) {
             case STRING: {
-                // Strings and StringBuilder/StringBuffer: extract value directly
+                // Strings, StringBuilder/StringBuffer, and immutable JDK types
+                // captured via toString: extract value and reconstruct.
                 ObjectRef valueRef = snap.fields().get("value");
                 String content = "";
                 if (valueRef instanceof PrimitiveRef) {
@@ -147,7 +148,8 @@ public final class HeapRestorer {
                 } else if ("java.lang.StringBuffer".equals(cn)) {
                     obj = new StringBuffer(content);
                 } else {
-                    obj = content; // java.lang.String
+                    Object immutable = tryCreateImmutable(cn, content);
+                    obj = immutable != null ? immutable : content; // fallback to java.lang.String
                 }
                 break;
             }
@@ -300,6 +302,51 @@ public final class HeapRestorer {
             case "java.lang.Character":  return (rawValue instanceof Character) ? rawValue : null;
             case "java.lang.Boolean":    return (rawValue instanceof Boolean) ? rawValue : null;
             default: return null;
+        }
+    }
+
+    /**
+     * Try to reconstruct an immutable JDK type from its string representation.
+     * Returns null if the className isn't a known immutable type.
+     */
+    private static Object tryCreateImmutable(String className, String value) {
+        switch (className) {
+            case "java.math.BigDecimal":
+                return new java.math.BigDecimal(value);
+            case "java.math.BigInteger":
+                return new java.math.BigInteger(value);
+            case "java.util.UUID":
+                return java.util.UUID.fromString(value);
+            case "java.time.LocalDate":
+                return java.time.LocalDate.parse(value);
+            case "java.time.LocalTime":
+                return java.time.LocalTime.parse(value);
+            case "java.time.LocalDateTime":
+                return java.time.LocalDateTime.parse(value);
+            case "java.time.Instant":
+                return java.time.Instant.parse(value);
+            case "java.time.Duration":
+                return java.time.Duration.parse(value);
+            case "java.time.ZonedDateTime":
+                return java.time.ZonedDateTime.parse(value);
+            case "java.time.OffsetDateTime":
+                return java.time.OffsetDateTime.parse(value);
+            case "java.time.Period":
+                return java.time.Period.parse(value);
+            case "java.time.Year":
+                return java.time.Year.parse(value);
+            case "java.time.YearMonth":
+                return java.time.YearMonth.parse(value);
+            case "java.time.MonthDay":
+                return java.time.MonthDay.parse(value);
+            case "java.time.ZoneOffset":
+                return java.time.ZoneOffset.of(value);
+            case "java.time.ZoneId":
+                return java.time.ZoneId.of(value);
+            case "java.net.URI":
+                return java.net.URI.create(value);
+            default:
+                return null;
         }
     }
 
