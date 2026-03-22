@@ -641,6 +641,9 @@ public final class PrologueInjector extends ClassVisitor {
                     "ai/jacc/durableThreads/ReplayState", "deactivate", "()V", false);
             pushSubStackDefaults(subStack);
             pushDummyReturnValue(info.descriptor);
+            // Arm the localsReady gate so the postInvoke localsReady() blocks for JDI
+            target.visitMethodInsn(Opcodes.INVOKESTATIC,
+                    RS, "armLocalsAwait", "()V", false);
             target.visitJumpInsn(Opcodes.GOTO, postInvokeLabel);
 
             // Not deepest: advance, re-invoke, box return, init locals, push sub-stack + unbox, goto postInvoke
@@ -666,6 +669,9 @@ public final class PrologueInjector extends ClassVisitor {
                 unboxReturnValue(Type.getReturnType(info.descriptor), retValSlot);
             }
 
+            // Arm the localsReady gate so the postInvoke localsReady() blocks for JDI
+            target.visitMethodInsn(Opcodes.INVOKESTATIC,
+                    RS, "armLocalsAwait", "()V", false);
             target.visitJumpInsn(Opcodes.GOTO, postInvokeLabel);
         }
 

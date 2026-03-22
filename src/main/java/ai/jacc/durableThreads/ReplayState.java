@@ -143,15 +143,34 @@ public final class ReplayState {
     }
 
     /**
-     * Called at the target invoke during replay. After the resume stub sets
-     * {@code __skip} and jumps to original code, all invokes up to the target
-     * are skipped. When the target invoke is reached, this method blocks until
-     * the JDI worker has set local variables (Phase 2).
+     * Thread-local flag that controls whether the next {@link #localsReady()} call
+     * should block. Armed by the resume stub before jumping to the post-invoke label.
+     * This ensures that only the TARGET invoke's post-invoke localsReady() blocks —
+     * subsequent invokes in the same frame's original code do NOT block.
+     */
+    private static final ThreadLocal<Boolean> localsAwaitArmed = ThreadLocal.withInitial(() -> false);
+
+    /**
+     * Arm the localsReady gate for the current thread. Called by resume stubs
+     * before jumping to the post-invoke label in the original code.
+     */
+    public static void armLocalsAwait() {
+        localsAwaitArmed.set(true);
+    }
+
+    /**
+     * Called at every post-invoke label in the original code. Only blocks when
+     * the localsReady gate is armed (by the resume stub). After blocking, the
+     * gate is disarmed so subsequent post-invoke calls in the same frame's
+     * original code pass through immediately.
      *
-     * <p>At this point the thread is executing in the original code section,
-     * so all local variables are in scope and can be set via JDI.</p>
+     * <p>During normal execution (no replay), the gate is never armed, so this
+     * is a single thread-local read — effectively zero cost.</p>
      */
     public static void localsReady() {
+        if (!localsAwaitArmed.get()) return;
+        localsAwaitArmed.set(false);
+
         CountDownLatch latch = localsLatch;
         if (latch != null) {
             try {
@@ -160,8 +179,6 @@ public final class ReplayState {
                 Thread.currentThread().interrupt();
             }
             // Recreate the latch so the NEXT frame's localsReady() call blocks.
-            // Each frame in the restored call stack hits localsReady() exactly once
-            // as the stack unwinds (deepest first, then progressively shallower).
             localsLatch = new CountDownLatch(1);
         }
         // Check if the JDI worker signalled a restore failure
