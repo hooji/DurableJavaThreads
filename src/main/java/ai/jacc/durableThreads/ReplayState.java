@@ -182,17 +182,21 @@ public final class ReplayState {
         if (!localsAwaitArmed.get()) return;
         localsAwaitArmed.set(false);
 
+        // Read the latch under lock, then await WITHOUT holding the lock
+        // (holding it during await would deadlock with releaseLocalsReady).
+        CountDownLatch latch;
         synchronized (LATCH_LOCK) {
-            CountDownLatch latch = localsLatch;
-            if (latch != null) {
-                try {
-                    latch.await();
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                }
-                // Recreate the latch so the NEXT frame's localsReady() call blocks.
-                // Safe because we hold LATCH_LOCK, so releaseLocalsReady() can't
-                // race with us between await-return and latch recreation.
+            latch = localsLatch;
+        }
+        if (latch != null) {
+            try {
+                latch.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            // Recreate the latch under lock so releaseLocalsReady() can't
+            // race between this recreation and the next frame's await.
+            synchronized (LATCH_LOCK) {
                 localsLatch = new CountDownLatch(1);
             }
         }

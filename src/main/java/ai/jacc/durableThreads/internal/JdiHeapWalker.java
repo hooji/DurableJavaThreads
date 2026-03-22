@@ -143,6 +143,19 @@ public final class JdiHeapWalker {
                 ObjectKind.ARRAY, Collections.<String, ObjectRef>emptyMap(), elements, null, name));
     }
 
+    /** Boxed primitive types whose 'value' field should be captured. */
+    private static final Map<String, String> BOXED_PRIMITIVES = new HashMap<>();
+    static {
+        BOXED_PRIMITIVES.put("java.lang.Integer", "I");
+        BOXED_PRIMITIVES.put("java.lang.Long", "J");
+        BOXED_PRIMITIVES.put("java.lang.Double", "D");
+        BOXED_PRIMITIVES.put("java.lang.Float", "F");
+        BOXED_PRIMITIVES.put("java.lang.Short", "S");
+        BOXED_PRIMITIVES.put("java.lang.Byte", "B");
+        BOXED_PRIMITIVES.put("java.lang.Character", "C");
+        BOXED_PRIMITIVES.put("java.lang.Boolean", "Z");
+    }
+
     /** Packages whose internal fields should not be walked (JDK internals). */
     private static final String[] OPAQUE_PACKAGES = {
             "java.", "javax.", "jdk.", "sun.", "com.sun."
@@ -186,6 +199,26 @@ public final class JdiHeapWalker {
         if (TOSTRING_CAPTURABLE.contains(className)) {
             captureStringBuilder(snapId, objRef, refType, className, name);
             return;
+        }
+
+        // Boxed primitives: extract the 'value' field so the wrapped
+        // primitive survives freeze/restore. Without this, boxed values
+        // inside collections (e.g., HashMap<String, Integer>) would be
+        // restored as default values (0, false, etc.).
+        if (BOXED_PRIMITIVES.containsKey(className)) {
+            String fieldName = "value";
+            Field valueField = refType.fieldByName(fieldName);
+            if (valueField != null) {
+                Value inner = objRef.getValue(valueField);
+                ObjectRef innerRef = (inner instanceof PrimitiveValue)
+                        ? capturePrimitive((PrimitiveValue) inner)
+                        : new PrimitiveRef(0);
+                Map<String, ObjectRef> fields = new LinkedHashMap<>();
+                fields.put(className + "." + fieldName, innerRef);
+                snapshots.add(new ObjectSnapshot(snapId, className,
+                        ObjectKind.REGULAR, fields, null, null, name));
+                return;
+            }
         }
 
         // Other JDK internal types: store as opaque (inaccessible fields)
