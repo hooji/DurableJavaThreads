@@ -639,11 +639,12 @@ public final class PrologueInjector extends ClassVisitor {
             // infinite recursion from replay-mode re-entry.
             target.visitMethodInsn(Opcodes.INVOKESTATIC,
                     "ai/jacc/durableThreads/ReplayState", "deactivate", "()V", false);
-            pushSubStackDefaults(subStack);
-            pushDummyReturnValue(info.descriptor);
-            // Arm the localsReady gate so the postInvoke localsReady() blocks for JDI
+            // Arm the localsReady gate BEFORE pushing sub-stack values (must be
+            // called with empty operand stack to avoid OperandStackChecker false positives)
             target.visitMethodInsn(Opcodes.INVOKESTATIC,
                     RS, "armLocalsAwait", "()V", false);
+            pushSubStackDefaults(subStack);
+            pushDummyReturnValue(info.descriptor);
             target.visitJumpInsn(Opcodes.GOTO, postInvokeLabel);
 
             // Not deepest: advance, re-invoke, box return, init locals, push sub-stack + unbox, goto postInvoke
@@ -655,8 +656,6 @@ public final class PrologueInjector extends ClassVisitor {
                 target.visitMethodInsn(Opcodes.INVOKESTATIC,
                         "ai/jacc/durableThreads/ReplayState", "resumePoint", "()V", false);
                 emitLocalDefaults();
-                pushSubStackDefaults(subStack);
-                pushDummyReturnValue(info.descriptor);
             } else {
                 pushDummyArguments(info);
                 target.visitMethodInsn(info.opcode, info.owner, info.name,
@@ -665,13 +664,20 @@ public final class PrologueInjector extends ClassVisitor {
                 boxReturnValue(Type.getReturnType(info.descriptor));
                 target.visitVarInsn(Opcodes.ASTORE, retValSlot);
                 emitLocalDefaults();
+            }
+
+            // Arm the localsReady gate BEFORE pushing sub-stack values
+            target.visitMethodInsn(Opcodes.INVOKESTATIC,
+                    RS, "armLocalsAwait", "()V", false);
+
+            if (info.opcode == Opcodes.INVOKEDYNAMIC) {
+                pushSubStackDefaults(subStack);
+                pushDummyReturnValue(info.descriptor);
+            } else {
                 pushSubStackDefaults(subStack);
                 unboxReturnValue(Type.getReturnType(info.descriptor), retValSlot);
             }
 
-            // Arm the localsReady gate so the postInvoke localsReady() blocks for JDI
-            target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                    RS, "armLocalsAwait", "()V", false);
             target.visitJumpInsn(Opcodes.GOTO, postInvokeLabel);
         }
 
