@@ -29,6 +29,12 @@ class ClassStructureHasherTest {
         int instance;
     }
 
+    static class ArrayFieldClass {
+        byte[] data;
+        long[] values;
+        String[] names;
+    }
+
     @Test
     void hashIsConsistentForSameClass() {
         byte[] hash1 = ClassStructureHasher.hashClassStructure(SimpleClass.class);
@@ -70,5 +76,17 @@ class ClassStructureHasherTest {
         byte[] hash = ClassStructureHasher.hashClassStructure(StaticFieldClass.class);
         assertNotNull(hash);
         assertEquals(32, hash.length);
+    }
+
+    @Test
+    void arrayFieldTypesUseCanonicalNames() {
+        // Array fields should hash consistently using canonical type names
+        // (e.g. "byte[]" not "[B", "long[]" not "[J") to match JDI's typeName() format
+        byte[] hash1 = ClassStructureHasher.hashClassStructure(ArrayFieldClass.class);
+        byte[] hash2 = ClassStructureHasher.hashClassStructure(ArrayFieldClass.class);
+
+        assertNotNull(hash1);
+        assertEquals(32, hash1.length);
+        assertArrayEquals(hash1, hash2, "Array field class should produce consistent hashes");
     }
 }

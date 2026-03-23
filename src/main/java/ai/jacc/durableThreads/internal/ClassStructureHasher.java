@@ -77,7 +77,7 @@ public final class ClassStructureHasher {
                     if (java.lang.reflect.Modifier.isTransient(field.getModifiers())) continue;
 
                     digest.update(field.getName().getBytes(StandardCharsets.UTF_8));
-                    digest.update(field.getType().getName().getBytes(StandardCharsets.UTF_8));
+                    digest.update(field.getType().getCanonicalName().getBytes(StandardCharsets.UTF_8));
                 }
 
                 current = current.getSuperclass();
