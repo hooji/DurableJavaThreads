@@ -6,6 +6,7 @@ import com.sun.jdi.event.EventSet;
 import ai.jacc.durableThreads.exception.LambdaFrameException;
 import ai.jacc.durableThreads.exception.NonEmptyStackException;
 import ai.jacc.durableThreads.exception.ThreadFrozenError;
+import ai.jacc.durableThreads.exception.UncapturableTypeException;
 import ai.jacc.durableThreads.internal.*;
 import ai.jacc.durableThreads.snapshot.*;
 
@@ -572,6 +573,10 @@ final class ThreadFreezer {
                             "L" + method.declaringType().name().replace('.', '/') + ";",
                             thisObjRef));
                 }
+            } catch (UncapturableTypeException e) {
+                // A field of "this" is an uncapturable JDK type — propagate
+                // so the user gets a clear error instead of a broken snapshot.
+                throw e;
             } catch (Exception ignored) {
                 // Can't get this — might be native frame
             }

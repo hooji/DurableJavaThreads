@@ -111,15 +111,23 @@ public final class JdiHeapWalker {
         ReferenceType refType = objRef.referenceType();
         String className = refType.name();
 
-        if (objRef instanceof StringReference) {
-            captureString(snapId, (StringReference) objRef, name);
-        } else if (objRef instanceof ArrayReference) {
-            // Convert JDI display name ("int[]", "java.lang.String[][]") to
-            // JVM internal name ("[I", "[[Ljava.lang.String;") for Class.forName()
-            String jvmArrayName = toJvmArrayName(className);
-            captureArray(snapId, (ArrayReference) objRef, jvmArrayName, name);
-        } else {
-            captureRegularObject(snapId, objRef, refType, className, name);
+        try {
+            if (objRef instanceof StringReference) {
+                captureString(snapId, (StringReference) objRef, name);
+            } else if (objRef instanceof ArrayReference) {
+                // Convert JDI display name ("int[]", "java.lang.String[][]") to
+                // JVM internal name ("[I", "[[Ljava.lang.String;") for Class.forName()
+                String jvmArrayName = toJvmArrayName(className);
+                captureArray(snapId, (ArrayReference) objRef, jvmArrayName, name);
+            } else {
+                captureRegularObject(snapId, objRef, refType, className, name);
+            }
+        } catch (UncapturableTypeException e) {
+            // Remove the dangling ID mapping so subsequent references to this
+            // object don't silently produce a HeapRef to a non-existent snapshot.
+            // Instead, they'll get a clean error via the re-throw.
+            jdiIdToSnapId.remove(jdiId);
+            throw e;
         }
 
         return new HeapRef(snapId);
