@@ -541,6 +541,13 @@ public final class PrologueInjector extends ClassVisitor {
                 paramSlots += t.getSize();
             }
 
+            // Detect slot reuse: slots used by more than one variable.
+            // Extending scopes for reused slots creates overlapping LVT entries
+            // with conflicting types, which causes InconsistentDebugInfoException
+            // in JDI when reading/writing the slot. Only safe to extend scopes
+            // for slots with a single variable.
+            java.util.Set<Integer> reusedSlots = detectReusedSlots(paramSlots);
+
             // Extend scope only for parameter slots; deduplicate to avoid
             // Duplicated LocalVariableTable errors from if/else branches
             java.util.Set<String> seenParams = new java.util.HashSet<>();
@@ -551,8 +558,8 @@ public final class PrologueInjector extends ClassVisitor {
                         target.visitLocalVariable(lv.name(), lv.desc(), lv.sig(),
                                 methodStartLabel, methodEndLabel, lv.index());
                     }
-                } else {
-                    // Non-parameter: extend scope start to cover resume stubs.
+                } else if (!reusedSlots.contains(lv.index())) {
+                    // Unique slot: extend scope start to cover resume stubs.
                     // When a restored thread is re-frozen, its frame BCI may be
                     // inside a resume stub (before the original code section).
                     // Without this extension, JDI's isVisible() returns false
@@ -560,8 +567,32 @@ public final class PrologueInjector extends ClassVisitor {
                     // be silently omitted from the snapshot.
                     target.visitLocalVariable(lv.name(), lv.desc(), lv.sig(),
                             methodStartLabel, lv.end(), lv.index());
+                } else {
+                    // Reused slot: keep original scope to avoid type conflicts
+                    // in the LocalVariableTable that would cause JDI errors.
+                    target.visitLocalVariable(lv.name(), lv.desc(), lv.sig(),
+                            lv.start(), lv.end(), lv.index());
                 }
             }
+        }
+
+        /**
+         * Detect non-parameter slots that are used by more than one local variable.
+         */
+        private java.util.Set<Integer> detectReusedSlots(int paramSlots) {
+            java.util.Map<Integer, String> firstSeen = new java.util.HashMap<>();
+            java.util.Set<Integer> reused = new java.util.HashSet<>();
+            for (LocalVarInfo lv : localVars) {
+                if (lv.index() < paramSlots) continue;
+                String key = lv.name() + "\0" + lv.desc();
+                String existing = firstSeen.get(lv.index());
+                if (existing == null) {
+                    firstSeen.put(lv.index(), key);
+                } else if (!existing.equals(key)) {
+                    reused.add(lv.index());
+                }
+            }
+            return reused;
         }
 
         private void emitNoInvokePrologue() {
@@ -848,23 +879,27 @@ public final class PrologueInjector extends ClassVisitor {
         }
 
         /**
-         * Initialize ALL non-parameter locals to type-correct defaults at method
-         * entry. Called right after {@code methodStartLabel} so that the extended
-         * LocalVariableTable scope (which now starts at the method beginning) is
-         * consistent with actual slot types. Without this, JDI throws
-         * {@code InconsistentDebugInfoException} when reading locals at resume
-         * stub BCIs where the slot hasn't been assigned yet.
+         * Initialize non-parameter locals with unique slots to type-correct
+         * defaults at method entry. Called right after {@code methodStartLabel}
+         * so that the extended LocalVariableTable scope (which now starts at the
+         * method beginning) is consistent with actual slot types. Without this,
+         * JDI throws {@code InconsistentDebugInfoException} when reading locals
+         * at resume stub BCIs where the slot hasn't been assigned yet.
+         *
+         * <p>Slots that are reused by multiple variables are skipped — their
+         * scopes are NOT extended, so they don't need entry defaults.</p>
          */
         private void emitEntryDefaults() {
             int paramSlots = 0;
             if ((methodAccess & Opcodes.ACC_STATIC) == 0) paramSlots = 1;
             for (Type t : Type.getArgumentTypes(methodDesc)) paramSlots += t.getSize();
 
-            // Collect one entry per slot, using the FIRST variable seen at each slot.
-            // This covers all slots that appear in the LocalVariableTable.
+            java.util.Set<Integer> reusedSlots = detectReusedSlots(paramSlots);
+
+            // Collect one entry per non-reused slot.
             java.util.Map<Integer, Character> slotCategories = new java.util.TreeMap<>();
             for (LocalVarInfo lv : localVars) {
-                if (lv.index() >= paramSlots) {
+                if (lv.index() >= paramSlots && !reusedSlots.contains(lv.index())) {
                     slotCategories.putIfAbsent(lv.index(), typeCategory(Type.getType(lv.desc())));
                 }
             }
