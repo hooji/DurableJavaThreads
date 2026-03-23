@@ -35,6 +35,11 @@ class ClassStructureHasherTest {
         String[] names;
     }
 
+    static class InnerClassFieldHolder {
+        SimpleClass nested;
+        java.util.Map.Entry<String, String> entry;
+    }
+
     @Test
     void hashIsConsistentForSameClass() {
         byte[] hash1 = ClassStructureHasher.hashClassStructure(SimpleClass.class);
@@ -79,8 +84,19 @@ class ClassStructureHasherTest {
     }
 
     @Test
-    void arrayFieldTypesUseCanonicalNames() {
-        // Array fields should hash consistently using canonical type names
+    void innerClassFieldTypesUseJdiFormat() {
+        // Inner class fields should use dollar-sign format (Outer$Inner) to match JDI's typeName()
+        byte[] hash1 = ClassStructureHasher.hashClassStructure(InnerClassFieldHolder.class);
+        byte[] hash2 = ClassStructureHasher.hashClassStructure(InnerClassFieldHolder.class);
+
+        assertNotNull(hash1);
+        assertEquals(32, hash1.length);
+        assertArrayEquals(hash1, hash2, "Inner class field holder should produce consistent hashes");
+    }
+
+    @Test
+    void arrayFieldTypesUseJdiFormat() {
+        // Array fields should hash using JDI-compatible type names
         // (e.g. "byte[]" not "[B", "long[]" not "[J") to match JDI's typeName() format
         byte[] hash1 = ClassStructureHasher.hashClassStructure(ArrayFieldClass.class);
         byte[] hash2 = ClassStructureHasher.hashClassStructure(ArrayFieldClass.class);
