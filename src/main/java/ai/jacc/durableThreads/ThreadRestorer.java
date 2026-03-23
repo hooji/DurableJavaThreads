@@ -423,14 +423,18 @@ final class ThreadRestorer {
         long deadline = System.currentTimeMillis() + timeoutMs;
         while (System.currentTimeMillis() < deadline) {
             for (ThreadReference tr : vm.allThreads()) {
-                if (tr.name().equals(threadName)) {
-                    int status = tr.status();
-                    if (status == ThreadReference.THREAD_STATUS_WAIT
-                            || status == ThreadReference.THREAD_STATUS_SLEEPING) {
-                        if (isAtMethod(tr, targetMethodName, targetClassName)) {
-                            return tr;
+                try {
+                    if (tr.name().equals(threadName)) {
+                        int status = tr.status();
+                        if (status == ThreadReference.THREAD_STATUS_WAIT
+                                || status == ThreadReference.THREAD_STATUS_SLEEPING) {
+                            if (isAtMethod(tr, targetMethodName, targetClassName)) {
+                                return tr;
+                            }
                         }
                     }
+                } catch (ObjectCollectedException e) {
+                    // Thread was GC'd between allThreads() and name() — skip it
                 }
             }
             try {
