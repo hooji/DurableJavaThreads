@@ -587,6 +587,19 @@ final class ThreadFreezer {
 
             Value value = frame.getValue(jdiLocal);
             ObjectRef ref = heapWalker.capture(value);
+
+            // Fail-fast: if the JDI reports a non-null value but the heap walker
+            // produced a NullRef, the snapshot would silently contain incorrect
+            // data. Abort the freeze rather than storing bad state.
+            if (value != null && ref instanceof NullRef) {
+                throw new RuntimeException(
+                        "Cannot freeze thread: local variable '" + jdiLocal.name()
+                        + "' in " + method.declaringType().name() + "." + method.name()
+                        + " has a non-null JDI value (" + value.type().name()
+                        + ") but the heap walker captured it as null. "
+                        + "This would produce an incorrect snapshot.");
+            }
+
             // JDI LocalVariable doesn't expose slot index directly;
             // use hashCode as a proxy, or get it from the variable table
             int slot = 0;

@@ -552,9 +552,14 @@ public final class PrologueInjector extends ClassVisitor {
                                 methodStartLabel, methodEndLabel, lv.index());
                     }
                 } else {
-                    // Non-parameter: keep original scope
+                    // Non-parameter: extend scope start to cover resume stubs.
+                    // When a restored thread is re-frozen, its frame BCI may be
+                    // inside a resume stub (before the original code section).
+                    // Without this extension, JDI's isVisible() returns false
+                    // for locals defined in the original code, causing them to
+                    // be silently omitted from the snapshot.
                     target.visitLocalVariable(lv.name(), lv.desc(), lv.sig(),
-                            lv.start(), lv.end(), lv.index());
+                            methodStartLabel, lv.end(), lv.index());
                 }
             }
         }

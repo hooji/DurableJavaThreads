@@ -178,29 +178,14 @@ public final class Durable {
      */
     public static Thread restore(ThreadSnapshot snapshot, boolean startThread,
                                  boolean waitForThreadToFinish) throws InterruptedException {
-        Thread thread = restore(snapshot);
-        final Throwable[] threadError = {null};
-        if (startThread && waitForThreadToFinish) {
-            thread.setUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
-                @Override
-                public void uncaughtException(Thread t, Throwable e) {
-                    threadError[0] = e;
-                }
-            });
+        Thread thread;
+        try {
+            thread = restore(snapshot);
+        } catch (RuntimeException e) {
+            // Restore failed — don't start or wait for a broken thread
+            throw e;
         }
-        if (startThread) {
-            thread.start();
-        }
-        if (startThread && waitForThreadToFinish) {
-            thread.join();
-            if (threadError[0] != null) {
-                if (threadError[0] instanceof RuntimeException) {
-                    throw (RuntimeException) threadError[0];
-                }
-                throw new RuntimeException("Restored thread failed", threadError[0]);
-            }
-        }
-        return thread;
+        return startAndWaitIfRequested(thread, startThread, waitForThreadToFinish);
     }
 
     /**
@@ -363,29 +348,14 @@ public final class Durable {
     public static Thread restore(ThreadSnapshot snapshot, Map<String, Object> namedReplacements,
                                  boolean startThread,
                                  boolean waitForThreadToFinish) throws InterruptedException {
-        Thread thread = restore(snapshot, namedReplacements);
-        final Throwable[] threadError = {null};
-        if (startThread && waitForThreadToFinish) {
-            thread.setUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
-                @Override
-                public void uncaughtException(Thread t, Throwable e) {
-                    threadError[0] = e;
-                }
-            });
+        Thread thread;
+        try {
+            thread = restore(snapshot, namedReplacements);
+        } catch (RuntimeException e) {
+            // Restore failed — don't start or wait for a broken thread
+            throw e;
         }
-        if (startThread) {
-            thread.start();
-        }
-        if (startThread && waitForThreadToFinish) {
-            thread.join();
-            if (threadError[0] != null) {
-                if (threadError[0] instanceof RuntimeException) {
-                    throw (RuntimeException) threadError[0];
-                }
-                throw new RuntimeException("Restored thread failed", threadError[0]);
-            }
-        }
-        return thread;
+        return startAndWaitIfRequested(thread, startThread, waitForThreadToFinish);
     }
 
     /**
@@ -460,5 +430,35 @@ public final class Durable {
                     "Failed to deserialize snapshot from " + path
                     + ": snapshot class not found", e);
         }
+    }
+
+    /**
+     * Shared helper: start and optionally wait for a successfully restored thread.
+     */
+    private static Thread startAndWaitIfRequested(Thread thread, boolean startThread,
+                                                   boolean waitForThreadToFinish)
+            throws InterruptedException {
+        final Throwable[] threadError = {null};
+        if (startThread && waitForThreadToFinish) {
+            thread.setUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
+                @Override
+                public void uncaughtException(Thread t, Throwable e) {
+                    threadError[0] = e;
+                }
+            });
+        }
+        if (startThread) {
+            thread.start();
+        }
+        if (startThread && waitForThreadToFinish) {
+            thread.join();
+            if (threadError[0] != null) {
+                if (threadError[0] instanceof RuntimeException) {
+                    throw (RuntimeException) threadError[0];
+                }
+                throw new RuntimeException("Restored thread failed", threadError[0]);
+            }
+        }
+        return thread;
     }
 }
