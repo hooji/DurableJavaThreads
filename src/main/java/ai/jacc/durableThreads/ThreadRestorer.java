@@ -286,7 +286,7 @@ final class ThreadRestorer {
                     // === PHASE 1: Deactivate replay mode ===
                     // Wait for thread to reach resumePoint()
                     ThreadReference tr = waitForThreadAtMethod(vm, threadName,
-                            "resumePoint", "ReplayState", 30_000);
+                            "resumePoint", "ReplayState", 600_000);
                     if (tr == null) {
                         throw new RuntimeException(
                                 "Timeout waiting for replay thread '" + threadName
@@ -343,7 +343,7 @@ final class ThreadRestorer {
                         // replay thread may still be WAITING inside the old localsReady()
                         // call when we poll. We detect this via frame identity mismatch
                         // and retry until the thread advances to the correct frame.
-                        long deadline = System.currentTimeMillis() + 30_000;
+                        long deadline = System.currentTimeMillis() + 600_000;
                         boolean frameSet = false;
                         while (!frameSet && System.currentTimeMillis() < deadline) {
                             ThreadReference tr2 = waitForThreadAtMethod(vm, threadName,
