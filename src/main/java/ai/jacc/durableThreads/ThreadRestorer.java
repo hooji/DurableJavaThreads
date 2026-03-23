@@ -687,6 +687,17 @@ final class ThreadRestorer {
             com.sun.jdi.LocalVariable jdiLocal = jdiLocalsByName.get(snapLocal.name());
             if (jdiLocal == null) continue;
 
+            // Skip variables not in scope at the current BCI. The snapshot may
+            // contain locals captured via extended scopes (at resume stub BCIs),
+            // but at the localsReady() BCI the original scopes apply. Variables
+            // whose slots are reused for different types would cause
+            // InconsistentDebugInfoException if we tried to set them.
+            try {
+                if (!jdiLocal.isVisible(jdiFrame)) continue;
+            } catch (IllegalArgumentException e) {
+                continue; // variable not valid for this frame
+            }
+
             Value jdiValue = convertToJdiValue(vm, snapLocal.value(),
                     restoredHeap, heapRestorer);
             boolean isNull = snapLocal.value() instanceof NullRef;
@@ -749,6 +760,11 @@ final class ThreadRestorer {
                                 e);
                     }
                     // Phase 1: non-parameter locals may not be in scope yet
+                } catch (com.sun.jdi.InconsistentDebugInfoException e) {
+                    // Slot reuse: the variable's extended scope overlaps with a
+                    // different-typed variable at the same slot. The isVisible
+                    // pre-check should catch most cases, but this is a safety net.
+                    // Skip silently — the variable isn't relevant at this BCI.
                 } catch (com.sun.jdi.InternalException e) {
                     // JDWP Error 35 (INVALID_SLOT): variable not in scope at current
                     // BCI. In Phase 1 the thread is in the resume stub where

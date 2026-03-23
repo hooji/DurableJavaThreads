@@ -585,7 +585,15 @@ final class ThreadFreezer {
         for (com.sun.jdi.LocalVariable jdiLocal : jdiLocals) {
             if (!jdiLocal.isVisible(frame)) continue;
 
-            Value value = frame.getValue(jdiLocal);
+            Value value;
+            try {
+                value = frame.getValue(jdiLocal);
+            } catch (com.sun.jdi.InconsistentDebugInfoException e) {
+                // Slot reuse: extended scope overlaps with a different-typed
+                // variable at the same slot. Skip — this variable isn't relevant
+                // at the current BCI.
+                continue;
+            }
             ObjectRef ref = heapWalker.capture(value);
 
             // Fail-fast: if the JDI reports a non-null value but the heap walker

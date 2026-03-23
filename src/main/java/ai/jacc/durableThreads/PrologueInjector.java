@@ -569,6 +569,8 @@ public final class PrologueInjector extends ClassVisitor {
             methodEndLabel = new Label();
             target.visitLabel(methodStartLabel);
 
+            emitEntryDefaults();
+
             Label normalCode = new Label();
             target.visitMethodInsn(Opcodes.INVOKESTATIC,
                     "ai/jacc/durableThreads/ReplayState", "isReplayThread", "()Z", false);
@@ -601,6 +603,12 @@ public final class PrologueInjector extends ClassVisitor {
             methodStartLabel = new Label();
             methodEndLabel = new Label();
             target.visitLabel(methodStartLabel);
+
+            // Initialize all non-parameter locals to type-correct defaults so that
+            // the extended LocalVariableTable scope (which starts here) is consistent
+            // with the actual slot types. Without this, JDI throws
+            // InconsistentDebugInfoException when reading locals at resume stub BCIs.
+            emitEntryDefaults();
 
             // --- PROLOGUE ---
 
@@ -837,6 +845,30 @@ public final class PrologueInjector extends ClassVisitor {
          */
         private void emitLocalDefaults() {
             emitSlotDefaults(buildFallbackSlotCategories());
+        }
+
+        /**
+         * Initialize ALL non-parameter locals to type-correct defaults at method
+         * entry. Called right after {@code methodStartLabel} so that the extended
+         * LocalVariableTable scope (which now starts at the method beginning) is
+         * consistent with actual slot types. Without this, JDI throws
+         * {@code InconsistentDebugInfoException} when reading locals at resume
+         * stub BCIs where the slot hasn't been assigned yet.
+         */
+        private void emitEntryDefaults() {
+            int paramSlots = 0;
+            if ((methodAccess & Opcodes.ACC_STATIC) == 0) paramSlots = 1;
+            for (Type t : Type.getArgumentTypes(methodDesc)) paramSlots += t.getSize();
+
+            // Collect one entry per slot, using the FIRST variable seen at each slot.
+            // This covers all slots that appear in the LocalVariableTable.
+            java.util.Map<Integer, Character> slotCategories = new java.util.TreeMap<>();
+            for (LocalVarInfo lv : localVars) {
+                if (lv.index() >= paramSlots) {
+                    slotCategories.putIfAbsent(lv.index(), typeCategory(Type.getType(lv.desc())));
+                }
+            }
+            emitSlotDefaults(slotCategories);
         }
 
         private java.util.Map<Integer, Character> buildFallbackSlotCategories() {
