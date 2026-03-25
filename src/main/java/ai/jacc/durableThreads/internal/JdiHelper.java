@@ -573,4 +573,76 @@ public final class JdiHelper {
         }
         return -1;
     }
+
+    // ===================================================================
+    // ConcurrentHashMap JDI walking utilities
+    // ===================================================================
+
+    /**
+     * Find a field by name in a JDI type or its supertypes.
+     *
+     * <p>ConcurrentHashMap's internal {@code Node} class inherits fields from
+     * superclasses, so a simple {@code fieldByName} on the concrete type may
+     * miss them. This walks up the class hierarchy.</p>
+     *
+     * @param type the JDI type to search
+     * @param name the field name
+     * @return the field, or null if not found
+     */
+    public static com.sun.jdi.Field findFieldInHierarchy(ReferenceType type, String name) {
+        com.sun.jdi.Field f = type.fieldByName(name);
+        if (f != null) return f;
+        if (type instanceof ClassType && ((ClassType) type).superclass() != null) {
+            return findFieldInHierarchy(((ClassType) type).superclass(), name);
+        }
+        return null;
+    }
+
+    /**
+     * Look up a single value by String key in a {@code ConcurrentHashMap}
+     * accessed via JDI.
+     *
+     * <p>Walks the internal {@code table} array and node chains to find the
+     * entry matching {@code targetKey}. This depends on ConcurrentHashMap's
+     * internal structure ({@code table}, {@code key}, {@code val}, {@code next}
+     * fields), which has been stable across JDK 8–25.</p>
+     *
+     * @param mapRef JDI reference to the ConcurrentHashMap instance
+     * @param targetKey the String key to search for
+     * @return the Value associated with the key, or null if not found
+     */
+    public static Value getConcurrentHashMapValue(ObjectReference mapRef, String targetKey) {
+        ReferenceType mapType = mapRef.referenceType();
+
+        com.sun.jdi.Field tableField = findFieldInHierarchy(mapType, "table");
+        if (tableField == null) return null;
+
+        ArrayReference table = (ArrayReference) mapRef.getValue(tableField);
+        if (table == null) return null;
+
+        for (int i = 0; i < table.length(); i++) {
+            ObjectReference node = (ObjectReference) table.getValue(i);
+            while (node != null) {
+                com.sun.jdi.Field keyField = findFieldInHierarchy(node.referenceType(), "key");
+                com.sun.jdi.Field valField = findFieldInHierarchy(node.referenceType(), "val");
+                com.sun.jdi.Field nextField = findFieldInHierarchy(node.referenceType(), "next");
+
+                if (keyField == null || valField == null) break;
+
+                Value keyVal = node.getValue(keyField);
+                if (keyVal instanceof StringReference
+                        && ((StringReference) keyVal).value().equals(targetKey)) {
+                    return node.getValue(valField);
+                }
+
+                if (nextField != null) {
+                    Value nextVal = node.getValue(nextField);
+                    node = (nextVal instanceof ObjectReference) ? (ObjectReference) nextVal : null;
+                } else {
+                    break;
+                }
+            }
+        }
+        return null;
+    }
 }

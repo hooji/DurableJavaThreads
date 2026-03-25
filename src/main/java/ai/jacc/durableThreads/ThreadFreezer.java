@@ -438,47 +438,13 @@ final class ThreadFreezer {
             ObjectReference mapRef = (ObjectReference) bridgeType.getValue(objectsField);
             if (mapRef == null) return;
 
-            // Walk the ConcurrentHashMap to find our entries
-            ReferenceType mapType = mapRef.referenceType();
-            com.sun.jdi.Field tableField = findFieldInType(mapType, "table");
-            if (tableField == null) return;
-
-            ArrayReference table = (ArrayReference) mapRef.getValue(tableField);
-            if (table == null) return;
-
-            for (int i = 0; i < table.length(); i++) {
-                ObjectReference node = (ObjectReference) table.getValue(i);
-                while (node != null) {
-                    com.sun.jdi.Field keyField = findFieldInType(node.referenceType(), "key");
-                    com.sun.jdi.Field valField = findFieldInType(node.referenceType(), "val");
-                    com.sun.jdi.Field nextField = findFieldInType(node.referenceType(), "next");
-
-                    if (keyField != null && valField != null) {
-                        Value keyVal = node.getValue(keyField);
-                        if (keyVal instanceof StringReference) {
-                            String keyStr = ((StringReference) keyVal).value();
-                            try {
-                                long bridgeKey = Long.parseLong(keyStr);
-                                String name = keyToName.get(bridgeKey);
-                                if (name != null) {
-                                    Value objVal = node.getValue(valField);
-                                    if (objVal instanceof ObjectReference) {
-                                        heapWalker.registerNamedObject(
-                                                ((ObjectReference) objVal).uniqueID(), name);
-                                    }
-                                }
-                            } catch (NumberFormatException ignored) {
-                                // Not one of our keys
-                            }
-                        }
-                    }
-
-                    if (nextField != null) {
-                        Value nextVal = node.getValue(nextField);
-                        node = (nextVal instanceof ObjectReference) ? (ObjectReference) nextVal : null;
-                    } else {
-                        break;
-                    }
+            // Look up each named object in the ConcurrentHashMap via JDI
+            for (Map.Entry<Long, String> ke : keyToName.entrySet()) {
+                Value objVal = JdiHelper.getConcurrentHashMapValue(
+                        mapRef, String.valueOf(ke.getKey()));
+                if (objVal instanceof ObjectReference) {
+                    heapWalker.registerNamedObject(
+                            ((ObjectReference) objVal).uniqueID(), ke.getValue());
                 }
             }
         } finally {
@@ -487,16 +453,6 @@ final class ThreadFreezer {
                 HeapObjectBridge.remove(key);
             }
         }
-    }
-
-    /** Find a field by name in a type or its supertypes (for ConcurrentHashMap walking). */
-    private static com.sun.jdi.Field findFieldInType(ReferenceType type, String name) {
-        com.sun.jdi.Field f = type.fieldByName(name);
-        if (f != null) return f;
-        if (type instanceof ClassType && ((ClassType) type).superclass() != null) {
-            return findFieldInType(((ClassType) type).superclass(), name);
-        }
-        return null;
     }
 
     /**

@@ -945,7 +945,8 @@ final class ThreadRestorer {
                         + "Cannot resolve heap reference " + snapshotId);
             }
 
-            Value result = getObjectFromBridgeArray(vm, bridgeType, snapshotId);
+            Value result = JdiHelper.getConcurrentHashMapValue(
+                    mapRef, String.valueOf(snapshotId));
             if (result == null) {
                 throw new RuntimeException("Heap object with snapshot ID " + snapshotId
                         + " not found in HeapObjectBridge. The restored heap may be incomplete.");
@@ -957,78 +958,6 @@ final class ThreadRestorer {
             throw new RuntimeException("Failed to resolve heap reference " + snapshotId
                     + " via JDI", e);
         }
-    }
-
-    /**
-     * Get a restored object from the bridge by walking ConcurrentHashMap internals via JDI.
-     * Returns null only if the key genuinely doesn't exist in the map.
-     */
-    private static Value getObjectFromBridgeArray(VirtualMachine vm,
-                                                   ReferenceType bridgeType,
-                                                   long snapshotId) {
-        // Read the static 'objects' map field
-        com.sun.jdi.Field objectsField = bridgeType.fieldByName("objects");
-        if (objectsField == null) {
-            throw new RuntimeException("HeapObjectBridge.objects field not found via JDI");
-        }
-
-        ObjectReference mapRef = (ObjectReference) bridgeType.getValue(objectsField);
-        if (mapRef == null) {
-            throw new RuntimeException("HeapObjectBridge.objects map is null via JDI");
-        }
-
-        ReferenceType mapType = mapRef.referenceType();
-
-        com.sun.jdi.Field tableField = findField(mapType, "table");
-        if (tableField == null) {
-            throw new RuntimeException(
-                    "Cannot find 'table' field in ConcurrentHashMap via JDI. "
-                    + "Cannot resolve heap reference " + snapshotId);
-        }
-
-        ArrayReference table = (ArrayReference) mapRef.getValue(tableField);
-        if (table == null) return null; // empty map — key genuinely missing
-
-        String targetKey = String.valueOf(snapshotId);
-
-        // Walk the hash table buckets
-        for (int i = 0; i < table.length(); i++) {
-            ObjectReference node = (ObjectReference) table.getValue(i);
-            while (node != null) {
-                // Read key and val fields from the Node
-                com.sun.jdi.Field keyField = findField(node.referenceType(), "key");
-                com.sun.jdi.Field valField = findField(node.referenceType(), "val");
-                com.sun.jdi.Field nextField = findField(node.referenceType(), "next");
-
-                if (keyField == null || valField == null) break;
-
-                Value keyVal = node.getValue(keyField);
-                if (keyVal instanceof StringReference && ((StringReference) keyVal).value().equals(targetKey)) {
-                    return node.getValue(valField);
-                }
-
-                // Follow the chain
-                if (nextField != null) {
-                    Value nextVal = node.getValue(nextField);
-                    node = (nextVal instanceof ObjectReference) ? (ObjectReference) nextVal : null;
-                } else {
-                    break;
-                }
-            }
-        }
-        return null; // key not found in map
-    }
-
-    /**
-     * Find a field by name in a type or its supertypes.
-     */
-    private static com.sun.jdi.Field findField(ReferenceType type, String name) {
-        com.sun.jdi.Field f = type.fieldByName(name);
-        if (f != null) return f;
-        if (type instanceof ClassType && ((ClassType) type).superclass() != null) {
-            return findField(((ClassType) type).superclass(), name);
-        }
-        return null;
     }
 
     /**
