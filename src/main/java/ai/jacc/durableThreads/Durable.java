@@ -36,6 +36,10 @@ public final class Durable {
 
     private Durable() {}
 
+    // ===================================================================
+    // Freeze
+    // ===================================================================
+
     /**
      * Freeze the current thread.
      *
@@ -122,6 +126,10 @@ public final class Durable {
         freeze(new SnapshotFileWriter(path), namedObjects);
     }
 
+    // ===================================================================
+    // Restore from snapshot
+    // ===================================================================
+
     /**
      * Restore a frozen thread from a snapshot.
      *
@@ -152,11 +160,7 @@ public final class Durable {
      * @throws AgentNotLoadedException if the durable agent is not loaded
      */
     public static Thread restore(ThreadSnapshot snapshot, boolean startThread) {
-        Thread thread = restore(snapshot);
-        if (startThread) {
-            thread.start();
-        }
-        return thread;
+        return startAndWait(restore(snapshot), startThread, false);
     }
 
     /**
@@ -178,30 +182,12 @@ public final class Durable {
      */
     public static Thread restore(ThreadSnapshot snapshot, boolean startThread,
                                  boolean waitForThreadToFinish) throws InterruptedException {
-        Thread thread = restore(snapshot);
-        final Throwable[] threadError = {null};
-        if (startThread && waitForThreadToFinish) {
-            thread.setUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
-                @Override
-                public void uncaughtException(Thread t, Throwable e) {
-                    threadError[0] = e;
-                }
-            });
-        }
-        if (startThread) {
-            thread.start();
-        }
-        if (startThread && waitForThreadToFinish) {
-            thread.join();
-            if (threadError[0] != null) {
-                if (threadError[0] instanceof RuntimeException) {
-                    throw (RuntimeException) threadError[0];
-                }
-                throw new RuntimeException("Restored thread failed", threadError[0]);
-            }
-        }
-        return thread;
+        return startAndWait(restore(snapshot), startThread, waitForThreadToFinish);
     }
+
+    // ===================================================================
+    // Restore from file
+    // ===================================================================
 
     /**
      * Restore a frozen thread from a snapshot file.
@@ -263,17 +249,7 @@ public final class Durable {
      * @throws UncheckedIOException if the file cannot be read
      */
     public static Thread restore(Path path) {
-        try (ObjectInputStream ois = new ObjectInputStream(Files.newInputStream(path))) {
-            ThreadSnapshot snapshot = (ThreadSnapshot) ois.readObject();
-            return restore(snapshot);
-        } catch (IOException e) {
-            throw new UncheckedIOException(
-                    "Failed to read snapshot from " + path, e);
-        } catch (ClassNotFoundException e) {
-            throw new RuntimeException(
-                    "Failed to deserialize snapshot from " + path
-                    + ": snapshot class not found", e);
-        }
+        return restore(loadSnapshot(path));
     }
 
     /**
@@ -287,11 +263,7 @@ public final class Durable {
      * @throws UncheckedIOException if the file cannot be read
      */
     public static Thread restore(Path path, boolean startThread) {
-        Thread thread = restore(path);
-        if (startThread) {
-            thread.start();
-        }
-        return thread;
+        return startAndWait(restore(path), startThread, false);
     }
 
     /**
@@ -310,22 +282,11 @@ public final class Durable {
      */
     public static Thread restore(Path path, boolean startThread,
                                  boolean waitForThreadToFinish) throws InterruptedException {
-        try (java.io.ObjectInputStream ois = new java.io.ObjectInputStream(
-                Files.newInputStream(path))) {
-            ThreadSnapshot snapshot = (ThreadSnapshot) ois.readObject();
-            return restore(snapshot, startThread, waitForThreadToFinish);
-        } catch (java.io.IOException e) {
-            throw new UncheckedIOException(
-                    "Failed to read snapshot from " + path, e);
-        } catch (ClassNotFoundException e) {
-            throw new RuntimeException(
-                    "Failed to deserialize snapshot from " + path
-                    + ": snapshot class not found", e);
-        }
+        return restore(loadSnapshot(path), startThread, waitForThreadToFinish);
     }
 
     // ===================================================================
-    // Restore overloads with named replacement objects
+    // Restore with named replacement objects
     // ===================================================================
 
     /**
@@ -363,29 +324,7 @@ public final class Durable {
     public static Thread restore(ThreadSnapshot snapshot, Map<String, Object> namedReplacements,
                                  boolean startThread,
                                  boolean waitForThreadToFinish) throws InterruptedException {
-        Thread thread = restore(snapshot, namedReplacements);
-        final Throwable[] threadError = {null};
-        if (startThread && waitForThreadToFinish) {
-            thread.setUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
-                @Override
-                public void uncaughtException(Thread t, Throwable e) {
-                    threadError[0] = e;
-                }
-            });
-        }
-        if (startThread) {
-            thread.start();
-        }
-        if (startThread && waitForThreadToFinish) {
-            thread.join();
-            if (threadError[0] != null) {
-                if (threadError[0] instanceof RuntimeException) {
-                    throw (RuntimeException) threadError[0];
-                }
-                throw new RuntimeException("Restored thread failed", threadError[0]);
-            }
-        }
-        return thread;
+        return startAndWait(restore(snapshot, namedReplacements), startThread, waitForThreadToFinish);
     }
 
     /**
@@ -424,16 +363,7 @@ public final class Durable {
      * @return a Thread (not yet started) that will resume from the freeze point
      */
     public static Thread restore(Path path, Map<String, Object> namedReplacements) {
-        try (ObjectInputStream ois = new ObjectInputStream(Files.newInputStream(path))) {
-            ThreadSnapshot snapshot = (ThreadSnapshot) ois.readObject();
-            return restore(snapshot, namedReplacements);
-        } catch (IOException e) {
-            throw new UncheckedIOException("Failed to read snapshot from " + path, e);
-        } catch (ClassNotFoundException e) {
-            throw new RuntimeException(
-                    "Failed to deserialize snapshot from " + path
-                    + ": snapshot class not found", e);
-        }
+        return restore(loadSnapshot(path), namedReplacements);
     }
 
     /**
@@ -450,9 +380,24 @@ public final class Durable {
     public static Thread restore(Path path, Map<String, Object> namedReplacements,
                                  boolean startThread,
                                  boolean waitForThreadToFinish) throws InterruptedException {
+        return restore(loadSnapshot(path), namedReplacements, startThread, waitForThreadToFinish);
+    }
+
+    // ===================================================================
+    // Private helpers
+    // ===================================================================
+
+    /**
+     * Deserialize a {@link ThreadSnapshot} from a file.
+     *
+     * @param path the file containing the serialized snapshot
+     * @return the deserialized snapshot
+     * @throws UncheckedIOException if the file cannot be read
+     * @throws RuntimeException if the snapshot class is not found
+     */
+    private static ThreadSnapshot loadSnapshot(Path path) {
         try (ObjectInputStream ois = new ObjectInputStream(Files.newInputStream(path))) {
-            ThreadSnapshot snapshot = (ThreadSnapshot) ois.readObject();
-            return restore(snapshot, namedReplacements, startThread, waitForThreadToFinish);
+            return (ThreadSnapshot) ois.readObject();
         } catch (IOException e) {
             throw new UncheckedIOException("Failed to read snapshot from " + path, e);
         } catch (ClassNotFoundException e) {
@@ -460,5 +405,57 @@ public final class Durable {
                     "Failed to deserialize snapshot from " + path
                     + ": snapshot class not found", e);
         }
+    }
+
+    /**
+     * Optionally start a thread and wait for it to finish.
+     *
+     * <p>If {@code waitForThreadToFinish} is true, installs an uncaught exception
+     * handler to capture errors, then joins the thread. If the thread threw an
+     * exception, it is rethrown from this method.</p>
+     *
+     * <p>This overload wraps {@link InterruptedException} in a {@link RuntimeException}
+     * for callers that don't declare it.</p>
+     */
+    private static Thread startAndWait(Thread thread, boolean startThread,
+                                       boolean waitForThreadToFinish) {
+        try {
+            return startAndWaitInterruptible(thread, startThread, waitForThreadToFinish);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("Interrupted while waiting for restored thread", e);
+        }
+    }
+
+    /**
+     * Optionally start a thread and wait for it to finish (interruptible version).
+     *
+     * @throws InterruptedException if the current thread is interrupted while waiting
+     */
+    private static Thread startAndWaitInterruptible(Thread thread, boolean startThread,
+                                                    boolean waitForThreadToFinish)
+            throws InterruptedException {
+        final Throwable[] threadError = {null};
+        if (startThread && waitForThreadToFinish) {
+            thread.setUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
+                @Override
+                public void uncaughtException(Thread t, Throwable e) {
+                    threadError[0] = e;
+                }
+            });
+        }
+        if (startThread) {
+            thread.start();
+        }
+        if (startThread && waitForThreadToFinish) {
+            thread.join();
+            if (threadError[0] != null) {
+                if (threadError[0] instanceof RuntimeException) {
+                    throw (RuntimeException) threadError[0];
+                }
+                throw new RuntimeException("Restored thread failed", threadError[0]);
+            }
+        }
+        return thread;
     }
 }
