@@ -54,11 +54,7 @@ public final class Durable {
      * @throws AgentNotLoadedException if the durable agent is not loaded
      */
     public static void freeze(Consumer<ThreadSnapshot> handler) {
-        if (!DurableAgent.isLoaded()) {
-            throw new AgentNotLoadedException();
-        }
-
-        ThreadFreezer.freeze(handler);
+        freeze(handler, null);
     }
 
     /**
@@ -70,7 +66,7 @@ public final class Durable {
      * @throws AgentNotLoadedException if the durable agent is not loaded
      */
     public static void freeze(String filePath) {
-        freeze(new SnapshotFileWriter(filePath));
+        freeze(new SnapshotFileWriter(filePath), null);
     }
 
     /**
@@ -82,7 +78,7 @@ public final class Durable {
      * @throws AgentNotLoadedException if the durable agent is not loaded
      */
     public static void freeze(Path path) {
-        freeze(new SnapshotFileWriter(path));
+        freeze(new SnapshotFileWriter(path), null);
     }
 
     /**
@@ -92,8 +88,14 @@ public final class Durable {
      * live objects during restore. The {@code "this"} reference of the calling
      * frame is always auto-named unless explicitly provided in the map.</p>
      *
+     * <p><b>Thread safety:</b> All freeze and restore operations are serialized
+     * via {@code synchronized(Durable.class)}. Only one freeze or restore may
+     * be in progress at a time. This is a fundamental constraint of the JDI
+     * self-attach architecture.</p>
+     *
      * @param handler receives the captured snapshot for persistence
      * @param namedObjects map of name → object for objects to tag in the snapshot
+     *        (may be null)
      * @throws AgentNotLoadedException if the durable agent is not loaded
      */
     public static void freeze(Consumer<ThreadSnapshot> handler, Map<String, Object> namedObjects) {
@@ -101,7 +103,9 @@ public final class Durable {
             throw new AgentNotLoadedException();
         }
 
-        ThreadFreezer.freeze(handler, namedObjects);
+        synchronized (Durable.class) {
+            ThreadFreezer.freeze(handler, namedObjects);
+        }
     }
 
     /**
