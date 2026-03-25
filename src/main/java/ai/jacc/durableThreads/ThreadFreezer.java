@@ -82,6 +82,7 @@ final class ThreadFreezer {
                 // Thread B interrupted us after capturing the snapshot.
                 // Throw ThreadFrozenError to cleanly terminate this thread.
                 if (FreezeFlag.isFrozen(Thread.currentThread())) {
+                    FreezeFlag.clearFrozen(Thread.currentThread());
                     throw new ThreadFrozenError();
                 }
                 // If we weren't marked as frozen, this was an unexpected interrupt
@@ -95,6 +96,7 @@ final class ThreadFreezer {
         // raced ahead of targetThread.interrupt() in performFreeze.
         // Check the freeze flag — if set, we were successfully frozen.
         if (FreezeFlag.isFrozen(Thread.currentThread())) {
+            FreezeFlag.clearFrozen(Thread.currentThread());
             throw new ThreadFrozenError();
         }
 
@@ -115,6 +117,7 @@ final class ThreadFreezer {
         if (Thread.currentThread().isInterrupted()) {
             // Clear the flag so sleep doesn't immediately throw
             Thread.interrupted();
+            FreezeFlag.clearFrozen(Thread.currentThread());
             throw new ThreadFrozenError();
         }
         blockForever();
@@ -128,6 +131,7 @@ final class ThreadFreezer {
         // Phase 1: sleep loop (low CPU cost)
         for (int i = 0; i < 100; i++) {
             if (FreezeFlag.isFrozen(Thread.currentThread())) {
+                FreezeFlag.clearFrozen(Thread.currentThread());
                 throw new ThreadFrozenError();
             }
             try {
@@ -135,6 +139,7 @@ final class ThreadFreezer {
             } catch (InterruptedException e) {
                 // Re-check flag on each wake
                 if (FreezeFlag.isFrozen(Thread.currentThread())) {
+                    FreezeFlag.clearFrozen(Thread.currentThread());
                     throw new ThreadFrozenError();
                 }
             }
@@ -582,8 +587,23 @@ final class ThreadFreezer {
             frozenThreads.add(t.getId());
         }
 
+        /**
+         * Check if a thread has been marked as frozen. Non-destructive — the flag
+         * remains set so multiple checks (e.g., in blockForever's retry loop) all
+         * see the frozen state. Call {@link #clearFrozen(Thread)} when the thread
+         * is about to terminate.
+         */
         static boolean isFrozen(Thread t) {
-            return frozenThreads.remove(t.getId());
+            return frozenThreads.contains(t.getId());
+        }
+
+        /**
+         * Remove the frozen flag for a thread. Called just before throwing
+         * {@link ThreadFrozenError} to prevent stale entries from accumulating
+         * (thread IDs can be reused after termination).
+         */
+        static void clearFrozen(Thread t) {
+            frozenThreads.remove(t.getId());
         }
     }
 }
