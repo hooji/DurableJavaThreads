@@ -826,14 +826,6 @@ public final class PrologueInjector extends ClassVisitor {
             emitSlotDefaults(slotCategories);
         }
 
-        /**
-         * Initialize non-parameter local slots to type-appropriate defaults.
-         * Fallback version used when per-invoke maps aren't available.
-         */
-        private void emitLocalDefaults() {
-            emitSlotDefaults(buildFallbackSlotCategories());
-        }
-
         private java.util.Map<Integer, Character> buildFallbackSlotCategories() {
             int paramSlots = 0;
             if ((methodAccess & Opcodes.ACC_STATIC) == 0) paramSlots = 1;
@@ -1062,18 +1054,6 @@ public final class PrologueInjector extends ClassVisitor {
                     break;
                 default:
                     break;
-            }
-        }
-
-        private void emitIntConst(int value) {
-            if (value >= -1 && value <= 5) {
-                target.visitInsn(Opcodes.ICONST_0 + value);
-            } else if (value >= Byte.MIN_VALUE && value <= Byte.MAX_VALUE) {
-                target.visitIntInsn(Opcodes.BIPUSH, value);
-            } else if (value >= Short.MIN_VALUE && value <= Short.MAX_VALUE) {
-                target.visitIntInsn(Opcodes.SIPUSH, value);
-            } else {
-                target.visitLdcInsn(value);
             }
         }
 
