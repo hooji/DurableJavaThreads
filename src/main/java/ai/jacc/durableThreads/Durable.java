@@ -131,274 +131,103 @@ public final class Durable {
     }
 
     // ===================================================================
-    // Restore from snapshot
+    // Restore — simple overloads (restore, resume, and run to completion)
+    // ===================================================================
+
+    public static void restore(ThreadSnapshot snapshot) {
+        restore(snapshot, null, true, true);
+    }
+
+    public static void restore(String filePath) {
+        restore(Paths.get(filePath));
+    }
+
+    public static void restore(Path path) {
+        restore(loadSnapshot(path), null, true, true);
+    }
+
+    public static void restore(ThreadSnapshot snapshot, Map<String, Object> namedReplacements) {
+        restore(snapshot, namedReplacements, true, true);
+    }
+
+    public static void restore(String filePath, Map<String, Object> namedReplacements) {
+        restore(Paths.get(filePath), namedReplacements);
+    }
+
+    public static void restore(Path path, Map<String, Object> namedReplacements) {
+        restore(loadSnapshot(path), namedReplacements, true, true);
+    }
+
+    // ===================================================================
+    // Restore — advanced overload with explicit control
     // ===================================================================
 
     /**
-     * Restore a frozen thread from a snapshot.
+     * Restore a frozen thread with explicit control over resumption and waiting.
      *
-     * <p>Returns a {@link Thread} that can be started. When started, the thread
-     * replays the call stack from the snapshot and resumes execution from the
-     * point where {@link #freeze(Consumer)} was called.</p>
+     * <p>All JDI work (stack replay, local variable setting) completes within
+     * this method. The returned {@link RestoredThread} holds a fully restored
+     * thread that is alive but parked on an internal latch.</p>
+     *
+     * <p><b>Thread safety:</b> All freeze and restore operations are serialized
+     * via {@code synchronized(Durable.class)}. Only one freeze or restore may
+     * be in progress at a time.</p>
      *
      * @param snapshot the captured thread state
-     * @return a Thread (not yet started) that will resume from the freeze point
-     * @throws ai.jacc.durableThreads.exception.BytecodeMismatchException if bytecode has changed
-     * @throws AgentNotLoadedException if the durable agent is not loaded
+     * @param namedReplacements map of name → live object to substitute (may be null)
+     * @param resume if {@code true}, the thread is resumed before returning
+     * @param awaitCompletion if {@code true} (and {@code resume} is also true),
+     *        blocks until the restored thread completes
+     * @return a {@link RestoredThread} handle
      */
-    public static Thread restore(ThreadSnapshot snapshot) {
+    public static RestoredThread restore(ThreadSnapshot snapshot,
+                                         Map<String, Object> namedReplacements,
+                                         boolean resume, boolean awaitCompletion) {
         if (!DurableAgent.isLoaded()) {
             throw new AgentNotLoadedException();
         }
 
-        return ThreadRestorer.restore(snapshot);
-    }
-
-    /**
-     * Restore a frozen thread from a snapshot, optionally starting it.
-     *
-     * @param snapshot the captured thread state
-     * @param startThread if {@code true}, the thread is started before returning
-     * @return the restored Thread
-     * @throws ai.jacc.durableThreads.exception.BytecodeMismatchException if bytecode has changed
-     * @throws AgentNotLoadedException if the durable agent is not loaded
-     */
-    public static Thread restore(ThreadSnapshot snapshot, boolean startThread) {
-        return startAndWait(restore(snapshot), startThread, false);
-    }
-
-    /**
-     * Restore a frozen thread from a snapshot, optionally starting it and
-     * waiting for it to finish.
-     *
-     * <p>If the restored thread throws an exception, it is rethrown as a
-     * {@link RuntimeException} from this method.</p>
-     *
-     * @param snapshot the captured thread state
-     * @param startThread if {@code true}, the thread is started
-     * @param waitForThreadToFinish if {@code true} (and {@code startThread} is also
-     *        {@code true}), blocks until the restored thread completes
-     * @return the restored Thread
-     * @throws ai.jacc.durableThreads.exception.BytecodeMismatchException if bytecode has changed
-     * @throws AgentNotLoadedException if the durable agent is not loaded
-     * @throws RuntimeException if the restored thread failed during execution
-     * @throws InterruptedException if the current thread is interrupted while waiting
-     */
-    public static Thread restore(ThreadSnapshot snapshot, boolean startThread,
-                                 boolean waitForThreadToFinish) throws InterruptedException {
-        return startAndWait(restore(snapshot), startThread, waitForThreadToFinish);
-    }
-
-    // ===================================================================
-    // Restore from file
-    // ===================================================================
-
-    /**
-     * Restore a frozen thread from a snapshot file.
-     *
-     * <p>Deserializes the {@link ThreadSnapshot} from the file and restores it.</p>
-     *
-     * @param filePath the file containing the serialized snapshot
-     * @return a Thread (not yet started) that will resume from the freeze point
-     * @throws ai.jacc.durableThreads.exception.BytecodeMismatchException if bytecode has changed
-     * @throws AgentNotLoadedException if the durable agent is not loaded
-     * @throws UncheckedIOException if the file cannot be read
-     */
-    public static Thread restore(String filePath) {
-        return restore(Paths.get(filePath));
-    }
-
-    /**
-     * Restore a frozen thread from a snapshot file, optionally starting it.
-     *
-     * @param filePath the file containing the serialized snapshot
-     * @param startThread if {@code true}, the thread is started before returning
-     * @return the restored Thread
-     * @throws ai.jacc.durableThreads.exception.BytecodeMismatchException if bytecode has changed
-     * @throws AgentNotLoadedException if the durable agent is not loaded
-     * @throws UncheckedIOException if the file cannot be read
-     */
-    public static Thread restore(String filePath, boolean startThread) {
-        return restore(Paths.get(filePath), startThread);
-    }
-
-    /**
-     * Restore a frozen thread from a snapshot file, optionally starting it and
-     * waiting for it to finish.
-     *
-     * @param filePath the file containing the serialized snapshot
-     * @param startThread if {@code true}, the thread is started
-     * @param waitForThreadToFinish if {@code true} (and {@code startThread} is also
-     *        {@code true}), blocks until the restored thread completes
-     * @return the restored Thread
-     * @throws ai.jacc.durableThreads.exception.BytecodeMismatchException if bytecode has changed
-     * @throws AgentNotLoadedException if the durable agent is not loaded
-     * @throws UncheckedIOException if the file cannot be read
-     * @throws InterruptedException if the current thread is interrupted while waiting
-     */
-    public static Thread restore(String filePath, boolean startThread,
-                                 boolean waitForThreadToFinish) throws InterruptedException {
-        return restore(Paths.get(filePath), startThread, waitForThreadToFinish);
-    }
-
-    /**
-     * Restore a frozen thread from a snapshot file.
-     *
-     * <p>Deserializes the {@link ThreadSnapshot} from the file and restores it.</p>
-     *
-     * @param path the file containing the serialized snapshot
-     * @return a Thread (not yet started) that will resume from the freeze point
-     * @throws ai.jacc.durableThreads.exception.BytecodeMismatchException if bytecode has changed
-     * @throws AgentNotLoadedException if the durable agent is not loaded
-     * @throws UncheckedIOException if the file cannot be read
-     */
-    public static Thread restore(Path path) {
-        return restore(loadSnapshot(path));
-    }
-
-    /**
-     * Restore a frozen thread from a snapshot file, optionally starting it.
-     *
-     * @param path the file containing the serialized snapshot
-     * @param startThread if {@code true}, the thread is started before returning
-     * @return the restored Thread
-     * @throws ai.jacc.durableThreads.exception.BytecodeMismatchException if bytecode has changed
-     * @throws AgentNotLoadedException if the durable agent is not loaded
-     * @throws UncheckedIOException if the file cannot be read
-     */
-    public static Thread restore(Path path, boolean startThread) {
-        return startAndWait(restore(path), startThread, false);
-    }
-
-    /**
-     * Restore a frozen thread from a snapshot file, optionally starting it and
-     * waiting for it to finish.
-     *
-     * @param path the file containing the serialized snapshot
-     * @param startThread if {@code true}, the thread is started
-     * @param waitForThreadToFinish if {@code true} (and {@code startThread} is also
-     *        {@code true}), blocks until the restored thread completes
-     * @return the restored Thread
-     * @throws ai.jacc.durableThreads.exception.BytecodeMismatchException if bytecode has changed
-     * @throws AgentNotLoadedException if the durable agent is not loaded
-     * @throws UncheckedIOException if the file cannot be read
-     * @throws InterruptedException if the current thread is interrupted while waiting
-     */
-    public static Thread restore(Path path, boolean startThread,
-                                 boolean waitForThreadToFinish) throws InterruptedException {
-        return restore(loadSnapshot(path), startThread, waitForThreadToFinish);
-    }
-
-    // ===================================================================
-    // Restore with named replacement objects
-    // ===================================================================
-
-    /**
-     * Restore a frozen thread from a snapshot with named replacement objects.
-     *
-     * <p>Named objects in the snapshot that match keys in {@code namedReplacements}
-     * are replaced with the live objects from the map instead of being recreated.
-     * This allows the restored thread to reference existing live objects.</p>
-     *
-     * @param snapshot the captured thread state
-     * @param namedReplacements map of name → live object to substitute
-     * @return a Thread (not yet started) that will resume from the freeze point
-     * @throws RuntimeException if namedReplacements contains names not in the snapshot
-     */
-    public static Thread restore(ThreadSnapshot snapshot, Map<String, Object> namedReplacements) {
-        if (!DurableAgent.isLoaded()) {
-            throw new AgentNotLoadedException();
+        RestoredThread restoredThread;
+        synchronized (Durable.class) {
+            restoredThread = ThreadRestorer.restore(snapshot, namedReplacements);
         }
-        return ThreadRestorer.restore(snapshot, namedReplacements);
-    }
 
-    /**
-     * Restore a frozen thread from a snapshot with named replacements, optionally
-     * starting it and waiting for it to finish.
-     *
-     * @param snapshot the captured thread state
-     * @param namedReplacements map of name → live object to substitute
-     * @param startThread if {@code true}, the thread is started
-     * @param waitForThreadToFinish if {@code true} (and {@code startThread} is also
-     *        {@code true}), blocks until the restored thread completes
-     * @return the restored Thread
-     * @throws RuntimeException if namedReplacements contains names not in the snapshot
-     * @throws InterruptedException if the current thread is interrupted while waiting
-     */
-    public static Thread restore(ThreadSnapshot snapshot, Map<String, Object> namedReplacements,
-                                 boolean startThread,
-                                 boolean waitForThreadToFinish) throws InterruptedException {
-        return startAndWait(restore(snapshot, namedReplacements), startThread, waitForThreadToFinish);
-    }
+        if (resume) {
+            final Throwable[] threadError = {null};
+            if (awaitCompletion) {
+                restoredThread.thread().setUncaughtExceptionHandler(
+                        new Thread.UncaughtExceptionHandler() {
+                    @Override
+                    public void uncaughtException(Thread t, Throwable e) {
+                        threadError[0] = e;
+                    }
+                });
+            }
+            restoredThread.resume();
+            if (awaitCompletion) {
+                try {
+                    restoredThread.thread().join();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new RuntimeException(
+                            "Interrupted while waiting for restored thread", e);
+                }
+                if (threadError[0] != null) {
+                    if (threadError[0] instanceof RuntimeException) {
+                        throw (RuntimeException) threadError[0];
+                    }
+                    throw new RuntimeException("Restored thread failed", threadError[0]);
+                }
+            }
+        }
 
-    /**
-     * Restore from a file with named replacement objects.
-     *
-     * @param filePath the file containing the serialized snapshot
-     * @param namedReplacements map of name → live object to substitute
-     * @return a Thread (not yet started) that will resume from the freeze point
-     */
-    public static Thread restore(String filePath, Map<String, Object> namedReplacements) {
-        return restore(Paths.get(filePath), namedReplacements);
-    }
-
-    /**
-     * Restore from a file with named replacement objects, optionally starting
-     * and waiting.
-     *
-     * @param filePath the file containing the serialized snapshot
-     * @param namedReplacements map of name → live object to substitute
-     * @param startThread if {@code true}, the thread is started
-     * @param waitForThreadToFinish if {@code true}, blocks until complete
-     * @return the restored Thread
-     * @throws InterruptedException if the current thread is interrupted while waiting
-     */
-    public static Thread restore(String filePath, Map<String, Object> namedReplacements,
-                                 boolean startThread,
-                                 boolean waitForThreadToFinish) throws InterruptedException {
-        return restore(Paths.get(filePath), namedReplacements, startThread, waitForThreadToFinish);
-    }
-
-    /**
-     * Restore from a file with named replacement objects.
-     *
-     * @param path the file containing the serialized snapshot
-     * @param namedReplacements map of name → live object to substitute
-     * @return a Thread (not yet started) that will resume from the freeze point
-     */
-    public static Thread restore(Path path, Map<String, Object> namedReplacements) {
-        return restore(loadSnapshot(path), namedReplacements);
-    }
-
-    /**
-     * Restore from a file with named replacement objects, optionally starting
-     * and waiting.
-     *
-     * @param path the file containing the serialized snapshot
-     * @param namedReplacements map of name → live object to substitute
-     * @param startThread if {@code true}, the thread is started
-     * @param waitForThreadToFinish if {@code true}, blocks until complete
-     * @return the restored Thread
-     * @throws InterruptedException if the current thread is interrupted while waiting
-     */
-    public static Thread restore(Path path, Map<String, Object> namedReplacements,
-                                 boolean startThread,
-                                 boolean waitForThreadToFinish) throws InterruptedException {
-        return restore(loadSnapshot(path), namedReplacements, startThread, waitForThreadToFinish);
+        return restoredThread;
     }
 
     // ===================================================================
     // Private helpers
     // ===================================================================
 
-    /**
-     * Deserialize a {@link ThreadSnapshot} from a file.
-     *
-     * @param path the file containing the serialized snapshot
-     * @return the deserialized snapshot
-     * @throws UncheckedIOException if the file cannot be read
-     * @throws RuntimeException if the snapshot class is not found
-     */
     private static ThreadSnapshot loadSnapshot(Path path) {
         try (ObjectInputStream ois = new ObjectInputStream(Files.newInputStream(path))) {
             return (ThreadSnapshot) ois.readObject();
@@ -409,57 +238,5 @@ public final class Durable {
                     "Failed to deserialize snapshot from " + path
                     + ": snapshot class not found", e);
         }
-    }
-
-    /**
-     * Optionally start a thread and wait for it to finish.
-     *
-     * <p>If {@code waitForThreadToFinish} is true, installs an uncaught exception
-     * handler to capture errors, then joins the thread. If the thread threw an
-     * exception, it is rethrown from this method.</p>
-     *
-     * <p>This overload wraps {@link InterruptedException} in a {@link RuntimeException}
-     * for callers that don't declare it.</p>
-     */
-    private static Thread startAndWait(Thread thread, boolean startThread,
-                                       boolean waitForThreadToFinish) {
-        try {
-            return startAndWaitInterruptible(thread, startThread, waitForThreadToFinish);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new RuntimeException("Interrupted while waiting for restored thread", e);
-        }
-    }
-
-    /**
-     * Optionally start a thread and wait for it to finish (interruptible version).
-     *
-     * @throws InterruptedException if the current thread is interrupted while waiting
-     */
-    private static Thread startAndWaitInterruptible(Thread thread, boolean startThread,
-                                                    boolean waitForThreadToFinish)
-            throws InterruptedException {
-        final Throwable[] threadError = {null};
-        if (startThread && waitForThreadToFinish) {
-            thread.setUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
-                @Override
-                public void uncaughtException(Thread t, Throwable e) {
-                    threadError[0] = e;
-                }
-            });
-        }
-        if (startThread) {
-            thread.start();
-        }
-        if (startThread && waitForThreadToFinish) {
-            thread.join();
-            if (threadError[0] != null) {
-                if (threadError[0] instanceof RuntimeException) {
-                    throw (RuntimeException) threadError[0];
-                }
-                throw new RuntimeException("Restored thread failed", threadError[0]);
-            }
-        }
-        return thread;
     }
 }

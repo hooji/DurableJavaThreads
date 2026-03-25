@@ -77,7 +77,7 @@ class ReadmeDemoIT {
                 + "\n"
                 + "public class RestoreDemo {\n"
                 + "    public static void main(String[] args) throws Exception {\n"
-                + "        Durable.restore(\"./snapshot.dat\", true, true);\n"
+                + "        Durable.restore(\"./snapshot.dat\");\n"
                 + "    }\n"
                 + "}\n";
         Files.write(tempDir.resolve("RestoreDemo.java"), restoreDemoSource.getBytes(StandardCharsets.UTF_8));

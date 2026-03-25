@@ -319,6 +319,16 @@ public final class ReplayState {
         REPLAY.remove();
     }
 
+    /** Package-private access to latch lock for ThreadRestorer. */
+    static Object getLatchLock() {
+        return LATCH_LOCK;
+    }
+
+    /** Package-private access to locals latch for ThreadRestorer (go-latch capture). */
+    static java.util.concurrent.CountDownLatch getLocalsLatch() {
+        return localsLatch;
+    }
+
     // --- Boxing/unboxing helpers ---
     // These MUST live in ReplayState so that RawBytecodeScanner filters them out.
     // If boxing/unboxing were done via direct calls to java.lang.Integer.valueOf() etc.

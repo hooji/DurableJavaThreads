@@ -48,7 +48,7 @@ public class MultiCycleFreezeRestoreProgram {
             System.out.println("RESTORE_CYCLE=" + restoreCount);
             System.out.flush();
             try {
-                Durable.restore(snapshotFile, true, true);
+                Durable.restore(snapshotFile);
             } catch (Exception e) {
                 System.out.println("RESTORE_FAILED=" + e.getClass().getName() + ": " + e.getMessage());
                 e.printStackTrace(System.err);

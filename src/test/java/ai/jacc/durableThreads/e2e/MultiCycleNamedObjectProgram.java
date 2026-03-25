@@ -52,7 +52,7 @@ public class MultiCycleNamedObjectProgram implements Runnable {
                     + " nResumptions=" + self.nResumptions);
             System.out.flush();
             try {
-                Durable.restore(self.snapshotFile, replacements, true, true);
+                Durable.restore(self.snapshotFile, replacements);
             } catch (Exception e) {
                 System.out.println("RESTORE_FAILED=" + e.getClass().getName()
                         + ": " + e.getMessage());
