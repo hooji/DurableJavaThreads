@@ -7,6 +7,7 @@ import ai.jacc.durableThreads.exception.LambdaFrameException;
 import ai.jacc.durableThreads.exception.NonEmptyStackException;
 import ai.jacc.durableThreads.exception.ThreadFrozenError;
 import ai.jacc.durableThreads.internal.*;
+import static ai.jacc.durableThreads.internal.FrameFilter.isInfrastructureFrame;
 import ai.jacc.durableThreads.snapshot.*;
 
 import java.time.Instant;
@@ -249,34 +250,6 @@ final class ThreadFreezer {
         });
         FreezeFlag.markFrozen(targetThread);
         targetThread.interrupt();
-    }
-
-    /** Prefixes of classes whose frames should be excluded from the snapshot. */
-    private static final String[] EXCLUDED_FRAME_PREFIXES = {
-            "java/", "javax/", "jdk/", "sun/", "com/sun/",
-    };
-
-    /** Specific library classes to exclude (not the whole package — user subpackages may exist). */
-    private static final String[] EXCLUDED_FRAME_CLASSES = {
-            "ai/jacc/durableThreads/Durable",
-            "ai/jacc/durableThreads/ThreadFreezer",
-            "ai/jacc/durableThreads/ThreadRestorer",
-            "ai/jacc/durableThreads/ReplayState",
-    };
-
-    /**
-     * Check if a frame is a JDK/library infrastructure frame that should be
-     * silently skipped (not captured). These are frames that get recreated
-     * naturally during restore (Thread.run, reflection, etc.).
-     */
-    private static boolean isInfrastructureFrame(String className) {
-        for (String prefix : EXCLUDED_FRAME_PREFIXES) {
-            if (className.startsWith(prefix)) return true;
-        }
-        for (String excluded : EXCLUDED_FRAME_CLASSES) {
-            if (className.equals(excluded) || className.startsWith(excluded + "$")) return true;
-        }
-        return false;
     }
 
     /**

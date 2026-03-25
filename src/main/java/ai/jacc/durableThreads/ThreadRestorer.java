@@ -4,6 +4,7 @@ import com.sun.jdi.*;
 import ai.jacc.durableThreads.exception.BytecodeMismatchException;
 import ai.jacc.durableThreads.internal.*;
 import ai.jacc.durableThreads.snapshot.*;
+import static ai.jacc.durableThreads.internal.FrameFilter.isInfrastructureFrame;
 
 import java.util.*;
 
@@ -457,10 +458,7 @@ final class ThreadRestorer {
                 String jdiClassName = loc.declaringType().name().replace('.', '/');
                 String jdiMethodName = loc.method().name();
                 // Skip infrastructure frames
-                if (jdiClassName.startsWith("ai/jacc/durableThreads/ReplayState")
-                        || jdiClassName.startsWith("java/")
-                        || jdiClassName.startsWith("jdk/")
-                        || jdiClassName.startsWith("sun/")) {
+                if (isInfrastructureFrame(jdiClassName)) {
                     continue;
                 }
                 // First user frame — check if it matches
@@ -552,10 +550,7 @@ final class ThreadRestorer {
                 String jdiMethodName = loc.method().name();
 
                 // Skip infrastructure frames (ReplayState, CountDownLatch, JDK, etc.)
-                if (jdiClassName.startsWith("ai/jacc/durableThreads/ReplayState")
-                        || jdiClassName.startsWith("java/")
-                        || jdiClassName.startsWith("jdk/")
-                        || jdiClassName.startsWith("sun/")) {
+                if (isInfrastructureFrame(jdiClassName)) {
                     continue;
                 }
 
@@ -604,10 +599,7 @@ final class ThreadRestorer {
                 String jdiMethodName = loc.method().name();
 
                 // Skip infrastructure frames
-                if (jdiClassName.startsWith("ai/jacc/durableThreads/ReplayState")
-                        || jdiClassName.startsWith("java/")
-                        || jdiClassName.startsWith("jdk/")
-                        || jdiClassName.startsWith("sun/")) {
+                if (isInfrastructureFrame(jdiClassName)) {
                     continue;
                 }
 
