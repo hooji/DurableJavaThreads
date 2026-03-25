@@ -1,6 +1,7 @@
 package ai.jacc.durableThreads;
 
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Thread-local state that drives the replay prologue during thread restoration.
@@ -21,6 +22,31 @@ public final class ReplayState {
      * the old one, causing the next frame's localsReady() to block forever.
      */
     private static final Object LATCH_LOCK = new Object();
+
+    /**
+     * Maximum time (in seconds) that the replay thread will wait for the JDI
+     * worker to release a latch before throwing a timeout error. This prevents
+     * the replay thread from blocking forever if the JDI worker crashes or
+     * fails to connect.
+     *
+     * <p>The default is 5 minutes, which is generous enough for restoring
+     * frames with many local variables and large object graphs (each local
+     * requires individual JDI setValue calls). Override via the system property
+     * {@code durable.restore.timeout.seconds} for workloads that need more time.</p>
+     */
+    private static final long LATCH_TIMEOUT_SECONDS = getLatchTimeoutSeconds();
+
+    private static long getLatchTimeoutSeconds() {
+        String prop = System.getProperty("durable.restore.timeout.seconds");
+        if (prop != null) {
+            try {
+                long val = Long.parseLong(prop.trim());
+                if (val > 0) return val;
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        return 300; // 5 minutes
+    }
 
     /**
      * Latch that the replay thread blocks on inside {@link #resumePoint()}.
@@ -128,7 +154,13 @@ public final class ReplayState {
         CountDownLatch latch = resumeLatch;
         if (latch != null) {
             try {
-                latch.await();
+                if (!latch.await(LATCH_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                    throw new RuntimeException(
+                            "Thread restore timed out: JDI worker did not release "
+                            + "resumePoint latch within " + LATCH_TIMEOUT_SECONDS
+                            + " seconds. The JDI worker may have crashed or "
+                            + "failed to connect.");
+                }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
@@ -190,7 +222,13 @@ public final class ReplayState {
         }
         if (latch != null) {
             try {
-                latch.await();
+                if (!latch.await(LATCH_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                    throw new RuntimeException(
+                            "Thread restore timed out: JDI worker did not release "
+                            + "localsReady latch within " + LATCH_TIMEOUT_SECONDS
+                            + " seconds. The JDI worker may have crashed or "
+                            + "failed to set local variables.");
+                }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
