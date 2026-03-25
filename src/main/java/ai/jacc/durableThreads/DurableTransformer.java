@@ -95,9 +95,15 @@ public final class DurableTransformer implements ClassFileTransformer {
 
             return instrumented;
         } catch (Exception e) {
-            throw new RuntimeException(
-                    "[DurableThreads] Failed to instrument class "
-                    + className.replace('/', '.') + ": " + e.getMessage(), e);
+            // Log and skip rather than throwing. A ClassFileTransformer that
+            // throws prevents the class from loading entirely (NoClassDefFoundError),
+            // which would crash the application for any class with unusual bytecode
+            // patterns that ASM/COMPUTE_FRAMES can't handle. The class simply won't
+            // be freezable, but the application continues running.
+            System.err.println("[DurableThreads] Warning: failed to instrument class "
+                    + className.replace('/', '.') + ": " + e.getMessage()
+                    + ". This class will not be freezable.");
+            return null;
         }
     }
 
