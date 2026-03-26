@@ -5,6 +5,11 @@
 Durable Threads is a pure-Java library that captures the full execution state of a running thread — call stack, local variables, and heap objects — serializes it to a portable snapshot, and restores it in a new JVM process. No special JVM forks, no compiler plugins, no JVMTI native agents. It works on stock OpenJDK 8+.
 
 [![CI](https://github.com/hooji/DurableJavaThreads/actions/workflows/ci.yml/badge.svg)](https://github.com/hooji/DurableJavaThreads/actions/workflows/ci.yml)
+[![Java 8+](https://img.shields.io/badge/Java-8%2B-blue)](https://openjdk.org/)
+[![License](https://img.shields.io/badge/License-Apache%202.0%20%2F%20MIT-green)](LICENSE-APACHE)
+[![Release](https://img.shields.io/github/v/release/hooji/DurableJavaThreads)](https://github.com/hooji/DurableJavaThreads/releases/latest)
+[![Pure Java](https://img.shields.io/badge/Pure%20Java-no%20native%20code-brightgreen)]()
+[![Stock JVM](https://img.shields.io/badge/Stock%20JVM-no%20custom%20build-brightgreen)]()
 
 ## Quick Start
 
