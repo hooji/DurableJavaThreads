@@ -129,6 +129,27 @@ Thread.run()
 
 **ALL frames are in their original code sections.** JDI can set ALL locals (parameters AND non-parameters) in ALL frames in a single pass while the thread is at `resumePoint()`. Phase 2 is eliminated entirely.
 
+### Why Conditional Jumps Are Not a Problem
+
+A natural concern: doesn't the original code before the invoke contain argument-pushing instructions that depend on local variables? For example, `fact(n - 1)` compiles to:
+
+```
+ILOAD n        ← load local variable n
+ICONST_1
+ISUB           ← compute n - 1
+INVOKESTATIC fact
+```
+
+The stub does NOT jump to the `ILOAD n` instruction. It jumps directly to the `INVOKESTATIC fact` instruction (via the `BEFORE_INVOKE` label placed immediately before it). The argument-computation code is entirely bypassed. The stub pushes its own dummy arguments (null/0 of the correct types) to match the expected stack shape at the invoke.
+
+This means:
+- No original argument-computation code executes during replay
+- No conditional jumps are involved — the stub's goto is unconditional
+- The dummy arguments don't matter because the callee's prologue immediately intercepts (dispatches to its own resume stub) — the arguments are never used
+- The JVM verifier only checks TYPE consistency at jump targets, not values, so `[null, 0, 0]` matches `[Object, int, int]`
+
+For the **deepest frame**, the stub jumps to `POST_INVOKE_N` (past the freeze call), not to `BEFORE_INVOKE_N`. No arguments are needed. The return value from the "freeze call" is void. The original code continues from after the freeze point.
+
 ### What Happens After Locals Are Set
 
 The JDI worker sets all locals in all frames, then releases `resumePoint()`. The deepest frame (`fact(1)`) wakes and continues from `POST_INVOKE_N` — right after where `freeze()` was called. User code runs. The deepest frame eventually returns through the call chain normally.
