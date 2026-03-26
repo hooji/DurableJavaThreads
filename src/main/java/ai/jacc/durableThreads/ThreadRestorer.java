@@ -100,7 +100,15 @@ final class ThreadRestorer {
         Object[] frameReceivers = computeFrameReceivers(snapshot, heapRestorer);
 
         // Step 5: Create the replay thread.
-        String threadName = snapshot.threadName() + "-restored";
+        // Use the original thread's base name (strip any prior "-restored-*" suffix)
+        // with a short unique ID to avoid name accumulation across freeze/restore cycles.
+        String baseName = snapshot.threadName();
+        int restoreIdx = baseName.indexOf("-restored-");
+        if (restoreIdx >= 0) {
+            baseName = baseName.substring(0, restoreIdx);
+        }
+        String threadName = baseName + "-restored-"
+                + java.util.UUID.randomUUID().toString().substring(0, 8);
         Thread replayThread = new Thread(() -> {
             ReplayState.activateWithLatch(resumeIndices, frameReceivers);
 
