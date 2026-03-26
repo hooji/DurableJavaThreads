@@ -130,6 +130,8 @@ public final class PrologueInjector extends ClassVisitor {
         // Saved stack states at branch target labels for recovery after GOTO/RETURN
         private final java.util.Map<Label, List<Character>> labelStacks = new java.util.IdentityHashMap<>();
 
+        // 'U' represents an uninitialized reference from NEW (before <init>).
+        // These can't be replicated with ACONST_NULL in sub-stack defaults.
         private void simPush(char cat) { if (!simLost) simStack.add(cat); }
         private char simPop() {
             if (simLost || simStack.isEmpty()) return '?';
@@ -305,7 +307,7 @@ public final class PrologueInjector extends ClassVisitor {
         @Override public void visitTypeInsn(int opcode, String type) {
             if (!simLost) {
                 switch (opcode) {
-                    case Opcodes.NEW: simPush('A'); break;
+                    case Opcodes.NEW: simPush('U'); break; // uninitialized ref
                     case Opcodes.ANEWARRAY: simPop(); simPush('A'); break;
                     case Opcodes.CHECKCAST: /* pop A, push A — no net change */ break;
                     case Opcodes.INSTANCEOF: simPop(); simPush('I'); break;
@@ -493,17 +495,9 @@ public final class PrologueInjector extends ClassVisitor {
             // of original-code invokes that received indices.
             invokeCountsOut.put(methodName + methodDesc, invokeCounter);
 
-            // Record which invoke indices are invokedynamic (their stubs have
-            // no user re-invoke, so the raw scanner won't find them).
-            java.util.Set<Integer> indySet = new java.util.HashSet<>();
-            for (InvokeInfo info : invokeInfos) {
-                if (info.opcode == Opcodes.INVOKEDYNAMIC) {
-                    indySet.add(info.index);
-                }
-            }
-            if (!indySet.isEmpty()) {
-                indyIndicesOut.put(methodName + methodDesc, indySet);
-            }
+            // Note: invokedynamic stubs now jump to BEFORE_INVOKE just like
+            // regular invokes (the JVM caches the CallSite, so re-executing
+            // invokedynamic is safe). No special tracking needed.
 
             if (!hasCode) {
                 target.visitEnd();
@@ -634,7 +628,7 @@ public final class PrologueInjector extends ClassVisitor {
             for (int i = 0; i < invokeInfos.size(); i++) {
                 target.visitLabel(resumeLabels[i]);
                 emitResumeStub(i, invokeInfos.get(i),
-                        beforeInvokeLabels[i], postInvokeLabels[i]);
+                        beforeInvokeLabels[i], postInvokeLabels[i], originalCode);
             }
 
             // --- ORIGINAL CODE with before/post-invoke labels ---
@@ -660,9 +654,21 @@ public final class PrologueInjector extends ClassVisitor {
          * in scope.</p>
          */
         private void emitResumeStub(int invokeIndex, InvokeInfo info,
-                                    Label beforeInvokeLabel, Label postInvokeLabel) {
+                                    Label beforeInvokeLabel, Label postInvokeLabel,
+                                    Label originalCodeLabel) {
             List<Character> subStack = invokeSubStacks.getOrDefault(invokeIndex,
                     java.util.Collections.emptyList());
+
+            // If the sub-stack contains uninitialized references ('U' from NEW
+            // before <init>), we can't merge with the normal path at BEFORE_INVOKE
+            // or POST_INVOKE — the verifier rejects merging null with uninitializedThis.
+            // These invokes can never be freeze points (they're in constructor arg
+            // setup), so emit a no-op stub that jumps to original code.
+            if (subStack.contains('U')) {
+                target.visitJumpInsn(Opcodes.GOTO, originalCodeLabel);
+                return;
+            }
+
             Label notLastFrame = new Label();
 
             target.visitMethodInsn(Opcodes.INVOKESTATIC,
@@ -680,44 +686,25 @@ public final class PrologueInjector extends ClassVisitor {
             target.visitMethodInsn(Opcodes.INVOKESTATIC,
                     "ai/jacc/durableThreads/ReplayState", "deactivate", "()V", false);
 
-            if (info.opcode == Opcodes.INVOKEDYNAMIC) {
-                // Invokedynamic can't be re-invoked from the stub.
-                // Jump to POST_INVOKE with dummy return.
-                pushSubStackDefaults(subStack);
-                pushDummyReturnValue(info.descriptor);
-                target.visitJumpInsn(Opcodes.GOTO, postInvokeLabel);
-            } else {
-                pushSubStackDefaults(subStack);
-                pushDummyArguments(info);
-                target.visitJumpInsn(Opcodes.GOTO, beforeInvokeLabel);
-            }
+            pushSubStackDefaults(subStack);
+            pushDummyArguments(info);
+            target.visitJumpInsn(Opcodes.GOTO, beforeInvokeLabel);
 
             // === Non-deepest frame ===
             // Advance to next frame, init local defaults, then jump into the
             // original code right before the invoke instruction. The original
             // bytecode makes the call, putting this frame in its original code
-            // section with all locals in scope.
+            // section with all locals in scope. For invokedynamic, the JVM
+            // caches the CallSite, so re-executing is safe.
             target.visitLabel(notLastFrame);
             target.visitMethodInsn(Opcodes.INVOKESTATIC,
                     "ai/jacc/durableThreads/ReplayState", "advanceFrame", "()V", false);
 
             emitLocalDefaults(invokeIndex);
 
-            if (info.opcode == Opcodes.INVOKEDYNAMIC) {
-                // Invokedynamic can't be re-invoked from the stub (bootstrap
-                // method complexity). Jump to POST_INVOKE with dummy return.
-                pushSubStackDefaults(subStack);
-                pushDummyReturnValue(info.descriptor);
-                target.visitJumpInsn(Opcodes.GOTO, postInvokeLabel);
-            } else {
-                // Push sub-stack defaults + dummy receiver + dummy args to match
-                // the operand stack shape at BEFORE_INVOKE, then jump there.
-                // The original invoke instruction executes, calling the deeper
-                // method whose prologue will take over.
-                pushSubStackDefaults(subStack);
-                pushDummyArguments(info);
-                target.visitJumpInsn(Opcodes.GOTO, beforeInvokeLabel);
-            }
+            pushSubStackDefaults(subStack);
+            pushDummyArguments(info);
+            target.visitJumpInsn(Opcodes.GOTO, beforeInvokeLabel);
         }
 
         /**

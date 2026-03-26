@@ -138,8 +138,10 @@ public final class DurableTransformer implements ClassFileTransformer {
             List<Integer> allOffsets = RawBytecodeScanner.scanInvokeOffsets(
                     instrumented, method.name, method.desc);
 
+            // With the single-pass direct-jump architecture, resume stubs
+            // jump to BEFORE_INVOKE labels (GOTO) instead of re-invoking methods.
+            // So the scanner finds ONLY original-code invokes — no stub invokes.
             // The last `originalCount` entries are the original-code invokes.
-            // Everything before them are resume-stub re-invokes.
             if (allOffsets.size() < originalCount) {
                 throw new RuntimeException(
                         "[DurableThreads] BUG: scanner found " + allOffsets.size()
@@ -153,39 +155,6 @@ public final class DurableTransformer implements ClassFileTransformer {
 
             if (!originalOffsets.isEmpty()) {
                 InvokeRegistry.register(key, new ArrayList<>(originalOffsets));
-            }
-
-            // Also register resume-stub invoke offsets. When a restored thread
-            // is re-frozen, the JDI frame BCP may point to a resume stub invoke
-            // (not the original code invoke). Since stub invoke i corresponds to
-            // original invoke index i, we map them to the same indices.
-            //
-            // Invokedynamic stubs have no user re-invoke (they use resumePoint()
-            // instead), so the scanner finds fewer stub invokes than originalCount.
-            // We build a padded list with -1 at invokedynamic positions so the
-            // index in the list still corresponds to the invoke index.
-            int stubCount = allOffsets.size() - originalCount;
-            if (stubCount > 0) {
-                List<Integer> rawStubOffsets = allOffsets.subList(0, stubCount);
-                java.util.Set<Integer> indyIndices =
-                        injector.getInvokeDynamicIndices(method.name, method.desc);
-
-                if (indyIndices.isEmpty()) {
-                    // No invokedynamic — simple 1:1 mapping
-                    InvokeRegistry.registerStubOffsets(key, new ArrayList<>(rawStubOffsets));
-                } else {
-                    // Build padded list: insert -1 at invokedynamic positions
-                    List<Integer> paddedStubs = new ArrayList<>();
-                    int rawIdx = 0;
-                    for (int i = 0; i < originalCount; i++) {
-                        if (indyIndices.contains(i)) {
-                            paddedStubs.add(-1); // no stub re-invoke for invokedynamic
-                        } else {
-                            paddedStubs.add(rawStubOffsets.get(rawIdx++));
-                        }
-                    }
-                    InvokeRegistry.registerStubOffsets(key, paddedStubs);
-                }
             }
         }
     }

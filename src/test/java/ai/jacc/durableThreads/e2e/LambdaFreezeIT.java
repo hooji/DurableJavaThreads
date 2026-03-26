@@ -46,7 +46,6 @@ class LambdaFreezeIT {
      * invokedynamic. This is a separate instrumentation issue.</p>
      */
     @Test
-    @Disabled("VerifyError from invokedynamic instrumentation — separate issue from lambda frame support")
     void freezeInsideLambdaRunnable() throws Exception {
         Path snapshotFile = Files.createTempFile("lambda-runnable-", ".dat");
         try {
