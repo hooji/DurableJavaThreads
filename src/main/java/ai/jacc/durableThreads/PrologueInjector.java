@@ -865,37 +865,26 @@ public final class PrologueInjector extends ClassVisitor {
          * for a specific invoke target. The types are determined by which
          * variables are in scope at the invoke's position in the original code.
          */
+        /**
+         * Initialize non-parameter local slots to type-appropriate defaults
+         * for a specific invoke target. The types come from perInvokeScopeMaps,
+         * which tracks both LocalVariableTable entries and actual store instructions
+         * for each invoke position.
+         *
+         * <p>buildPerInvokeScopeMaps() creates an entry for every invoke index,
+         * so the lookup should never miss. If it does (defensive), we emit nothing
+         * rather than guessing — uninitialized slots merge as Top in the verifier,
+         * which is safe (no silent corruption).</p>
+         */
         private void emitLocalDefaults(int invokeIndex) {
             java.util.Map<Integer, Character> slotCategories =
                     perInvokeScopeMaps != null ? perInvokeScopeMaps.get(invokeIndex) : null;
 
             if (slotCategories == null) {
-                // Fallback: use all locals
-                slotCategories = buildFallbackSlotCategories();
+                return; // defensive: emit nothing rather than guessing wrong types
             }
 
             emitSlotDefaults(slotCategories);
-        }
-
-        private java.util.Map<Integer, Character> buildFallbackSlotCategories() {
-            int paramSlots = 0;
-            if ((methodAccess & Opcodes.ACC_STATIC) == 0) paramSlots = 1;
-            for (Type t : Type.getArgumentTypes(methodDesc)) paramSlots += t.getSize();
-
-            java.util.Map<Integer, Character> slotCategories = new java.util.TreeMap<>();
-            for (LocalVarInfo lv : localVars) {
-                if (lv.index() >= paramSlots) {
-                    // Use put() (not putIfAbsent) so later variables at the same
-                    // slot override earlier ones. When a slot is reused across
-                    // scopes (e.g., two for-loops with 'int i'), the last entry
-                    // is a better guess than the first.
-                    slotCategories.put(lv.index(), typeCategory(Type.getType(lv.desc())));
-                }
-            }
-            // Do NOT fill remaining slots with a default type — untracked slots
-            // may have different types on different code paths (slot reuse).
-            // Initializing them with the wrong type causes VerifyError.
-            return slotCategories;
         }
 
         private void emitSlotDefaults(java.util.Map<Integer, Character> slotCategories) {
