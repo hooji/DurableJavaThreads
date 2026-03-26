@@ -293,6 +293,13 @@ public final class PrologueInjector extends ClassVisitor {
                     case Opcodes.LSTORE: case Opcodes.DSTORE: simPop(); break;
                 }
             }
+            // Record store instructions so buildPerInvokeScopeMaps can track slot types
+            switch (opcode) {
+                case Opcodes.ISTORE: case Opcodes.LSTORE: case Opcodes.FSTORE:
+                case Opcodes.DSTORE: case Opcodes.ASTORE:
+                    bufferedOps.add(new StoreRecord(opcode, varIndex));
+                    break;
+            }
             bufferedOps.add(() -> target.visitVarInsn(opcode, varIndex));
         }
         @Override public void visitTypeInsn(int opcode, String type) {
@@ -766,10 +773,19 @@ public final class PrologueInjector extends ClassVisitor {
 
         /**
          * Build the per-invoke scope maps by walking through the buffered ops and
-         * tracking which local variables are in scope at each invoke position.
-         * This handles slot reuse (e.g., loop variable 'i' then StringBuilder 'sb'
-         * at the same slot) by using the LAST variable assigned to each slot
-         * before each invoke.
+         * tracking the last-stored type for each local variable slot.
+         *
+         * <p>We track both LocalVariableTable entries (for explicitly declared
+         * variables) and actual store instructions (ISTORE, ASTORE, etc.) to
+         * capture compiler-generated temporaries that aren't in the debug info.
+         * This prevents VerifyError from type mismatches at merge points when
+         * the resume stub path converges with the normal execution path at
+         * BEFORE_INVOKE labels.</p>
+         *
+         * <p>Only slots with a known type are initialized. Untracked slots are
+         * left uninitialized (Top) on the stub path — this is safe because the
+         * verifier will also see them as Top on normal paths that bypass the
+         * store instruction.</p>
          */
         private void buildPerInvokeScopeMaps() {
             int paramSlots = 0;
@@ -778,33 +794,66 @@ public final class PrologueInjector extends ClassVisitor {
 
             perInvokeScopeMaps = new java.util.HashMap<>();
 
-            // Track which labels have been visited as we walk through buffered ops
+            // Track the last-stored type for each slot by walking buffered ops.
+            // StoreRecord markers (inserted during visitVarInsn buffering) tell us
+            // the actual type last stored into each slot. This captures compiler
+            // temporaries that aren't in the LocalVariableTable.
+            java.util.Map<Integer, Character> lastStoreTypes = new java.util.TreeMap<>();
             java.util.Set<Label> visitedLabels = new java.util.HashSet<>();
+
             for (Runnable op : bufferedOps) {
                 if (op instanceof LabelOp) {
                     visitedLabels.add(((LabelOp) op).label);
+                } else if (op instanceof StoreRecord) {
+                    StoreRecord sr = (StoreRecord) op;
+                    if (sr.slot >= paramSlots) {
+                        lastStoreTypes.put(sr.slot, sr.typeCategory());
+                    }
                 } else if (op instanceof InvokeMarker || op instanceof InvokeDynamicMarker) {
                     int idx = (op instanceof InvokeMarker)
                             ? ((InvokeMarker) op).index
                             : ((InvokeDynamicMarker) op).index;
 
-                    // Determine slot types at this invoke position
-                    java.util.Map<Integer, Character> slotTypes = new java.util.TreeMap<>();
+                    // Start with lastStoreTypes snapshot — the actual type last
+                    // stored into each slot on the linear path to this invoke.
+                    java.util.Map<Integer, Character> slotTypes = new java.util.TreeMap<>(lastStoreTypes);
+
+                    // Override with LocalVariableTable info where available —
+                    // declared variables in scope are more precise than store
+                    // tracking (handles cases where a store in an earlier branch
+                    // set a type that's no longer correct at this invoke position)
                     for (LocalVarInfo lv : localVars) {
-                        if (lv.index() >= paramSlots
-                                && visitedLabels.contains(lv.start())
-                                && !visitedLabels.contains(lv.end())) {
-                            // Variable is in scope: start visited, end not yet
-                            slotTypes.put(lv.index(), typeCategory(Type.getType(lv.desc())));
+                        if (lv.index() >= paramSlots) {
+                            if (visitedLabels.contains(lv.start())
+                                    && !visitedLabels.contains(lv.end())) {
+                                slotTypes.put(lv.index(), typeCategory(Type.getType(lv.desc())));
+                            }
                         }
                     }
-                    // Fill remaining slots with reference default
-                    for (int i = paramSlots; i < originalMaxLocals; i++) {
-                        slotTypes.putIfAbsent(i, 'A');
-                    }
+
                     perInvokeScopeMaps.put(idx, slotTypes);
                 }
             }
+        }
+
+        // --- Store tracking ---
+        // Record (opcode, slot) pairs for store instructions as they are buffered,
+        // so buildPerInvokeScopeMaps() can infer actual slot types.
+        static final class StoreRecord implements Runnable {
+            final int opcode;
+            final int slot;
+            StoreRecord(int opcode, int slot) { this.opcode = opcode; this.slot = slot; }
+            char typeCategory() {
+                switch (opcode) {
+                    case Opcodes.ISTORE: return 'I';
+                    case Opcodes.LSTORE: return 'J';
+                    case Opcodes.FSTORE: return 'F';
+                    case Opcodes.DSTORE: return 'D';
+                    case Opcodes.ASTORE: return 'A';
+                    default: return 'A';
+                }
+            }
+            @Override public void run() { /* no-op marker — skipped during emit */ }
         }
 
         /**
@@ -835,9 +884,9 @@ public final class PrologueInjector extends ClassVisitor {
                     slotCategories.putIfAbsent(lv.index(), typeCategory(Type.getType(lv.desc())));
                 }
             }
-            for (int i = paramSlots; i < originalMaxLocals; i++) {
-                slotCategories.putIfAbsent(i, 'A');
-            }
+            // Do NOT fill remaining slots with a default type — untracked slots
+            // may have different types on different code paths (slot reuse).
+            // Initializing them with the wrong type causes VerifyError.
             return slotCategories;
         }
 

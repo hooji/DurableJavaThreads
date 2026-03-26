@@ -215,6 +215,105 @@ class AggressiveFreezeTest {
      * Chained method calls where each returns a value used by the next,
      * but always stored in temp vars (clean stack).
      */
+    /**
+     * Method with slot reuse: an int and Object share the same slot in
+     * different scopes. This pattern is common in compiled bytecode (javac
+     * reuses slots for non-overlapping variable lifetimes). The emitLocalDefaults()
+     * must handle this correctly to avoid VerifyError at merge points.
+     */
+    public static class SlotReuseScenario {
+        public static String slotReuse(int mode) {
+            String result;
+            if (mode == 1) {
+                // In this branch, slot N is used for 'count' (int)
+                int count = 0;
+                for (int i = 0; i < 5; i++) {
+                    count += i;
+                }
+                FreezePoint.hit();
+                result = "count=" + count;
+            } else {
+                // In this branch, the same slot N may be reused for 'label' (Object)
+                String label = "mode-" + mode;
+                FreezePoint.hit();
+                result = label;
+            }
+            return result;
+        }
+    }
+
+    /**
+     * Method where sequential blocks reuse slots for different types.
+     * First block: int at slot 2. Second block: Object at slot 2.
+     */
+    public static class SequentialSlotReuseScenario {
+        public static int sequentialReuse(int n) {
+            {
+                int temp = n * 2;
+                n = temp + 1;
+            }
+            {
+                String s = String.valueOf(n);
+                FreezePoint.hit();
+                n += s.length();
+            }
+            return n;
+        }
+    }
+
+    /**
+     * Reproduction of the IntelliJ AppMainV2.findMethodToRun pattern:
+     * complex control flow with for-each loops (iterator temporaries),
+     * method calls in conditionals, and multiple return paths.
+     * This is the pattern that triggered VerifyError in production.
+     */
+    public static class ComplexSlotReuseScenario {
+        public static String findItem(String[] items) {
+            boolean flag = items.length > 5;
+            String candidate = null;
+
+            // First pass: scan for exact match (creates iterator temp at slot N)
+            if (flag) {
+                for (String item : items) {
+                    FreezePoint.hit();
+                    if (item.startsWith("match")) {
+                        return item;
+                    }
+                    else if (item.startsWith("maybe") && candidate == null) {
+                        candidate = item;
+                    }
+                }
+            }
+
+            if (candidate != null) {
+                return candidate;
+            }
+
+            // Second pass: broader search with different collections
+            // (reuses slots from the first for-each)
+            java.util.Deque<String> queue = new java.util.ArrayDeque<>();
+            for (String s : items) queue.add(s);
+            java.util.Set<String> visited = new java.util.HashSet<>();
+
+            while (!queue.isEmpty()) {
+                String current = queue.removeLast();
+                String[] parts = current.split("-");
+                for (String part : parts) {
+                    FreezePoint.hit();
+                    if (part.startsWith("match")) {
+                        return part;
+                    }
+                    else if (part.startsWith("maybe") && candidate == null) {
+                        candidate = part;
+                    }
+                }
+                visited.add(current);
+            }
+
+            return candidate;
+        }
+    }
+
     public static class ChainedComputationScenario {
         public static int chainedCompute(int input) {
             int v1 = step1(input);
@@ -571,6 +670,36 @@ class AggressiveFreezeTest {
     }
 
     @Test
+    void slotReuseInstrumentationPassesVerification() throws Exception {
+        // This test loads the instrumented class into the JVM, triggering the
+        // real JVM verifier (not just ASM's CheckClassAdapter). If emitLocalDefaults()
+        // has the wrong type for a reused slot, this will throw VerifyError.
+        Class<?> clazz = loadInstrumented(SlotReuseScenario.class);
+        Method m = clazz.getMethod("slotReuse", int.class);
+        String result = (String) m.invoke(null, 1);
+        assertEquals("count=10", result);
+    }
+
+    @Test
+    void sequentialSlotReusePassesVerification() throws Exception {
+        Class<?> clazz = loadInstrumented(SequentialSlotReuseScenario.class);
+        Method m = clazz.getMethod("sequentialReuse", int.class);
+        int result = (int) m.invoke(null, 5);
+        assertEquals(13, result); // n=5, temp=10, n=11, s="11", n += s.length(2) → 13
+    }
+
+    @Test
+    void complexSlotReusePassesVerification() throws Exception {
+        // This test reproduces the AppMainV2.findMethodToRun pattern that caused
+        // VerifyError: complex control flow with for-each loops (iterator temps),
+        // Deque/Set, multiple return paths, and slot reuse.
+        Class<?> clazz = loadInstrumented(ComplexSlotReuseScenario.class);
+        Method m = clazz.getMethod("findItem", String[].class);
+        String result = (String) m.invoke(null, (Object) new String[]{"a", "b", "matchfound"});
+        assertEquals("matchfound", result);
+    }
+
+    @Test
     void chainedComputationReplaySkipsHit() throws Exception {
         Class<?> clazz = loadInstrumented(ChainedComputationScenario.class);
 
@@ -606,7 +735,10 @@ class AggressiveFreezeTest {
                 TryCatchScenario.class, SwitchScenario.class,
                 NestedLoopScenario.class, ManyLocalsScenario.class,
                 WhileBreakContinueScenario.class, MultipleFreezePointsScenario.class,
-                ChainedComputationScenario.class
+                ChainedComputationScenario.class,
+                SlotReuseScenario.class,
+                SequentialSlotReuseScenario.class,
+                ComplexSlotReuseScenario.class
         };
 
         for (Class<?> scenario : scenarios) {
