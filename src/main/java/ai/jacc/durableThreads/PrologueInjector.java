@@ -516,11 +516,16 @@ public final class PrologueInjector extends ClassVisitor {
         }
 
         /**
-         * Emit local variable debug info. Method parameters get method-wide scope
-         * so JDI can set them at resume stub BCIs (Phase 1 of two-phase restore).
-         * Non-parameter locals keep their original scope — they are set in Phase 2
-         * when the thread is at localsReady() in the original code section where
-         * the original scopes naturally apply.
+         * Emit local variable debug info with method-wide scope for ALL locals.
+         *
+         * <p>With the direct-jump resume stub architecture, all frames are in
+         * their original code sections during restore. JDI sets all locals in
+         * a single pass while the thread is at resumePoint(). For this to work,
+         * ALL local variables must be in scope at the resume stub BCIs — which
+         * means extending their scope to method-wide.</p>
+         *
+         * <p>Deduplicated by (name, descriptor, slot) to avoid duplicate
+         * LocalVariableTable entries from slot reuse in if/else branches.</p>
          */
         private void emitLocalVariables() {
             if (methodStartLabel == null || methodEndLabel == null) {
@@ -532,29 +537,15 @@ public final class PrologueInjector extends ClassVisitor {
                 return;
             }
 
-            // Compute parameter slot count from method descriptor
-            int paramSlots = 0;
-            if ((methodAccess & Opcodes.ACC_STATIC) == 0) {
-                paramSlots = 1; // 'this'
-            }
-            for (Type t : Type.getArgumentTypes(methodDesc)) {
-                paramSlots += t.getSize();
-            }
-
-            // Extend scope only for parameter slots; deduplicate to avoid
+            // Extend ALL locals to method-wide scope; deduplicate to avoid
             // Duplicated LocalVariableTable errors from if/else branches
-            java.util.Set<String> seenParams = new java.util.HashSet<>();
+            // or slot reuse
+            java.util.Set<String> seen = new java.util.HashSet<>();
             for (LocalVarInfo lv : localVars) {
-                if (lv.index() < paramSlots) {
-                    String key = lv.name() + "\0" + lv.desc() + "\0" + lv.index();
-                    if (seenParams.add(key)) {
-                        target.visitLocalVariable(lv.name(), lv.desc(), lv.sig(),
-                                methodStartLabel, methodEndLabel, lv.index());
-                    }
-                } else {
-                    // Non-parameter: keep original scope
+                String key = lv.name() + "\0" + lv.desc() + "\0" + lv.index();
+                if (seen.add(key)) {
                     target.visitLocalVariable(lv.name(), lv.desc(), lv.sig(),
-                            lv.start(), lv.end(), lv.index());
+                            methodStartLabel, methodEndLabel, lv.index());
                 }
             }
         }
@@ -580,15 +571,16 @@ public final class PrologueInjector extends ClassVisitor {
 
         private void emitFullPrologue() {
             // Build per-invoke scope maps before emitting stubs so each stub
-            // initializes locals with types matching the target post-invoke label.
+            // initializes locals with types matching the target invoke label.
             buildPerInvokeScopeMaps();
 
-            int retValSlot = originalMaxLocals;
             Label originalCode = new Label();
 
-            // Pre-create post-invoke labels for direct-jump targets
+            // Pre-create labels for jump targets in original code
+            Label[] beforeInvokeLabels = new Label[invokeInfos.size()];
             Label[] postInvokeLabels = new Label[invokeInfos.size()];
-            for (int i = 0; i < postInvokeLabels.length; i++) {
+            for (int i = 0; i < invokeInfos.size(); i++) {
+                beforeInvokeLabels[i] = new Label();
                 postInvokeLabels[i] = new Label();
             }
 
@@ -598,10 +590,6 @@ public final class PrologueInjector extends ClassVisitor {
             target.visitLabel(methodStartLabel);
 
             // --- PROLOGUE ---
-
-            // __retVal = null (boxed return value from resume stub)
-            target.visitInsn(Opcodes.ACONST_NULL);
-            target.visitVarInsn(Opcodes.ASTORE, retValSlot);
 
             // Normal execution: skip straight to original code
             target.visitMethodInsn(Opcodes.INVOKESTATIC,
@@ -621,33 +609,35 @@ public final class PrologueInjector extends ClassVisitor {
             // --- RESUME STUBS ---
             for (int i = 0; i < invokeInfos.size(); i++) {
                 target.visitLabel(resumeLabels[i]);
-                emitResumeStub(i, invokeInfos.get(i), retValSlot, postInvokeLabels[i]);
+                emitResumeStub(i, invokeInfos.get(i),
+                        beforeInvokeLabels[i], postInvokeLabels[i]);
             }
 
-            // --- ORIGINAL CODE with post-invoke labels ---
+            // --- ORIGINAL CODE with before/post-invoke labels ---
             target.visitLabel(originalCode);
-            emitOriginalCode(postInvokeLabels);
+            emitOriginalCode(beforeInvokeLabels, postInvokeLabels);
 
             // End label for method-wide local variable scope
             target.visitLabel(methodEndLabel);
         }
 
         /**
-         * Resume stub: direct-jump approach.
+         * Resume stub: direct-jump-to-original-code approach.
          *
-         * <p>For the deepest frame: {@code resumePoint()} blocks, then local
-         * defaults are initialized (for verifier compatibility), then
-         * {@code localsReady()} blocks for JDI to set actual values, then a
-         * dummy return value is pushed (if non-void) and we jump directly to
-         * the post-invoke label.</p>
+         * <p>For the deepest frame: init local defaults (for verifier), call
+         * {@code resumePoint()} which blocks while JDI sets ALL locals in ALL
+         * frames in a single pass (all frames are in original code sections),
+         * deactivate replay, push sub-stack defaults + dummy return value,
+         * jump to POST_INVOKE (past the freeze call).</p>
          *
-         * <p>For non-deepest frames: the inner method is re-invoked to rebuild
-         * the call stack. Its return value is boxed and saved. After
-         * {@code localsReady()}, the return value is unboxed and pushed,
-         * then we jump to the post-invoke label.</p>
+         * <p>For non-deepest frames: advance frame, init local defaults (for
+         * verifier), push sub-stack defaults + dummy args onto the operand
+         * stack, jump to BEFORE_INVOKE in the original code section. The
+         * original bytecode makes the call to the deeper method. This puts
+         * the frame in its original code section with all locals in scope.</p>
          */
         private void emitResumeStub(int invokeIndex, InvokeInfo info,
-                                    int retValSlot, Label postInvokeLabel) {
+                                    Label beforeInvokeLabel, Label postInvokeLabel) {
             List<Character> subStack = invokeSubStacks.getOrDefault(invokeIndex,
                     java.util.Collections.emptyList());
             Label notLastFrame = new Label();
@@ -656,59 +646,47 @@ public final class PrologueInjector extends ClassVisitor {
                     "ai/jacc/durableThreads/ReplayState", "isLastFrame", "()Z", false);
             target.visitJumpInsn(Opcodes.IFEQ, notLastFrame);
 
-            // Deepest frame: resumePoint(), init locals, deactivate replay, push sub-stack + return, goto postInvoke
-            // localsReady() is called at the postInvoke label in the original code
-            // where all local variables are naturally in scope for JDI.
+            // === Deepest frame ===
+            // Init local defaults first (for verifier), then block at resumePoint().
+            // JDI sets ALL locals in ALL frames while we're blocked (all frames
+            // are in their original code sections with locals in scope).
+            emitLocalDefaults(invokeIndex);
             target.visitMethodInsn(Opcodes.INVOKESTATIC,
                     "ai/jacc/durableThreads/ReplayState", "resumePoint", "()V", false);
-            emitLocalDefaults(invokeIndex);
             // Deactivate replay so subsequent method calls in the original code
-            // execute normally (not re-entering their resume stubs). In production,
-            // JDI already deactivated replay between resumePoint() and localsReady(),
-            // so this is a harmless no-op. In tests without JDI, this prevents
-            // infinite recursion from replay-mode re-entry.
+            // execute normally (not re-entering their resume stubs).
             target.visitMethodInsn(Opcodes.INVOKESTATIC,
                     "ai/jacc/durableThreads/ReplayState", "deactivate", "()V", false);
-            // Arm the localsReady gate BEFORE pushing sub-stack values (must be
-            // called with empty operand stack to avoid OperandStackChecker false positives)
-            target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                    RS, "armLocalsAwait", "()V", false);
             pushSubStackDefaults(subStack);
             pushDummyReturnValue(info.descriptor);
             target.visitJumpInsn(Opcodes.GOTO, postInvokeLabel);
 
-            // Not deepest: advance, re-invoke, box return, init locals, push sub-stack + unbox, goto postInvoke
+            // === Non-deepest frame ===
+            // Advance to next frame, init local defaults, then jump into the
+            // original code right before the invoke instruction. The original
+            // bytecode makes the call, putting this frame in its original code
+            // section with all locals in scope.
             target.visitLabel(notLastFrame);
             target.visitMethodInsn(Opcodes.INVOKESTATIC,
                     "ai/jacc/durableThreads/ReplayState", "advanceFrame", "()V", false);
 
-            if (info.opcode == Opcodes.INVOKEDYNAMIC) {
-                target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                        "ai/jacc/durableThreads/ReplayState", "resumePoint", "()V", false);
-                emitLocalDefaults(invokeIndex);
-            } else {
-                pushDummyArguments(info);
-                target.visitMethodInsn(info.opcode, info.owner, info.name,
-                        info.descriptor, info.isInterface);
-                // Box the return value and save it
-                boxReturnValue(Type.getReturnType(info.descriptor));
-                target.visitVarInsn(Opcodes.ASTORE, retValSlot);
-                emitLocalDefaults(invokeIndex);
-            }
-
-            // Arm the localsReady gate BEFORE pushing sub-stack values
-            target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                    RS, "armLocalsAwait", "()V", false);
+            emitLocalDefaults(invokeIndex);
 
             if (info.opcode == Opcodes.INVOKEDYNAMIC) {
+                // Invokedynamic can't be re-invoked from the stub (bootstrap
+                // method complexity). Jump to POST_INVOKE with dummy return.
                 pushSubStackDefaults(subStack);
                 pushDummyReturnValue(info.descriptor);
+                target.visitJumpInsn(Opcodes.GOTO, postInvokeLabel);
             } else {
+                // Push sub-stack defaults + dummy receiver + dummy args to match
+                // the operand stack shape at BEFORE_INVOKE, then jump there.
+                // The original invoke instruction executes, calling the deeper
+                // method whose prologue will take over.
                 pushSubStackDefaults(subStack);
-                unboxReturnValue(Type.getReturnType(info.descriptor), retValSlot);
+                pushDummyArguments(info);
+                target.visitJumpInsn(Opcodes.GOTO, beforeInvokeLabel);
             }
-
-            target.visitJumpInsn(Opcodes.GOTO, postInvokeLabel);
         }
 
         /**
@@ -730,29 +708,29 @@ public final class PrologueInjector extends ClassVisitor {
         }
 
         /**
-         * Emit original code with post-invoke labels and localsReady() calls
-         * inserted after each invoke. The localsReady() call is where the JDI
-         * worker sets local variables (Phase 2). On the normal path (no replay),
-         * localsLatch is null so localsReady() returns immediately (zero cost).
-         * On the replay path (jumped from resume stub), localsReady() blocks
-         * until JDI sets locals and releases the latch.
+         * Emit original code with before-invoke and post-invoke labels.
+         *
+         * <p>Before-invoke labels are jump targets for non-deepest resume stubs
+         * (they jump here so the original invoke instruction makes the call,
+         * keeping the frame in its original code section with locals in scope).
+         * Post-invoke labels are jump targets for the deepest resume stub
+         * (it jumps past the freeze call to continue user code).</p>
          */
-        private void emitOriginalCode(Label[] postInvokeLabels) {
+        private void emitOriginalCode(Label[] beforeInvokeLabels,
+                                      Label[] postInvokeLabels) {
             for (Runnable op : bufferedOps) {
                 if (op instanceof InvokeMarker) {
                     InvokeMarker marker = (InvokeMarker) op;
+                    target.visitLabel(beforeInvokeLabels[marker.index]);
                     target.visitMethodInsn(marker.opcode, marker.owner, marker.name,
                             marker.descriptor, marker.isInterface);
                     target.visitLabel(postInvokeLabels[marker.index]);
-                    target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                            RS, "localsReady", "()V", false);
                 } else if (op instanceof InvokeDynamicMarker) {
                     InvokeDynamicMarker marker = (InvokeDynamicMarker) op;
+                    target.visitLabel(beforeInvokeLabels[marker.index]);
                     target.visitInvokeDynamicInsn(marker.name, marker.descriptor,
                             marker.bootstrapMethodHandle, marker.bootstrapMethodArguments);
                     target.visitLabel(postInvokeLabels[marker.index]);
-                    target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                            RS, "localsReady", "()V", false);
                 } else {
                     op.run();
                 }

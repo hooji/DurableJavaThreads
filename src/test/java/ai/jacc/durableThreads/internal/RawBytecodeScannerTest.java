@@ -65,10 +65,11 @@ class RawBytecodeScannerTest {
         List<Integer> offsets = RawBytecodeScanner.scanInvokeOffsets(
                 instrumented, "callsTwo", "()V");
         System.out.println("Instrumented callsTwo invokes: " + offsets);
-        // The instrumented code has 4 println calls: 2 in resume stubs (re-invoke for
-        // stack replay) + 2 in the original code section. ReplayState calls are filtered.
-        assertEquals(4, offsets.size(),
-                "Instrumented callsTwo should have 4 user invokes (2 stub + 2 original). Found: " + offsets);
+        // Resume stubs now jump to BEFORE_INVOKE labels in original code instead
+        // of making their own calls. Only the 2 original invokes remain.
+        // ReplayState calls are filtered.
+        assertEquals(2, offsets.size(),
+                "Instrumented callsTwo should have 2 user invokes (original code only). Found: " + offsets);
     }
 
     private static byte[] loadClassBytes(Class<?> clazz) throws IOException {

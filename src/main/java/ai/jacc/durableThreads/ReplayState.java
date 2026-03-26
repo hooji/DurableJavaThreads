@@ -319,14 +319,9 @@ public final class ReplayState {
         REPLAY.remove();
     }
 
-    /** Package-private access to latch lock for ThreadRestorer. */
-    static Object getLatchLock() {
-        return LATCH_LOCK;
-    }
-
-    /** Package-private access to locals latch for ThreadRestorer (go-latch capture). */
-    static java.util.concurrent.CountDownLatch getLocalsLatch() {
-        return localsLatch;
+    /** Package-private access to resume latch for ThreadRestorer (go-latch). */
+    static java.util.concurrent.CountDownLatch getResumeLatch() {
+        return resumeLatch;
     }
 
     // --- Boxing/unboxing helpers ---
