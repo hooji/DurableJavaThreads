@@ -257,10 +257,38 @@ final class ThreadFreezer {
 
     /**
      * Check if a frame is a lambda-generated class.
-     * Lambda frames cannot be replayed and are a hard error.
+     * Lambda frames are skipped during capture — the synthetic method they
+     * delegate to is captured instead.
      */
     private static boolean isLambdaFrame(String className) {
         return className.contains("$$Lambda");
+    }
+
+    /**
+     * Detect the functional interface implemented by a lambda class.
+     * Lambda classes implement exactly one functional interface (plus possibly
+     * marker interfaces like Serializable). We return the first interface
+     * that isn't a well-known marker.
+     */
+    private static String detectLambdaInterface(ReferenceType lambdaType) {
+        try {
+            List<InterfaceType> interfaces = null;
+            if (lambdaType instanceof com.sun.jdi.ClassType) {
+                interfaces = ((com.sun.jdi.ClassType) lambdaType).interfaces();
+            }
+            if (interfaces != null) {
+                for (InterfaceType iface : interfaces) {
+                    String name = iface.name();
+                    // Skip marker interfaces
+                    if ("java.io.Serializable".equals(name)) continue;
+                    if ("java.lang.Comparable".equals(name)) continue;
+                    return name; // first functional interface
+                }
+            }
+        } catch (Exception e) {
+            // If we can't detect the interface, fall through
+        }
+        return null;
     }
 
     private static ThreadSnapshot captureSnapshot(VirtualMachine vm, ThreadReference threadRef,
@@ -293,6 +321,10 @@ final class ThreadFreezer {
             // Walk frames bottom to top (JDI gives top to bottom).
             // Filter out JDK and library-internal frames — they can't be replayed
             // (not instrumented) and are infrastructure that gets recreated naturally.
+            // Lambda frames ($$Lambda) are skipped — the next frame (the synthetic
+            // method on the enclosing class) IS instrumented and IS captured.
+            String pendingLambdaBridgeInterface = null;
+
             for (int i = jdiFrames.size() - 1; i >= 0; i--) {
                 StackFrame jdiFrame = jdiFrames.get(i);
                 Location location = jdiFrame.location();
@@ -306,13 +338,13 @@ final class ThreadFreezer {
                 // Skip JDK/library infrastructure frames (Thread.run, reflection, etc.)
                 if (isInfrastructureFrame(className)) continue;
 
-                // Lambda frames are a hard error — they can't be replayed
+                // Lambda frames: skip but capture the interface for the next frame.
+                // Lambda classes aren't instrumented (hidden/anonymous classes bypass
+                // ClassFileTransformer), but the synthetic method they delegate to IS
+                // on the enclosing class and IS instrumented.
                 if (isLambdaFrame(className)) {
-                    // Find the enclosing method name for the error message
-                    String enclosing = className.contains("/")
-                            ? className.substring(0, className.indexOf("$$Lambda"))
-                            : className;
-                    throw new LambdaFrameException(className, enclosing + "." + methodName);
+                    pendingLambdaBridgeInterface = detectLambdaInterface(declaringType);
+                    continue;
                 }
 
                 int bcp = (int) location.codeIndex();
@@ -349,8 +381,14 @@ final class ThreadFreezer {
                 // Capture local variables
                 List<ai.jacc.durableThreads.snapshot.LocalVariable> locals = captureLocals(jdiFrame, heapWalker);
 
+                // If the previous frame was a lambda bridge, attach the interface
+                // name to THIS frame so restore can create a proxy receiver.
+                String bridgeInterface = pendingLambdaBridgeInterface;
+                pendingLambdaBridgeInterface = null;
+
                 frameSnapshots.add(new FrameSnapshot(
-                        className, methodName, methodSig, bcp, invokeIndex, hash, locals));
+                        className, methodName, methodSig, bcp, invokeIndex, hash,
+                        locals, bridgeInterface));
             }
 
             if (frameSnapshots.isEmpty()) {

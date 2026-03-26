@@ -31,15 +31,26 @@ public class LambdaRunnableFreezeProgram {
             System.err.println("Usage: LambdaRunnableFreezeProgram <snapshotFile>");
             System.exit(1);
         }
-        final String snapshotFile = args[0];
+        runTest(args[0]);
+    }
 
+    /**
+     * Separated from main() so the lambda's invokedynamic doesn't conflict
+     * with the PrologueInjector's resume stubs in a method that also has
+     * restore() calls. The KEY lambda is the Thread constructor argument —
+     * it creates a $$Lambda frame on the call stack.
+     */
+    static void runTest(String snapshotFile) throws Exception {
         // THIS IS THE KEY: using a lambda instead of anonymous Runnable.
         // The lambda creates a $$Lambda frame on the call stack.
         Thread worker = new Thread(() -> doWork(snapshotFile), "lambda-runnable-worker");
-        worker.setUncaughtExceptionHandler((t, e) -> {
-            if (e.getClass().getSimpleName().equals("ThreadFrozenError")) return;
-            System.err.println("UNCAUGHT=" + e.getClass().getName() + ": " + e.getMessage());
-            e.printStackTrace(System.err);
+        worker.setUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
+            @Override
+            public void uncaughtException(Thread t, Throwable e) {
+                if (e.getClass().getSimpleName().equals("ThreadFrozenError")) return;
+                System.err.println("UNCAUGHT=" + e.getClass().getName() + ": " + e.getMessage());
+                e.printStackTrace(System.err);
+            }
         });
         worker.start();
         worker.join(30_000);

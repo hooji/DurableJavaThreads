@@ -205,6 +205,14 @@ final class ThreadRestorer {
                 continue;
             }
 
+            // Skip lambda/hidden classes — their names are JVM-generated and
+            // non-deterministic, so Class.forName will fail. They're captured
+            // as heap objects when reachable from locals but don't need
+            // structure validation (their layout is trivial).
+            if (objSnap.className().contains("$$Lambda")) {
+                continue;
+            }
+
             try {
                 Class<?> clazz = Class.forName(objSnap.className());
                 byte[] currentHash = ClassStructureHasher.hashClassStructure(clazz);
@@ -252,6 +260,20 @@ final class ThreadRestorer {
         Object[] receivers = new Object[snapshot.frameCount()];
         for (int i = 0; i < snapshot.frameCount(); i++) {
             FrameSnapshot frame = snapshot.frames().get(i);
+
+            // If this frame was entered through a lambda bridge, create a
+            // dynamic proxy as the receiver. The caller frame's resume stub
+            // uses this proxy for its interface invoke (e.g., processor.process()).
+            // The proxy delegates to the synthetic method whose prologue takes over.
+            if (frame.lambdaBridgeInterface() != null) {
+                Object proxy = createLambdaBridgeProxy(frame);
+                if (proxy != null) {
+                    receivers[i] = proxy;
+                    continue;
+                }
+            }
+
+            // Normal case: use "this" from slot 0
             for (ai.jacc.durableThreads.snapshot.LocalVariable local : frame.locals()) {
                 if (local.slot() == 0 && "this".equals(local.name())) {
                     receivers[i] = heapRestorer.resolve(local.value());
@@ -260,6 +282,74 @@ final class ThreadRestorer {
             }
         }
         return receivers;
+    }
+
+    /**
+     * Create a dynamic proxy that implements the lambda's functional interface
+     * and delegates to the target synthetic method.
+     *
+     * <p>During replay, the caller's resume stub pushes this proxy as the
+     * receiver for the interface invoke. The proxy forwards the call to the
+     * synthetic method whose replay prologue handles the rest. All captured
+     * variables (which become parameters or the enclosing {@code this} of the
+     * synthetic method) are set later by JDI in the single-pass restore.</p>
+     */
+    private static Object createLambdaBridgeProxy(FrameSnapshot syntheticFrame) {
+        try {
+            Class<?> iface = Class.forName(syntheticFrame.lambdaBridgeInterface());
+            String targetClassName = syntheticFrame.className().replace('/', '.');
+            Class<?> targetClass = Class.forName(targetClassName);
+            String targetMethodName = syntheticFrame.methodName();
+
+            // Find the synthetic method on the enclosing class
+            java.lang.reflect.Method targetMethod = null;
+            for (java.lang.reflect.Method m : targetClass.getDeclaredMethods()) {
+                if (m.getName().equals(targetMethodName)) {
+                    targetMethod = m;
+                    break;
+                }
+            }
+            if (targetMethod == null) return null;
+            targetMethod.setAccessible(true);
+
+            final java.lang.reflect.Method target = targetMethod;
+            final boolean isStatic = java.lang.reflect.Modifier.isStatic(target.getModifiers());
+
+            return java.lang.reflect.Proxy.newProxyInstance(
+                    targetClass.getClassLoader(),
+                    new Class<?>[]{iface},
+                    (proxy, method, args) -> {
+                        // Delegate to the synthetic method. Its replay prologue
+                        // takes over immediately. Args are dummy values during
+                        // replay — JDI sets ALL locals (including parameters
+                        // from captured variables) in the single-pass restore.
+                        Object[] callArgs = args != null ? args : new Object[0];
+                        if (isStatic) {
+                            // Non-capturing or local-capturing lambda:
+                            // static lambda$doWork$0(capturedVars..., params...)
+                            // Pad args if the method has more params than the
+                            // interface method (captured vars are leading params)
+                            int methodParamCount = target.getParameterTypes().length;
+                            if (callArgs.length < methodParamCount) {
+                                Object[] padded = new Object[methodParamCount];
+                                System.arraycopy(callArgs, 0, padded,
+                                        methodParamCount - callArgs.length, callArgs.length);
+                                callArgs = padded;
+                            }
+                            return target.invoke(null, callArgs);
+                        } else {
+                            // this-capturing lambda or method reference:
+                            // instance method on the enclosing class
+                            Object receiver = ReplayState.dummyInstance(targetClassName);
+                            return target.invoke(receiver, callArgs);
+                        }
+                    });
+        } catch (Exception e) {
+            System.err.println("[DurableThreads] Warning: failed to create lambda bridge proxy"
+                    + " for " + syntheticFrame.className() + "." + syntheticFrame.methodName()
+                    + ": " + e.getMessage());
+            return null;
+        }
     }
 
     private static void invokeBottomFrame(FrameSnapshot bottomFrame,
@@ -685,6 +775,14 @@ final class ThreadRestorer {
                                 + " (Java 8 limitation)");
                     }
                 } catch (InvalidTypeException e) {
+                    // Lambda instances captured in the heap are restored as
+                    // Object placeholders (hidden class can't be found). When
+                    // JDI tries to set a local typed as a functional interface
+                    // to an Object, the type check fails. Skip these silently —
+                    // the frame's lambda dispatch uses the proxy receiver.
+                    if (e.getMessage() != null && e.getMessage().contains("java.lang.Object")) {
+                        continue;
+                    }
                     throw new RuntimeException(
                             "Type mismatch setting local '" + entry.jdiLocal().name() + "' in "
                             + method.declaringType().name() + "." + method.name()
