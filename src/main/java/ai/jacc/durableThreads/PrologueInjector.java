@@ -552,20 +552,24 @@ public final class PrologueInjector extends ClassVisitor {
             for (Type t : Type.getArgumentTypes(methodDesc)) paramSlots += t.getSize();
 
             // Extend parameter scopes to method-wide; keep non-parameter scopes original.
-            // Deduplicate by (name, descriptor, slot) to handle slot reuse.
-            java.util.Set<String> seen = new java.util.HashSet<>();
+            // Only deduplicate PARAMETERS (which share the same method-wide scope).
+            // Non-parameters must emit ALL entries — the same (name, desc, slot) can
+            // appear multiple times with different scope ranges (e.g., two for-loops
+            // each declaring 'int i' at the same slot). Dropping any entry would make
+            // the variable invisible to JDI at the freeze point.
+            java.util.Set<String> paramsSeen = new java.util.HashSet<>();
             for (LocalVarInfo lv : localVars) {
-                String key = lv.name() + "\0" + lv.desc() + "\0" + lv.index();
-                if (seen.add(key)) {
-                    if (lv.index() < paramSlots) {
-                        // Parameter — extend to method-wide scope
+                if (lv.index() < paramSlots) {
+                    // Parameter — extend to method-wide scope, deduplicate
+                    String key = lv.name() + "\0" + lv.desc() + "\0" + lv.index();
+                    if (paramsSeen.add(key)) {
                         target.visitLocalVariable(lv.name(), lv.desc(), lv.sig(),
                                 methodStartLabel, methodEndLabel, lv.index());
-                    } else {
-                        // Non-parameter — keep original scope
-                        target.visitLocalVariable(lv.name(), lv.desc(), lv.sig(),
-                                lv.start(), lv.end(), lv.index());
                     }
+                } else {
+                    // Non-parameter — keep original scope, emit ALL entries
+                    target.visitLocalVariable(lv.name(), lv.desc(), lv.sig(),
+                            lv.start(), lv.end(), lv.index());
                 }
             }
         }

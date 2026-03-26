@@ -610,11 +610,20 @@ final class ThreadRestorer {
                     + "for thread restore to set local variables.", e);
         }
 
-        // Build a map of JDI locals by name for quick lookup
+        // Build a map of JDI locals by name for quick lookup.
+        // When multiple variables share the same name and slot (e.g., two
+        // for-loops both declaring 'int i'), prefer the one that is VISIBLE
+        // at the current frame location. This is critical for the single-pass
+        // architecture where the thread is at the freeze point's BCI.
         Map<String, com.sun.jdi.LocalVariable> jdiLocalsByName = new HashMap<>();
         for (com.sun.jdi.LocalVariable jdiLocal : jdiLocals) {
-            // Use the first variable with each name (shadowed variables are rare)
-            jdiLocalsByName.putIfAbsent(jdiLocal.name(), jdiLocal);
+            com.sun.jdi.LocalVariable existing = jdiLocalsByName.get(jdiLocal.name());
+            if (existing == null) {
+                jdiLocalsByName.put(jdiLocal.name(), jdiLocal);
+            } else if (jdiLocal.isVisible(jdiFrame)) {
+                // Prefer the visible one (in scope at current BCI)
+                jdiLocalsByName.put(jdiLocal.name(), jdiLocal);
+            }
         }
 
         // Pre-resolve all values and pin object references to prevent GC collection.
