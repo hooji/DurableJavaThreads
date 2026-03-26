@@ -57,27 +57,15 @@ public final class Durable {
         freeze(handler, null);
     }
 
-    /**
-     * Freeze the current thread, serializing the snapshot to a file.
-     *
-     * <p>Equivalent to {@code freeze(new SnapshotFileWriter(filePath))}.</p>
-     *
-     * @param filePath the file to write the snapshot to
-     * @throws AgentNotLoadedException if the durable agent is not loaded
-     */
+    /** @see #freeze(Consumer) */
     public static void freeze(String filePath) {
+        if (ReplayState.isRestoreInProgress()) { freeze((Consumer<ThreadSnapshot>) null, null); return; }
         freeze(new SnapshotFileWriter(filePath), null);
     }
 
-    /**
-     * Freeze the current thread, serializing the snapshot to a file.
-     *
-     * <p>Equivalent to {@code freeze(new SnapshotFileWriter(path))}.</p>
-     *
-     * @param path the file to write the snapshot to
-     * @throws AgentNotLoadedException if the durable agent is not loaded
-     */
+    /** @see #freeze(Consumer) */
     public static void freeze(Path path) {
+        if (ReplayState.isRestoreInProgress()) { freeze((Consumer<ThreadSnapshot>) null, null); return; }
         freeze(new SnapshotFileWriter(path), null);
     }
 
@@ -99,6 +87,16 @@ public final class Durable {
      * @throws AgentNotLoadedException if the durable agent is not loaded
      */
     public static void freeze(Consumer<ThreadSnapshot> handler, Map<String, Object> namedObjects) {
+        // During restore, the deepest frame's original code calls freeze().
+        // Detect this and block on the go-latch instead of actually freezing.
+        // This check MUST be before synchronized(Durable.class) because the
+        // restore thread holds that lock while waiting for us to reach this point.
+        if (ReplayState.isRestoreInProgress()) {
+            ReplayState.awaitGoLatch();
+            ReplayState.setRestoreInProgress(false);
+            return;
+        }
+
         if (!DurableAgent.isLoaded()) {
             throw new AgentNotLoadedException();
         }
@@ -116,17 +114,13 @@ public final class Durable {
      * @throws AgentNotLoadedException if the durable agent is not loaded
      */
     public static void freeze(String filePath, Map<String, Object> namedObjects) {
+        if (ReplayState.isRestoreInProgress()) { freeze((Consumer<ThreadSnapshot>) null, null); return; }
         freeze(new SnapshotFileWriter(filePath), namedObjects);
     }
 
-    /**
-     * Freeze the current thread to a file with named heap objects.
-     *
-     * @param path the file to write the snapshot to
-     * @param namedObjects map of name → object for objects to tag in the snapshot
-     * @throws AgentNotLoadedException if the durable agent is not loaded
-     */
+    /** @see #freeze(Consumer, Map) */
     public static void freeze(Path path, Map<String, Object> namedObjects) {
+        if (ReplayState.isRestoreInProgress()) { freeze((Consumer<ThreadSnapshot>) null, null); return; }
         freeze(new SnapshotFileWriter(path), namedObjects);
     }
 

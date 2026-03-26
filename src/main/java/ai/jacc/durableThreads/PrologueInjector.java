@@ -516,20 +516,13 @@ public final class PrologueInjector extends ClassVisitor {
         }
 
         /**
-         * Emit local variable debug info with method-wide scope for ALL locals.
-         *
-         * <p>With the direct-jump resume stub architecture, all frames are in
-         * their original code sections during restore. JDI sets all locals in
-         * a single pass while the thread is at resumePoint(). For this to work,
-         * ALL local variables must be in scope at the resume stub BCIs — which
-         * means extending their scope to method-wide.</p>
-         *
-         * <p>Deduplicated by (name, descriptor, slot) to avoid duplicate
-         * LocalVariableTable entries from slot reuse in if/else branches.</p>
+         * Emit local variable debug info. Parameters get method-wide scope
+         * so JDI can set them at any BCI. Non-parameter locals keep their
+         * original scope — with the direct-jump architecture, all frames are
+         * in their original code sections where the compiler's scopes apply.
          */
         private void emitLocalVariables() {
             if (methodStartLabel == null || methodEndLabel == null) {
-                // No prologue was emitted — emit original entries unchanged
                 for (LocalVarInfo lv : localVars) {
                     target.visitLocalVariable(lv.name(), lv.desc(), lv.sig(),
                             lv.start(), lv.end(), lv.index());
@@ -537,15 +530,21 @@ public final class PrologueInjector extends ClassVisitor {
                 return;
             }
 
-            // Extend ALL locals to method-wide scope; deduplicate to avoid
-            // Duplicated LocalVariableTable errors from if/else branches
-            // or slot reuse
-            java.util.Set<String> seen = new java.util.HashSet<>();
+            int paramSlots = 0;
+            if ((methodAccess & Opcodes.ACC_STATIC) == 0) paramSlots = 1;
+            for (Type t : Type.getArgumentTypes(methodDesc)) paramSlots += t.getSize();
+
+            java.util.Set<String> seenParams = new java.util.HashSet<>();
             for (LocalVarInfo lv : localVars) {
-                String key = lv.name() + "\0" + lv.desc() + "\0" + lv.index();
-                if (seen.add(key)) {
+                if (lv.index() < paramSlots) {
+                    String key = lv.name() + "\0" + lv.desc() + "\0" + lv.index();
+                    if (seenParams.add(key)) {
+                        target.visitLocalVariable(lv.name(), lv.desc(), lv.sig(),
+                                methodStartLabel, methodEndLabel, lv.index());
+                    }
+                } else {
                     target.visitLocalVariable(lv.name(), lv.desc(), lv.sig(),
-                            methodStartLabel, methodEndLabel, lv.index());
+                            lv.start(), lv.end(), lv.index());
                 }
             }
         }
@@ -630,11 +629,22 @@ public final class PrologueInjector extends ClassVisitor {
          * deactivate replay, push sub-stack defaults + dummy return value,
          * jump to POST_INVOKE (past the freeze call).</p>
          *
-         * <p>For non-deepest frames: advance frame, init local defaults (for
-         * verifier), push sub-stack defaults + dummy args onto the operand
-         * stack, jump to BEFORE_INVOKE in the original code section. The
-         * original bytecode makes the call to the deeper method. This puts
-         * the frame in its original code section with all locals in scope.</p>
+        /**
+         * Resume stub: single-pass restore via direct jump to original code.
+         *
+         * <p>Both deepest and non-deepest frames jump to BEFORE_INVOKE in the
+         * original code, letting the original invoke instruction make the call.
+         * This puts every frame in its original code section with all locals
+         * in scope.</p>
+         *
+         * <p>For the deepest frame, the original invoke is the call to
+         * {@code freeze()}. {@code freeze()} detects the restore context and
+         * blocks on the go-latch instead of actually freezing. When the latch
+         * is released, {@code freeze()} returns normally and user code
+         * continues.</p>
+         *
+         * <p>For non-deepest frames, the original invoke calls the deeper
+         * method, whose prologue takes over and dispatches to its own stub.</p>
          */
         private void emitResumeStub(int invokeIndex, InvokeInfo info,
                                     Label beforeInvokeLabel, Label postInvokeLabel) {
@@ -647,25 +657,24 @@ public final class PrologueInjector extends ClassVisitor {
             target.visitJumpInsn(Opcodes.IFEQ, notLastFrame);
 
             // === Deepest frame ===
-            // Init local defaults first (for verifier), then block at resumePoint().
-            // JDI sets ALL locals in ALL frames while we're blocked (all frames
-            // are in their original code sections with locals in scope).
+            // Same as non-deepest: init defaults, jump to BEFORE_INVOKE.
+            // The original invoke (freeze()) detects restore context and blocks.
+            // Deactivate replay BEFORE the jump so freeze() doesn't re-enter
+            // the replay prologue.
             emitLocalDefaults(invokeIndex);
             target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                    "ai/jacc/durableThreads/ReplayState", "resumePoint", "()V", false);
-            // Deactivate replay so subsequent method calls in the original code
-            // execute normally (not re-entering their resume stubs).
-            target.visitMethodInsn(Opcodes.INVOKESTATIC,
                     "ai/jacc/durableThreads/ReplayState", "deactivate", "()V", false);
-            pushSubStackDefaults(subStack);
-            pushDummyReturnValue(info.descriptor);
-            target.visitJumpInsn(Opcodes.GOTO, postInvokeLabel);
+            if (info.opcode == Opcodes.INVOKEDYNAMIC) {
+                pushSubStackDefaults(subStack);
+                pushDummyReturnValue(info.descriptor);
+                target.visitJumpInsn(Opcodes.GOTO, postInvokeLabel);
+            } else {
+                pushSubStackDefaults(subStack);
+                pushDummyArguments(info);
+                target.visitJumpInsn(Opcodes.GOTO, beforeInvokeLabel);
+            }
 
             // === Non-deepest frame ===
-            // Advance to next frame, init local defaults, then jump into the
-            // original code right before the invoke instruction. The original
-            // bytecode makes the call, putting this frame in its original code
-            // section with all locals in scope.
             target.visitLabel(notLastFrame);
             target.visitMethodInsn(Opcodes.INVOKESTATIC,
                     "ai/jacc/durableThreads/ReplayState", "advanceFrame", "()V", false);
@@ -673,16 +682,10 @@ public final class PrologueInjector extends ClassVisitor {
             emitLocalDefaults(invokeIndex);
 
             if (info.opcode == Opcodes.INVOKEDYNAMIC) {
-                // Invokedynamic can't be re-invoked from the stub (bootstrap
-                // method complexity). Jump to POST_INVOKE with dummy return.
                 pushSubStackDefaults(subStack);
                 pushDummyReturnValue(info.descriptor);
                 target.visitJumpInsn(Opcodes.GOTO, postInvokeLabel);
             } else {
-                // Push sub-stack defaults + dummy receiver + dummy args to match
-                // the operand stack shape at BEFORE_INVOKE, then jump there.
-                // The original invoke instruction executes, calling the deeper
-                // method whose prologue will take over.
                 pushSubStackDefaults(subStack);
                 pushDummyArguments(info);
                 target.visitJumpInsn(Opcodes.GOTO, beforeInvokeLabel);

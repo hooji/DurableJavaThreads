@@ -298,6 +298,7 @@ public final class ReplayState {
             restoreError = null;
             resumeLatch = new CountDownLatch(1);
             localsLatch = new CountDownLatch(1);
+            goLatch = new CountDownLatch(1);
         }
         REPLAY.set(new ReplayData(resumeIndices, frameReceivers));
     }
@@ -319,9 +320,67 @@ public final class ReplayState {
         REPLAY.remove();
     }
 
-    /** Package-private access to resume latch for ThreadRestorer (go-latch). */
-    static java.util.concurrent.CountDownLatch getResumeLatch() {
-        return resumeLatch;
+    // --- Go-latch for single-pass restore ---
+    // When freeze() is called during a restore, it blocks on this latch
+    // instead of actually freezing. Released by RestoredThread.resume().
+
+    /**
+     * Thread-local flag indicating the current thread is a restore-in-progress.
+     * When true, freeze() should block on the go-latch instead of freezing.
+     */
+    private static final ThreadLocal<Boolean> restoreInProgress =
+            ThreadLocal.withInitial(() -> false);
+
+    /**
+     * Latch that freeze() blocks on during restore. Created by activateWithLatch(),
+     * released by RestoredThread.resume().
+     */
+    private static volatile CountDownLatch goLatch;
+
+    /**
+     * Mark the current thread as a restore-in-progress.
+     * Called by the replay thread before starting the replay chain.
+     */
+    public static void setRestoreInProgress(boolean value) {
+        restoreInProgress.set(value);
+    }
+
+    /**
+     * Check if the current thread is a restore-in-progress.
+     * Called by freeze() to detect that it should block instead of freezing.
+     */
+    public static boolean isRestoreInProgress() {
+        return restoreInProgress.get();
+    }
+
+    /**
+     * Block on the go-latch. Called by freeze() when it detects a restore
+     * context. Blocks until RestoredThread.resume() releases it.
+     */
+    public static void awaitGoLatch() {
+        CountDownLatch latch = goLatch;
+        if (latch != null) {
+            try {
+                if (!latch.await(LATCH_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                    throw new RuntimeException(
+                            "Thread restore timed out: go-latch was not released "
+                            + "within " + LATCH_TIMEOUT_SECONDS + " seconds.");
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+        // Check for restore errors
+        String error = restoreError;
+        if (error != null) {
+            restoreError = null;
+            throw new RuntimeException("Thread restore failed: " + error);
+        }
+    }
+
+    /** Package-private access to go-latch for ThreadRestorer. */
+    static CountDownLatch getGoLatch() {
+        return goLatch;
     }
 
     // --- Boxing/unboxing helpers ---
