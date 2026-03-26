@@ -29,6 +29,12 @@ class ClassStructureHasherTest {
         int instance;
     }
 
+    static class ArrayFieldClass {
+        byte[] data;
+        int[][] matrix;
+        String[] names;
+    }
+
     @Test
     void hashIsConsistentForSameClass() {
         byte[] hash1 = ClassStructureHasher.hashClassStructure(SimpleClass.class);
@@ -62,6 +68,17 @@ class ClassStructureHasherTest {
         byte[] hash = ClassStructureHasher.hashClassStructure(TransientFieldClass.class);
         assertNotNull(hash);
         assertEquals(32, hash.length);
+    }
+
+    @Test
+    void arrayFieldTypesProduceConsistentHash() {
+        // Array types must produce the same hash whether computed via JDI
+        // (which returns "byte[]") or reflection (which returns "[B").
+        // The toJdiTypeName() conversion ensures consistency.
+        byte[] hash1 = ClassStructureHasher.hashClassStructure(ArrayFieldClass.class);
+        byte[] hash2 = ClassStructureHasher.hashClassStructure(ArrayFieldClass.class);
+        assertArrayEquals(hash1, hash2, "Array field hashes should be consistent");
+        assertEquals(32, hash1.length);
     }
 
     @Test
