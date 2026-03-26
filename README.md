@@ -10,7 +10,7 @@ Durable Threads is a pure-Java library that captures the full execution state of
 
 ### Download
 
-Download [`durable-threads-1.1.0.jar`](https://github.com/hooji/DurableJavaThreads/releases/download/v1.1.0/durable-threads-1.1.0.jar) from the [latest release](https://github.com/hooji/DurableJavaThreads/releases/latest). This is a shaded jar that bundles all dependencies (ASM and Objenesis).
+Download [`durable-threads-1.2.0.jar`](https://github.com/hooji/DurableJavaThreads/releases/download/v1.2.0/durable-threads-1.2.0.jar) from the [latest release](https://github.com/hooji/DurableJavaThreads/releases/latest). This is a shaded jar that bundles all dependencies (ASM and Objenesis).
 
 ### Hello World
 
@@ -45,7 +45,7 @@ import ai.jacc.durableThreads.Durable;
 
 public class RestoreDemo {
     public static void main(String[] args) throws Exception {
-        Durable.restore("./snapshot.dat", true, true);
+        Durable.restore("./snapshot.dat");
         // prints: Resumed!, i=6, i=7, ... i=10, Done!
     }
 }
@@ -54,12 +54,12 @@ public class RestoreDemo {
 Both JVMs must be started with the agent and JDWP enabled:
 
 ```bash
-% javac -g -cp durable-threads-1.1.0.jar FreezeDemo.java RestoreDemo.java
+% javac -g -cp durable-threads-1.2.0.jar FreezeDemo.java RestoreDemo.java
 
-% java -javaagent:durable-threads-1.1.0.jar \
+% java -javaagent:durable-threads-1.2.0.jar \
        -agentlib:jdwp=transport=dt_socket,server=y,suspend=n \
        --add-modules jdk.jdi \
-       -cp .:durable-threads-1.1.0.jar \
+       -cp .:durable-threads-1.2.0.jar \
        FreezeDemo
 i=0
 i=1
@@ -69,10 +69,10 @@ i=4
 i=5
 About to freeze!
 
-% java -javaagent:durable-threads-1.1.0.jar \
+% java -javaagent:durable-threads-1.2.0.jar \
        -agentlib:jdwp=transport=dt_socket,server=y,suspend=n \
        --add-modules jdk.jdi \
-       -cp .:durable-threads-1.1.0.jar \
+       -cp .:durable-threads-1.2.0.jar \
        RestoreDemo
 Resumed!
 i=6
@@ -125,11 +125,19 @@ Freezes the calling thread. The handler receives the snapshot for custom persist
 
 ### `Durable.restore(String filePath)` / `Durable.restore(Path path)` / `Durable.restore(ThreadSnapshot snapshot)`
 
-Returns a `Thread` (not yet started) that will replay the call stack and resume from the freeze point when started.
+Restores the thread from a snapshot and resumes it. The simple overloads restore, resume, and wait for the thread to complete. Code after `freeze()` in the original source runs in the restored thread.
 
-All three accept optional boolean parameters:
-- `restore(..., boolean startThread)` — if `true`, starts the thread before returning.
-- `restore(..., boolean startThread, boolean waitForThreadToFinish)` — if both are `true`, blocks until the restored thread completes.
+### `Durable.restore(ThreadSnapshot snapshot, Map<String, Object> namedReplacements, boolean resume, boolean awaitCompletion)`
+
+Advanced overload with explicit control. Returns a `RestoredThread` handle. All JDI work is complete before this method returns — the thread is alive but parked on an internal latch.
+
+- `namedReplacements` — live objects to substitute for named objects in the snapshot (may be null)
+- `resume` — if `true`, releases the thread to continue executing
+- `awaitCompletion` — if `true` (and `resume` is also true), blocks until the restored thread finishes
+
+### `RestoredThread`
+
+Handle to a restored thread. Call `resume()` to release the thread, or `thread()` to get the underlying `Thread`.
 
 ### `SnapshotFileWriter`
 
@@ -161,7 +169,7 @@ Thread running          Snapshot file          New JVM
 
 3. **Serialize** — The snapshot is a plain `Serializable` object. Write it to a file, a database, S3 — anywhere.
 
-4. **Restore via replay** — In a new JVM, `Durable.restore(snapshot)` rebuilds the heap, re-enters every method on the original call stack using the injected prologues, sets local variables via JDI, and resumes execution from exactly where `freeze()` was called.
+4. **Restore via single-pass replay** — In a new JVM, `Durable.restore(snapshot)` rebuilds the heap, re-enters every method on the original call stack using the injected prologues, and jumps into each method's original code section. Every frame ends up at its original invoke position — the deepest frame calls `freeze()`, which detects restore mode and blocks on a latch. With all frames in their original code, all local variables are naturally in scope, so JDI sets every local in every frame in a single pass. When the latch is released, `freeze()` returns normally and user code continues from exactly where it left off.
 
 For a deep dive into how bytecode offsets are computed and why the freeze/restore mapping is correct across JVM restarts, see [Bytecode Offset Computation: Correctness Analysis](docs/bytecode-offset-correctness.md).
 
@@ -200,7 +208,7 @@ cd DurableJavaThreads
 mvn clean package -DskipTests
 ```
 
-This produces `target/durable-threads-1.1.0.jar` — a shaded jar that bundles ASM and Objenesis.
+This produces `target/durable-threads-1.2.0.jar` — a shaded jar that bundles ASM and Objenesis.
 
 ### Running Tests
 
@@ -229,14 +237,14 @@ mvn package -DskipTests && mvn failsafe:integration-test -Dit.test=PerformanceBe
 <dependency>
     <groupId>ai.jacc</groupId>
     <artifactId>durable-threads</artifactId>
-    <version>1.1.0</version>
+    <version>1.2.0</version>
 </dependency>
 ```
 
 ### Gradle
 
 ```groovy
-implementation 'ai.jacc:durable-threads:1.1.0'
+implementation 'ai.jacc:durable-threads:1.2.0'
 ```
 
 > **Note:** Durable Threads is not yet published to Maven Central. For now, download the jar from the [releases page](https://github.com/hooji/DurableJavaThreads/releases) or build from source.
@@ -250,9 +258,10 @@ src/main/java/ai/jacc/durableThreads/
 ├── DurableTransformer.java    # ClassFileTransformer
 ├── SnapshotFileWriter.java    # Consumer that serializes snapshots to a file
 ├── PrologueInjector.java      # ASM ClassVisitor — injects replay prologues
-├── ReplayState.java           # Thread-local replay coordination
+├── ReplayState.java           # Thread-local replay coordination and go-latch
+├── RestoredThread.java        # Handle to a restored thread (go-latch control)
 ├── ThreadFreezer.java         # Freeze implementation (JDI stack walk)
-├── ThreadRestorer.java        # Restore implementation (JDI local setting)
+├── ThreadRestorer.java        # Restore implementation (single-pass JDI local setting)
 ├── Version.java               # Version string
 ├── exception/                 # ThreadFrozenError, AgentNotLoadedException, etc.
 ├── internal/                  # InvokeRegistry, BytecodeHasher, HeapRestorer, etc.

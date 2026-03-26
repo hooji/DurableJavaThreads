@@ -1,16 +1,19 @@
 # Implementation Guide: Single-Pass Restore via Direct-Jump Resume Stubs
 
+> **Status: IMPLEMENTED in v1.2.0** — All tasks below have been completed.
+> All 127 unit tests and 35 E2E integration tests pass.
+
 ## Starting Point
 
 Branch: `claude/document-java-threads-Ahyc3`
 Commit: `2e01402` (tagged locally as `new-arch-jumping-off-point`)
 
-The codebase has the bones of the new single-pass architecture but needs one critical fix: the deepest frame still calls `resumePoint()` from its resume stub instead of jumping into original code. This means the deepest frame's non-parameter locals are out of scope when JDI tries to set them.
+The codebase had the bones of the new single-pass architecture but needed one critical fix: the deepest frame called `resumePoint()` from its resume stub instead of jumping into original code. This meant the deepest frame's non-parameter locals were out of scope when JDI tried to set them.
 
-## Current Test Status
+## Final Test Status
 
-- 127 unit tests: 126 pass, 1 updated (`RawBytecodeScannerTest` expects 2 invokes instead of 4)
-- E2E tests: most fail due to the deepest-frame scope issue described below
+- 127 unit tests: all pass
+- 35 E2E integration tests: all pass
 
 ## Background
 

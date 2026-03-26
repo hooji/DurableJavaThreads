@@ -41,11 +41,10 @@ The system has six major subsystems:
 4. Store the instrumented bytecode in `InvokeRegistry.INSTRUMENTED_BYTECODE`
 5. Post-process: `RawBytecodeScanner` scans the instrumented bytes to find exact bytecode offsets of all invoke instructions, then `InvokeRegistry` maps these to invoke indices
 
-**Injected prologue structure (per method):**
+**Injected prologue structure (per method, single-pass architecture):**
 
 ```
 METHOD ENTRY:
-  __retVal = null                          // extra local slot for boxed return value
   if (!ReplayState.isReplayThread())       // single not-taken branch in normal execution
     goto ORIGINAL_CODE
 
@@ -54,37 +53,31 @@ METHOD ENTRY:
     case 1: goto RESUME_1
     ...
 
-RESUME_N:                                  // one per invoke instruction in original code
-  if (isLastFrame):
-    resumePoint()                          // block for JDI to set params
-    deactivate()                           // exit replay mode
-    armLocalsAwait()                       // arm gate for localsReady()
-    push sub-stack defaults                // match operand stack shape at merge point
-    push dummy return value
-    goto POST_INVOKE_N
-  else:
-    advanceFrame()
-    push receiver + dummy args
-    re-invoke original method              // recurse deeper into call stack
-    box return value → __retVal
-    armLocalsAwait()
-    push sub-stack defaults
-    unbox __retVal
-    goto POST_INVOKE_N
+RESUME_N (deepest frame):
+  emitLocalDefaults()                      // init non-param locals for verifier
+  deactivate()                             // exit replay mode
+  push sub-stack defaults + dummy args
+  goto BEFORE_INVOKE_N                     // jump into original code — calls freeze()
+
+RESUME_N (non-deepest frame):
+  advanceFrame()
+  emitLocalDefaults()
+  push sub-stack defaults + dummy args
+  goto BEFORE_INVOKE_N                     // jump into original code — calls deeper method
 
 ORIGINAL_CODE:
   ... original bytecode ...
+  BEFORE_INVOKE_0:
   invoke_0                                 // original invoke instruction
   POST_INVOKE_0:
-  ReplayState.localsReady()                // inserted after every invoke
   ...
 ```
 
 **Key design decisions:**
-- `localsReady()` is inserted after *every* invoke in original code, but is a no-op in normal execution (checks a thread-local boolean, returns immediately)
-- The `__retVal` slot is appended beyond `maxLocals` so it doesn't collide with original locals
-- Sub-stack defaults are pushed so the JVM verifier sees type-compatible stack shapes at the `POST_INVOKE_N` merge point
-- Boxing/unboxing goes through `ReplayState.boxInt()` etc. instead of `Integer.valueOf()` so `RawBytecodeScanner` can filter them out (they're calls to `ReplayState`, which is excluded)
+- ALL frames (deepest and non-deepest) jump to `BEFORE_INVOKE` in the original code section, keeping every frame in its original code where local variables are naturally in scope
+- The deepest frame's invoke is the `freeze()` call — during restore, `freeze()` detects restore mode via a `ThreadLocal` flag and blocks on a go-latch instead of actually freezing
+- Sub-stack defaults are pushed so the JVM verifier sees type-compatible stack shapes at merge points
+- Only parameter scopes are extended to method-wide; non-parameter locals keep their original compiler-assigned scope ranges (avoids slot-reuse conflicts)
 
 ### 2. Freeze Operation
 
@@ -162,29 +155,22 @@ All snapshot classes implement `Serializable`. The entire snapshot is written vi
 6. Compute resume indices from snapshot
 7. Pre-resolve receivers (`this`) for each frame from restored heap
 
-**Two-phase restore:**
+**Single-pass restore:**
 
 The restore creates two threads: a **replay thread** and a **JDI worker thread**.
 
-**Phase 1 — Rebuild call stack:**
-1. Replay thread activates replay mode (`ReplayState.activateWithLatch()`)
+1. Replay thread activates replay mode (`ReplayState.activateWithLatch()`) and sets `restoreInProgress = true`
 2. Replay thread calls the bottom frame's method via reflection
 3. Each frame's prologue detects replay mode, dispatches to the correct resume stub
-4. Resume stubs advance through the frame chain, re-invoking methods to rebuild the stack
-5. The deepest frame's stub calls `resumePoint()`, which blocks on a `CountDownLatch`
-6. JDI worker waits for replay thread to reach `resumePoint()` (polls thread status + stack)
-7. JDI worker pre-loads all snapshot-referenced classes
-8. JDI worker sets method parameters in all user frames via JDI `setValue()`
-9. JDI worker calls `ReplayState.deactivate()` then `releaseResumePoint()`
-10. Replay thread wakes, sets `__skip`, jumps to post-invoke label in original code
-
-**Phase 2 — Set local variables (per frame, deepest first):**
-1. Replay thread hits `localsReady()` at the post-invoke label, blocks on locals latch
-2. JDI worker waits for thread to reach `localsReady()`, verifies correct frame identity
-3. JDI worker sets ALL local variables (including non-parameters now in scope) via JDI
-4. JDI worker releases locals latch
-5. Replay thread continues executing original code past the freeze point
-6. Process repeats for each frame as the stack unwinds to shallower frames
+4. Non-deepest stubs advance the frame, push dummy args, and jump to `BEFORE_INVOKE` — the original invoke fires, calling deeper methods whose prologues continue the chain
+5. The deepest frame's stub deactivates replay mode, then jumps to `BEFORE_INVOKE` — the original `freeze()` call fires
+6. `freeze()` detects `restoreInProgress`, blocks on the go-latch via `ReplayState.awaitGoLatch()`
+7. All frames are now in their original code sections with all local variables naturally in scope
+8. JDI worker waits for replay thread to reach `awaitGoLatch()` (polls thread status + stack)
+9. JDI worker pre-loads all snapshot-referenced classes
+10. JDI worker sets ALL local variables in ALL user frames in a single pass via JDI `setValue()`
+11. JDI worker completes; `ThreadRestorer` captures the go-latch into a `RestoredThread`
+12. When `RestoredThread.resume()` is called, the go-latch is counted down, `freeze()` returns normally, and user code continues from the freeze point
 
 ### 5. JDWP Port Discovery
 
