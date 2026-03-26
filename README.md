@@ -93,7 +93,7 @@ The loop variable `i` was 5 when the thread froze. The restored thread resumes f
 
 1. `Durable.freeze("./snapshot.dat")` connected to the JVM's debug interface (JDWP), walked the thread's call stack, captured every local variable (`i`, etc.) and every heap object reachable from those variables, and serialized everything into `./snapshot.dat`. The original thread was then terminated.
 
-2. `Durable.restore("./snapshot.dat")` deserialized the snapshot, rebuilt all the heap objects first (so object references are available), then re-entered every method on the original call stack using injected replay prologues, set all local variables via JDI, and handed back a `Thread` ready to resume from exactly where `freeze()` was called.
+2. `Durable.restore("./snapshot.dat")` deserialized the snapshot, rebuilt all heap objects, re-entered every method on the original call stack using injected replay prologues, and jumped into each method's original code section. With all frames in their original code, JDI set every local variable in a single pass. Then `freeze()` returned normally and the loop continued.
 
 ### More control
 
@@ -113,6 +113,51 @@ Or use the built-in `SnapshotFileWriter`:
 Durable.freeze(new SnapshotFileWriter("checkpoint.dat"));
 ```
 
+### Named objects
+
+Tag heap objects with names at freeze time, then substitute live replacements at restore time. This lets you reconnect a restored thread to fresh external resources (database connections, service clients, etc.) without the thread knowing anything changed:
+
+```java
+// Freeze with named objects
+Map<String, Object> named = Map.of("db", databaseConn, "config", appConfig);
+Durable.freeze("checkpoint.dat", named);
+
+// Restore with replacements — the thread sees the NEW objects
+Map<String, Object> replacements = Map.of("db", newDbConn, "config", newConfig);
+Durable.restore("checkpoint.dat", replacements);
+```
+
+The `this` reference of the calling frame is automatically named `"this"` unless you explicitly provide it.
+
+### Multi-instantiation
+
+A single snapshot can be restored any number of times. Each restore creates an independent thread with its own copy of the heap:
+
+```java
+ThreadSnapshot snapshot = loadSnapshot("checkpoint.dat");
+for (int i = 0; i < 10; i++) {
+    Map<String, Object> params = Map.of("workerId", new WorkerId(i));
+    Durable.restore(snapshot, params);  // 10 independent threads from one snapshot
+}
+```
+
+Combined with named replacements, this enables fork-join patterns where a frozen computation is parameterized and fanned out.
+
+### Evergreen threads
+
+A thread can freeze and restore repeatedly, creating a durable execution loop:
+
+```java
+while (true) {
+    Event event = waitForEvent();        // may take days
+    process(event);
+    Durable.freeze("workflow.dat");      // checkpoint to database
+    // After restore, loop continues from here
+}
+```
+
+Between freeze and restore, the thread consumes no resources. The snapshot lives in a database, S3, or disk. A framework detects the triggering event and calls `restore()` — the thread picks up exactly where it left off.
+
 ## API
 
 ### `Durable.freeze(String filePath)` / `Durable.freeze(Path path)`
@@ -122,6 +167,8 @@ Freezes the calling thread, serializing the snapshot to the given file. The orig
 ### `Durable.freeze(Consumer<ThreadSnapshot> handler)`
 
 Freezes the calling thread. The handler receives the snapshot for custom persistence. The original thread is terminated after the handler returns. Code after `freeze()` only executes in restored threads.
+
+All freeze overloads accept an optional `Map<String, Object> namedObjects` parameter to tag heap objects with names for replacement at restore time.
 
 ### `Durable.restore(String filePath)` / `Durable.restore(Path path)` / `Durable.restore(ThreadSnapshot snapshot)`
 
