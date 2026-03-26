@@ -46,6 +46,17 @@ final class ThreadFreezer {
      * @param namedObjects user-assigned names for heap objects (may be null)
      */
     static void freeze(Consumer<ThreadSnapshot> handler, Map<String, Object> namedObjects) {
+        // During restore, freeze() is called from the deepest frame's original
+        // code. Instead of actually freezing, block on the go-latch until
+        // RestoredThread.resume() is called.
+        if (ReplayState.isRestoreInProgress()) {
+            ReplayState.awaitGoLatch();
+            // Clear the flag so subsequent freeze() calls from this thread
+            // (re-freeze) go through the normal freeze path.
+            ReplayState.setRestoreInProgress(false);
+            return; // return normally — user code continues after freeze()
+        }
+
         Thread callerThread = Thread.currentThread();
         Object lock = new Object();
         Throwable[] error = new Throwable[1];

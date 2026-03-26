@@ -7,6 +7,7 @@ import ai.jacc.durableThreads.snapshot.*;
 import static ai.jacc.durableThreads.internal.FrameFilter.isInfrastructureFrame;
 
 import java.util.*;
+import java.util.concurrent.CountDownLatch;
 
 /**
  * Implements the restore operation: validates a snapshot, rebuilds the heap,
@@ -111,6 +112,10 @@ final class ThreadRestorer {
                 + java.util.UUID.randomUUID().toString().substring(0, 8);
         Thread replayThread = new Thread(() -> {
             ReplayState.activateWithLatch(resumeIndices, frameReceivers);
+            // Set the restore-in-progress flag so that when the deepest frame's
+            // stub deactivates replay and jumps to the original freeze() call,
+            // freeze() detects it's in restore mode and blocks on the go-latch.
+            ReplayState.setRestoreInProgress(true);
 
             try {
                 FrameSnapshot bottomFrame = snapshot.bottomFrame();
@@ -127,8 +132,9 @@ final class ThreadRestorer {
         }, threadName);
 
         // Step 6: Start the replay thread and run JDI restore synchronously.
-        // The JDI worker sets locals in all frames but does NOT release the
-        // last frame's localsReady latch — that becomes the "go" latch.
+        // The replay thread ends up blocked inside freeze() on the go-latch.
+        // The JDI worker sets locals in all frames. The go-latch is captured
+        // into RestoredThread for the caller to release.
         replayThread.start();
         final Throwable[] jdiError = {null};
         Thread jdiWorker = new Thread(() -> {
@@ -152,10 +158,10 @@ final class ThreadRestorer {
             throw new RuntimeException("JDI restore failed", jdiError[0]);
         }
 
-        // The replay thread is parked at resumePoint() on the resumeLatch.
-        // All JDI work is done. Use the resumeLatch as the go-latch —
-        // RestoredThread.resume() will count it down.
-        return new RestoredThread(replayThread, ReplayState.getResumeLatch());
+        // The replay thread is parked inside freeze() on the goLatch.
+        // All JDI work is done. RestoredThread.resume() will count it down,
+        // causing freeze() to return normally and user code to continue.
+        return new RestoredThread(replayThread, ReplayState.getGoLatch());
     }
 
     private static void validateBytecodeHashes(ThreadSnapshot snapshot) {
@@ -285,12 +291,12 @@ final class ThreadRestorer {
     /**
      * Run single-pass JDI restore synchronously.
      *
-     * <p>Wait for replay thread to block at {@code resumePoint()}. All frames
-     * are in their original code sections (resume stubs jump to BEFORE_INVOKE
-     * labels in original code), so all local variables are in scope. Set ALL
-     * locals in ALL frames in one pass, deactivate replay, release the resume
-     * latch. The thread is then blocked on the go-latch in
-     * {@code resumePoint()} until {@link RestoredThread#resume()} is called.</p>
+     * <p>Wait for replay thread to block inside {@code freeze()} at
+     * {@code awaitGoLatch()}. All frames are in their original code sections
+     * (resume stubs jump to BEFORE_INVOKE labels), so all local variables
+     * are in scope. Set ALL locals in ALL frames in one pass. The thread
+     * remains blocked on the go-latch until {@link RestoredThread#resume()}
+     * is called.</p>
      */
     private static void runJdiRestore(String threadName,
                                       ThreadSnapshot snapshot,
@@ -306,13 +312,16 @@ final class ThreadRestorer {
 
             VirtualMachine vm = JdiHelper.connect(port);
             try {
-                // Wait for thread to reach resumePoint()
+                // Wait for thread to reach awaitGoLatch() inside freeze().
+                // The deepest frame's resume stub deactivated replay and jumped
+                // to BEFORE_INVOKE, which called freeze(). freeze() detected
+                // restoreInProgress and is now blocked on the go-latch.
                 ThreadReference tr = waitForThreadAtMethod(vm, threadName,
-                        "resumePoint", "ReplayState", 30_000);
+                        "awaitGoLatch", "ReplayState", 30_000);
                 if (tr == null) {
                     throw new RuntimeException(
                             "Timeout waiting for replay thread '" + threadName
-                            + "' to reach resumePoint(). The thread may have failed "
+                            + "' to reach awaitGoLatch(). The thread may have failed "
                             + "during replay prologue execution.");
                 }
 
@@ -336,11 +345,6 @@ final class ThreadRestorer {
                     tr.resume();
                 }
 
-                // Deactivate replay mode. The thread is still blocked at
-                // resumePoint() — it won't be released until the go-latch
-                // is counted down by RestoredThread.resume().
-                ReplayState.deactivate();
-
                 // Clean up the heap bridge
                 HeapObjectBridge.clear();
             } finally {
@@ -351,7 +355,9 @@ final class ThreadRestorer {
             e.printStackTrace(System.err);
             ReplayState.signalRestoreError(
                     "JDI restore worker failed: " + e.getMessage());
-            ReplayState.releaseResumePoint();
+            // Release the go-latch so the replay thread doesn't hang forever
+            CountDownLatch latch = ReplayState.getGoLatch();
+            if (latch != null) latch.countDown();
             throw new RuntimeException("JDI restore failed: " + e.getMessage(), e);
         }
     }
@@ -509,13 +515,10 @@ final class ThreadRestorer {
                 // Match by class name and method name
                 if (jdiClassName.equals(snapFrame.className())
                         && jdiMethodName.equals(snapFrame.methodName())) {
-                    // Only require all locals for the top frame (where localsReady()
-                    // executes in original code). Intermediate frames are still inside
-                    // resume stub code where non-parameter locals are out of scope.
-                    boolean requireForFrame = requireAllLocals
-                            && snapshotIdx == topFrameIdx;
+                        // With the direct-jump architecture, all frames are in their
+                    // original code sections, so all locals should be in scope.
                     setFrameLocals(vm, threadRef, jdiFrame, snapFrame,
-                            restoredHeap, heapRestorer, requireForFrame);
+                            restoredHeap, heapRestorer, requireAllLocals);
                     snapshotIdx--;
                 }
                 // If no match, skip this JDI frame (it's infrastructure / reflection)

@@ -63,6 +63,20 @@ public final class ReplayState {
     private static volatile CountDownLatch localsLatch;
 
     /**
+     * Go-latch: the replay thread blocks on this inside {@code freeze()} during
+     * restore. After JDI sets all locals, this latch is captured by
+     * {@link RestoredThread} and counted down by {@link RestoredThread#resume()}.
+     */
+    private static volatile CountDownLatch goLatch;
+
+    /**
+     * Thread-local flag indicating that the current thread is being restored
+     * (not executing a real freeze). Checked by {@code freeze()} to decide
+     * whether to block on the go-latch instead of actually freezing.
+     */
+    private static final ThreadLocal<Boolean> restoreInProgress = ThreadLocal.withInitial(() -> false);
+
+    /**
      * If the JDI worker encounters a fatal error, it stores the message here
      * before releasing the latch. The replay thread checks this after waking
      * and throws instead of continuing with incorrect state.
@@ -298,6 +312,7 @@ public final class ReplayState {
             restoreError = null;
             resumeLatch = new CountDownLatch(1);
             localsLatch = new CountDownLatch(1);
+            goLatch = new CountDownLatch(1);
         }
         REPLAY.set(new ReplayData(resumeIndices, frameReceivers));
     }
@@ -319,9 +334,56 @@ public final class ReplayState {
         REPLAY.remove();
     }
 
-    /** Package-private access to resume latch for ThreadRestorer (go-latch). */
+    /** Package-private access to resume latch for ThreadRestorer (legacy). */
     static java.util.concurrent.CountDownLatch getResumeLatch() {
         return resumeLatch;
+    }
+
+    /**
+     * Mark the current thread as being in a restore operation.
+     * Called before the replay thread starts so that {@code freeze()} knows
+     * to block on the go-latch instead of actually freezing.
+     */
+    public static void setRestoreInProgress(boolean value) {
+        restoreInProgress.set(value);
+    }
+
+    /**
+     * Check if the current thread is being restored (not a real freeze).
+     */
+    public static boolean isRestoreInProgress() {
+        return restoreInProgress.get();
+    }
+
+    /**
+     * Block on the go-latch. Called by {@code freeze()} when it detects
+     * that it's being called during a restore operation. Blocks until
+     * {@link RestoredThread#resume()} counts the latch down.
+     */
+    public static void awaitGoLatch() {
+        CountDownLatch latch = goLatch;
+        if (latch != null) {
+            try {
+                if (!latch.await(LATCH_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                    throw new RuntimeException(
+                            "Thread restore timed out: go-latch was not released within "
+                            + LATCH_TIMEOUT_SECONDS + " seconds.");
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+        // Check if the JDI worker signalled a restore failure
+        String error = restoreError;
+        if (error != null) {
+            restoreError = null;
+            throw new RuntimeException("Thread restore failed: " + error);
+        }
+    }
+
+    /** Package-private access to go-latch for ThreadRestorer. */
+    static CountDownLatch getGoLatch() {
+        return goLatch;
     }
 
     // --- Boxing/unboxing helpers ---

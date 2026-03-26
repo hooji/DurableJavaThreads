@@ -205,13 +205,12 @@ class FreezeScenarioTest {
             Method m = clazz.getMethod("loopWithFreezeOnFifth", int[].class);
             int result = (int) m.invoke(null, counters);
 
-            // In direct-jump replay, the resume stub jumps past hit() to the
-            // post-invoke label. Locals are defaults (loop counter i=0), so the
-            // loop re-executes from i=0 and hits i==4 again, calling hit() once.
-            // In production, JDI sets i to its frozen value, avoiding the re-entry.
+            // Single-pass: deepest frame jumps to BEFORE_INVOKE (before hit()),
+            // so hit() fires once from replay. Then locals are defaults (i=0), so
+            // loop re-enters i==4 and hits again. Total: 2.
             assertEquals(10, result, "Loop should still complete all iterations");
-            assertEquals(1, FreezePoint.hitCount,
-                    "hit() called once when loop re-enters i==4 (no JDI to set locals)");
+            assertEquals(2, FreezePoint.hitCount,
+                    "hit() called once from replay + once when loop re-enters i==4");
         } finally {
             ReplayState.deactivate();
         }
@@ -234,7 +233,7 @@ class FreezeScenarioTest {
             String result = (String) m.invoke(null, true);
 
             assertEquals("if-branch", result, "Should take the if-branch");
-            assertEquals(0, FreezePoint.hitCount, "hit() should be skipped");
+            assertEquals(1, FreezePoint.hitCount, "hit() called once from deepest frame");
         } finally {
             ReplayState.deactivate();
         }
@@ -257,7 +256,7 @@ class FreezeScenarioTest {
             String result = (String) m.invoke(null, false);
 
             assertEquals("else-branch", result, "Should take the else-branch");
-            assertEquals(0, FreezePoint.hitCount, "hit() should be skipped");
+            assertEquals(1, FreezePoint.hitCount, "hit() called once from deepest frame");
         } finally {
             ReplayState.deactivate();
         }

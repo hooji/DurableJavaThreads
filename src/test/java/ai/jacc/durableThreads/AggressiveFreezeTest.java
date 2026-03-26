@@ -428,12 +428,12 @@ class AggressiveFreezeTest {
             Method m = clazz.getMethod("depth15", int[].class);
             int result = (int) m.invoke(null, trace);
 
-            // Direct-jump: resume stub jumps past hit() to post-invoke.
-            // trace[14]=15 is a heap write BEFORE hit(), so it's never executed.
-            // In production, the heap snapshot restores array state.
+            // Single-pass: deepest frame jumps to BEFORE_INVOKE (right before hit()).
+            // hit() fires once. Code before the invoke (trace[14]=15) is still skipped.
+            // In production, freeze() detects restore mode and blocks.
             assertEquals(9999, result, "Return value should be preserved");
-            assertEquals(0, trace[14], "Heap write before freeze not executed (no JDI/heap snapshot)");
-            assertEquals(0, FreezePoint.hitCount, "hit() should be skipped");
+            assertEquals(0, trace[14], "Heap write before invoke is still skipped");
+            assertEquals(1, FreezePoint.hitCount, "hit() called once from deepest frame");
         } finally {
             ReplayState.deactivate();
         }
@@ -454,12 +454,12 @@ class AggressiveFreezeTest {
             Method m = clazz.getMethod("fib", int.class, int[].class);
             int result = (int) m.invoke(null, 10, new int[]{5});
 
-            // Direct-jump: resume stub jumps past hit(), deactivates replay,
-            // then original code runs normally. fib(5) triggers hit() once normally.
-            // Other fib calls where n==5 also trigger hit() (8 calls total for fib(10)).
+            // Single-pass: deepest frame jumps to BEFORE_INVOKE, so hit()
+            // fires once from the deepest frame's replay, plus 8 times normally
+            // when n==5 after replay deactivated (9 total).
             assertEquals(55, result, "fib(10) should still be 55 in replay mode");
-            assertEquals(8, FreezePoint.hitCount,
-                    "hit() called normally at n==5 after replay deactivated");
+            assertEquals(9, FreezePoint.hitCount,
+                    "hit() called once from replay + 8 times normally at n==5");
         } finally {
             ReplayState.deactivate();
         }
@@ -480,17 +480,14 @@ class AggressiveFreezeTest {
             Method m = clazz.getMethod("freezeInTry", boolean.class);
             String result = (String) m.invoke(null, false);
 
-            // Direct-jump: resume stub jumps past hit() to post-invoke.
-            // sb is null (default from emitLocalDefaults, no JDI to set it).
-            // sb.append("after-") throws NPE, caught by the catch block.
-            // The catch block also NPEs on sb.append("caught-"), which goes
-            // to the finally handler. Finally also NPEs on sb.append("-finally").
-            // The final NPE propagates as an InvocationTargetException.
+            // Single-pass: deepest frame jumps to BEFORE_INVOKE (before hit()).
+            // hit() fires once. After hit(), sb is null (from emitLocalDefaults).
+            // sb.append("after-") throws NPE, caught and re-thrown.
             fail("Should have thrown due to sb being null without JDI");
         } catch (java.lang.reflect.InvocationTargetException e) {
             assertTrue(e.getCause() instanceof NullPointerException,
                     "Expected NPE from null sb (no JDI to restore locals)");
-            assertEquals(0, FreezePoint.hitCount);
+            assertEquals(1, FreezePoint.hitCount, "hit() called once from deepest frame");
         } finally {
             ReplayState.deactivate();
         }
@@ -512,7 +509,7 @@ class AggressiveFreezeTest {
             String result = (String) m.invoke(null, 2);
 
             assertEquals("two-frozen", result);
-            assertEquals(0, FreezePoint.hitCount);
+            assertEquals(1, FreezePoint.hitCount, "hit() called once from deepest frame");
         } finally {
             ReplayState.deactivate();
         }
@@ -534,13 +531,13 @@ class AggressiveFreezeTest {
                     int.class, int.class, int.class, int.class);
             int[] result = (int[]) m.invoke(null, 5, 5, 2, 3);
 
-            // Direct-jump: resume stub jumps past hit(), locals reset to defaults.
-            // Loop counters i,j start from 0, so the loop re-enters i==2,j==3
-            // and hit() is called once normally (replay deactivated at deepest frame).
+            // Single-pass: deepest frame jumps to BEFORE_INVOKE (before hit()),
+            // so hit() fires once from replay. Then loop continues from defaults
+            // (i=0,j=0), re-enters i==2,j==3, hits again normally. Total: 2.
             assertEquals(25, result[0], "All iterations should still execute");
             assertEquals(13, result[1], "frozeAtTotal should still be recorded");
-            assertEquals(1, FreezePoint.hitCount,
-                    "hit() called once when loop re-enters freeze condition (no JDI)");
+            assertEquals(2, FreezePoint.hitCount,
+                    "hit() called once from replay + once when loop re-enters condition");
         } finally {
             ReplayState.deactivate();
         }
@@ -560,16 +557,14 @@ class AggressiveFreezeTest {
         try {
             Method m = clazz.getMethod("manyLocals", int.class);
 
-            // The skip mechanism skips ALL invokes up to the target (__skip >= index).
-            // The string concat "local-" + seed is an invokedynamic before the freeze
-            // point, so it's skipped and h gets null (default for Object). When the
-            // post-freeze code calls h.length(), it throws NullPointerException.
-            // In a real restore, JDI would set h to the correct value.
+            // Single-pass: deepest frame jumps to BEFORE_INVOKE (before hit()),
+            // so hit() fires once. After hit(), h is null (from emitLocalDefaults).
+            // h.length() throws NPE. In a real restore, JDI would set h correctly.
             java.lang.reflect.InvocationTargetException thrown = assertThrows(java.lang.reflect.InvocationTargetException.class,
                     () -> m.invoke(null, 10));
             assertInstanceOf(NullPointerException.class, thrown.getCause(),
                     "h is null because string concat invoke was skipped");
-            assertEquals(0, FreezePoint.hitCount);
+            assertEquals(1, FreezePoint.hitCount, "hit() called once from deepest frame");
         } finally {
             ReplayState.deactivate();
         }
@@ -590,12 +585,11 @@ class AggressiveFreezeTest {
             Method m = clazz.getMethod("chainedCompute", int.class);
             int result = (int) m.invoke(null, 5);
 
-            // The skip mechanism skips ALL invokes up to the target (__skip >= index).
-            // step1/step2/step3 (invokes 0-2) and hit() (invoke 3) are all skipped.
-            // v1=v2=v3=0 (default int). step4(0)=0, step5(0)=100.
-            // In a real restore, JDI would set v1=15, v2=30, v3=27 before resuming.
+            // Single-pass: deepest frame jumps to BEFORE_INVOKE (before hit()),
+            // so hit() fires once. step1/step2/step3 (before hit) are still skipped.
+            // v1=v2=v3=0 (defaults). step4(0)=0, step5(0)=100.
             assertEquals(100, result, "Pre-freeze invokes skipped, post-freeze use defaults");
-            assertEquals(0, FreezePoint.hitCount);
+            assertEquals(1, FreezePoint.hitCount, "hit() called once from deepest frame");
         } finally {
             ReplayState.deactivate();
         }

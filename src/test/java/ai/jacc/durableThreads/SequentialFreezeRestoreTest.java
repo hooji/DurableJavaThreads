@@ -60,7 +60,7 @@ class SequentialFreezeRestoreTest {
 
         public static void freeze(int loopCounter, List<Integer> log) {
             freezeCount++;
-            log.add(loopCounter);
+            if (log != null) log.add(loopCounter);
         }
 
         public static void reset() {
@@ -125,12 +125,15 @@ class SequentialFreezeRestoreTest {
             int sum = (int) m.invoke(null, 0, 101, 5, freezeLog);
 
             assertEquals(5050, sum, "Sum should still be correct in replay mode");
-            // The skip fires once (at i=0), then __skip resets to -1.
-            // The remaining 20 freeze calls (i=5,10,...,100) execute normally.
-            assertEquals(20, FreezePoint.freezeCount,
-                    "20 of 21 freeze calls should execute (first one skipped)");
-            assertEquals(20, freezeLog.size());
-            assertEquals(5, freezeLog.get(0), "First logged freeze should be at i=5 (i=0 was skipped)");
+            // Single-pass: deepest frame jumps to BEFORE_INVOKE, so the freeze
+            // call fires once from replay with dummy args (0, null — log is null
+            // so nothing logged). Then replay deactivates and the loop continues
+            // from defaults (i=0). The remaining 20 freeze calls fire normally.
+            assertEquals(21, FreezePoint.freezeCount,
+                    "1 from replay + 20 normal freeze calls");
+            assertEquals(20, freezeLog.size(),
+                    "Replay freeze had null log, so only 20 entries");
+            assertEquals(5, freezeLog.get(0), "First logged freeze at i=5");
         } finally {
             ReplayState.deactivate();
         }
