@@ -4,8 +4,10 @@ import com.sun.jdi.*;
 import ai.jacc.durableThreads.exception.BytecodeMismatchException;
 import ai.jacc.durableThreads.internal.*;
 import ai.jacc.durableThreads.snapshot.*;
+import static ai.jacc.durableThreads.internal.FrameFilter.isInfrastructureFrame;
 
 import java.util.*;
+import java.util.concurrent.CountDownLatch;
 
 /**
  * Implements the restore operation: validates a snapshot, rebuilds the heap,
@@ -60,11 +62,11 @@ final class ThreadRestorer {
      * @param snapshot the captured thread state
      * @return a Thread (not yet started) that will resume from the freeze point
      */
-    static Thread restore(ThreadSnapshot snapshot) {
+    static RestoredThread restore(ThreadSnapshot snapshot) {
         return restore(snapshot, null);
     }
 
-    static Thread restore(ThreadSnapshot snapshot, Map<String, Object> namedReplacements) {
+    static RestoredThread restore(ThreadSnapshot snapshot, Map<String, Object> namedReplacements) {
         // Step 0: Sanity-check the snapshot
         if (snapshot.frameCount() == 0) {
             throw new IllegalArgumentException(
@@ -74,9 +76,6 @@ final class ThreadRestorer {
         }
 
         // Step 1: Force-load all classes referenced in the snapshot.
-        // This triggers the agent's ClassFileTransformer, which instruments them
-        // and populates InvokeRegistry with their invoke offset maps.
-        // Must happen BEFORE computeResumeIndices() which reads InvokeRegistry.
         ensureClassesLoaded(snapshot);
 
         // Step 2: Validate bytecode hashes
@@ -98,16 +97,25 @@ final class ThreadRestorer {
         // Step 4: Build replay state (now InvokeRegistry has the data)
         int[] resumeIndices = computeResumeIndices(snapshot);
 
-        // Step 4b: Pre-resolve receiver ("this") for each frame so resume stubs
-        // push the correct heap-restored object instead of a dummy instance.
+        // Step 4b: Pre-resolve receiver ("this") for each frame
         Object[] frameReceivers = computeFrameReceivers(snapshot, heapRestorer);
 
-        // Step 5: Create the replay thread
-        String threadName = snapshot.threadName() + "-restored";
+        // Step 5: Create the replay thread.
+        // Use the original thread's base name (strip any prior "-restored-*" suffix)
+        // with a short unique ID to avoid name accumulation across freeze/restore cycles.
+        String baseName = snapshot.threadName();
+        int restoreIdx = baseName.indexOf("-restored-");
+        if (restoreIdx >= 0) {
+            baseName = baseName.substring(0, restoreIdx);
+        }
+        String threadName = baseName + "-restored-"
+                + java.util.UUID.randomUUID().toString().substring(0, 8);
         Thread replayThread = new Thread(() -> {
-            // Activate replay mode with latch — resumePoint() will block
-            // until the JDI worker sets locals and releases it
             ReplayState.activateWithLatch(resumeIndices, frameReceivers);
+            // Set the restore-in-progress flag so that when the deepest frame's
+            // stub deactivates replay and jumps to the original freeze() call,
+            // freeze() detects it's in restore mode and blocks on the go-latch.
+            ReplayState.setRestoreInProgress(true);
 
             try {
                 FrameSnapshot bottomFrame = snapshot.bottomFrame();
@@ -115,8 +123,6 @@ final class ThreadRestorer {
             } catch (ai.jacc.durableThreads.exception.ThreadFrozenError e) {
                 // Expected — thread was re-frozen
             } catch (Exception e) {
-                // invokeBottomFrame uses reflection, so ThreadFrozenError may be
-                // wrapped in InvocationTargetException. Unwrap and suppress it.
                 if (hasCause(e, ai.jacc.durableThreads.exception.ThreadFrozenError.class)) {
                     // Expected — thread was re-frozen via reflected call
                 } else {
@@ -125,10 +131,37 @@ final class ThreadRestorer {
             }
         }, threadName);
 
-        // Step 5: Configure JDI to set locals when the replay thread hits resumePoint()
-        configureJdiRestore(replayThread, threadName, snapshot, restoredHeap, heapRestorer);
+        // Step 6: Start the replay thread and run JDI restore synchronously.
+        // The replay thread ends up blocked inside freeze() on the go-latch.
+        // The JDI worker sets locals in all frames. The go-latch is captured
+        // into RestoredThread for the caller to release.
+        replayThread.start();
+        final Throwable[] jdiError = {null};
+        Thread jdiWorker = new Thread(() -> {
+            try {
+                runJdiRestore(threadName, snapshot, restoredHeap, heapRestorer);
+            } catch (Throwable t) {
+                jdiError[0] = t;
+            }
+        }, "durable-restore-jdi-worker");
+        jdiWorker.setDaemon(true);
+        jdiWorker.start();
 
-        return replayThread;
+        try {
+            jdiWorker.join();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("Interrupted while waiting for JDI restore to complete", e);
+        }
+
+        if (jdiError[0] != null) {
+            throw new RuntimeException("JDI restore failed", jdiError[0]);
+        }
+
+        // The replay thread is parked inside freeze() on the goLatch.
+        // All JDI work is done. RestoredThread.resume() will count it down,
+        // causing freeze() to return normally and user code to continue.
+        return new RestoredThread(replayThread, ReplayState.getGoLatch());
     }
 
     private static void validateBytecodeHashes(ThreadSnapshot snapshot) {
@@ -256,153 +289,77 @@ final class ThreadRestorer {
     }
 
     /**
-     * Configure two-phase JDI worker for thread restoration.
+     * Run single-pass JDI restore synchronously.
      *
-     * <p><b>Phase 1</b>: Wait for replay thread to block at {@code resumePoint()}.
-     * Deactivate replay mode and release the resume latch. The thread wakes,
-     * sets {@code __skip}, and re-executes original code (skipping all invokes
-     * up to the target).</p>
-     *
-     * <p><b>Phase 2</b>: Wait for replay thread to block at {@code localsReady()}.
-     * At this point the thread is in the original code section where all local
-     * variables are in scope. Set locals via JDI, then release the locals latch.
-     * The thread resumes past the freeze point with correct local variable values.</p>
+     * <p>Wait for replay thread to block inside {@code freeze()} at
+     * {@code awaitGoLatch()}. All frames are in their original code sections
+     * (resume stubs jump to BEFORE_INVOKE labels), so all local variables
+     * are in scope. Set ALL locals in ALL frames in one pass. The thread
+     * remains blocked on the go-latch until {@link RestoredThread#resume()}
+     * is called.</p>
      */
-    private static void configureJdiRestore(Thread replayThread, String threadName,
-                                            ThreadSnapshot snapshot,
-                                            Map<Long, Object> restoredHeap,
-                                            HeapRestorer heapRestorer) {
-        Thread jdiWorker = new Thread(() -> {
-            try {
-                int port = JdiHelper.detectJdwpPort();
-                if (port < 0) {
-                    throw new RuntimeException(
-                            "JDWP not available for restore. "
-                            + "Start with: -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005");
-                }
-
-                VirtualMachine vm = JdiHelper.connect(port);
-                try {
-                    // === PHASE 1: Deactivate replay mode ===
-                    // Wait for thread to reach resumePoint()
-                    ThreadReference tr = waitForThreadAtMethod(vm, threadName,
-                            "resumePoint", "ReplayState", 30_000);
-                    if (tr == null) {
-                        throw new RuntimeException(
-                                "Timeout waiting for replay thread '" + threadName
-                                + "' to reach resumePoint(). The thread may have failed "
-                                + "during replay prologue execution.");
-                    }
-
-                    // Pre-load all classes referenced by snapshot locals so that
-                    // ClassNotLoadedException never occurs during setValue().
-                    // This must happen BEFORE any frame manipulation because
-                    // forceLoadClass uses invokeMethod which resumes the thread
-                    // and invalidates cached StackFrame references.
-                    // The thread must be suspended for invokeMethod to work.
-                    tr.suspend();
-                    try {
-                        preloadSnapshotClasses(vm, tr, snapshot);
-                    } finally {
-                        tr.resume();
-                    }
-
-                    // Phase 1a: Set method parameters in all user frames so that
-                    // when original code re-executes, control flow matches the
-                    // original execution (e.g., loop counters, branch conditions).
-                    // Only parameters (always in scope) are set here; non-parameter
-                    // locals are set in Phase 2 when the thread is at localsReady().
-                    // Double-suspend for resilience against spurious JDI resumes.
-                    tr.suspend();
-                    tr.suspend();
-                    try {
-                        setLocalsViaJdi(vm, tr, snapshot, restoredHeap, heapRestorer, false);
-                    } finally {
-                        tr.resume();
-                        tr.resume();
-                    }
-
-                    // Deactivate replay mode and release resume latch.
-                    // Thread will wake, set __skip in resume stub, goto original code,
-                    // skip all invokes up to target, then block at localsReady().
-                    ReplayState.deactivate();
-                    ReplayState.releaseResumePoint();
-
-                    // === PHASE 2: Set local variables per-frame ===
-                    // Each frame in the restored call stack hits localsReady() exactly
-                    // once as the stack unwinds: deepest frame first, then progressively
-                    // shallower. We loop once per frame, waiting for each localsReady(),
-                    // setting ALL locals (including non-parameter locals that are now in
-                    // scope), then releasing the latch so the next frame can proceed.
-                    int frameCount = snapshot.frames().size();
-                    for (int f = 0; f < frameCount; f++) {
-                        // Snapshot frames are [bottom..top], so deepest = frameCount-1
-                        int snapshotFrameIdx = frameCount - 1 - f;
-
-                        // Retry loop: after releasing the previous frame's latch, the
-                        // replay thread may still be WAITING inside the old localsReady()
-                        // call when we poll. We detect this via frame identity mismatch
-                        // and retry until the thread advances to the correct frame.
-                        long deadline = System.currentTimeMillis() + 30_000;
-                        boolean frameSet = false;
-                        while (!frameSet && System.currentTimeMillis() < deadline) {
-                            ThreadReference tr2 = waitForThreadAtMethod(vm, threadName,
-                                    "localsReady", "ReplayState",
-                                    deadline - System.currentTimeMillis());
-                            if (tr2 == null) {
-                                throw new RuntimeException(
-                                        "Timeout waiting for replay thread '" + threadName
-                                        + "' to reach localsReady() for frame " + f
-                                        + " (" + snapshot.frames().get(snapshotFrameIdx).className()
-                                        + "." + snapshot.frames().get(snapshotFrameIdx).methodName()
-                                        + "). The thread may have failed during re-execution.");
-                            }
-
-                            // Double-suspend for resilience against spurious JDI resumes
-                            tr2.suspend();
-                            tr2.suspend();
-                            try {
-                                if (isCorrectFrame(tr2, snapshot.frames().get(snapshotFrameIdx))) {
-                                    setLocalsForSingleFrame(vm, tr2, snapshot,
-                                            restoredHeap, heapRestorer, snapshotFrameIdx);
-                                    ReplayState.releaseLocalsReady();
-                                    frameSet = true;
-                                }
-                                // else: thread is still in previous frame's localsReady(),
-                                // resume and retry after it advances
-                            } finally {
-                                tr2.resume();
-                                tr2.resume();
-                            }
-                        }
-                        if (!frameSet) {
-                            throw new RuntimeException(
-                                    "Timeout waiting for correct frame for " + f
-                                    + " (" + snapshot.frames().get(snapshotFrameIdx).className()
-                                    + "." + snapshot.frames().get(snapshotFrameIdx).methodName()
-                                    + "). The thread may have failed during re-execution.");
-                        }
-                    }
-
-                    // Clean up the heap bridge
-                    HeapObjectBridge.clear();
-                } finally {
-                    // Do NOT call vm.dispose() — disconnecting causes JDWP to
-                    // re-listen and print a confusing "Listening..." message.
-                    // The connection is cleaned up automatically when the JVM exits.
-                }
-            } catch (Exception e) {
-                System.err.println("[DurableThreads] JDI restore failed: " + e.getMessage());
-                e.printStackTrace(System.err);
-                ReplayState.signalRestoreError(
-                        "JDI restore worker failed: " + e.getMessage());
-                // Release both latches so the thread doesn't hang
-                ReplayState.releaseResumePoint();
-                ReplayState.releaseLocalsReady();
+    private static void runJdiRestore(String threadName,
+                                      ThreadSnapshot snapshot,
+                                      Map<Long, Object> restoredHeap,
+                                      HeapRestorer heapRestorer) {
+        try {
+            int port = JdiHelper.detectJdwpPort();
+            if (port < 0) {
+                throw new RuntimeException(
+                        "JDWP not available for restore. "
+                        + "Start with: -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005");
             }
-        }, "durable-restore-jdi-worker");
-        jdiWorker.setDaemon(true);
-        jdiWorker.start();
+
+            VirtualMachine vm = JdiHelper.connect(port);
+            try {
+                // Wait for thread to reach awaitGoLatch() inside freeze().
+                // The deepest frame's resume stub deactivated replay and jumped
+                // to BEFORE_INVOKE, which called freeze(). freeze() detected
+                // restoreInProgress and is now blocked on the go-latch.
+                ThreadReference tr = waitForThreadAtMethod(vm, threadName,
+                        "awaitGoLatch", "ReplayState", 30_000);
+                if (tr == null) {
+                    throw new RuntimeException(
+                            "Timeout waiting for replay thread '" + threadName
+                            + "' to reach awaitGoLatch(). The thread may have failed "
+                            + "during replay prologue execution.");
+                }
+
+                // Pre-load all classes referenced by snapshot locals
+                tr.suspend();
+                try {
+                    preloadSnapshotClasses(vm, tr, snapshot);
+                } finally {
+                    tr.resume();
+                }
+
+                // Set ALL locals in ALL frames in a single pass.
+                // All frames are in their original code sections (resume stubs
+                // jumped to BEFORE_INVOKE labels), so all locals are in scope.
+                tr.suspend();
+                tr.suspend();
+                try {
+                    setLocalsViaJdi(vm, tr, snapshot, restoredHeap, heapRestorer, true);
+                } finally {
+                    tr.resume();
+                    tr.resume();
+                }
+
+                // Clean up the heap bridge
+                HeapObjectBridge.clear();
+            } finally {
+                // Do NOT call vm.dispose()
+            }
+        } catch (Exception e) {
+            System.err.println("[DurableThreads] JDI restore failed: " + e.getMessage());
+            e.printStackTrace(System.err);
+            ReplayState.signalRestoreError(
+                    "JDI restore worker failed: " + e.getMessage());
+            // Release the go-latch so the replay thread doesn't hang forever
+            CountDownLatch latch = ReplayState.getGoLatch();
+            if (latch != null) latch.countDown();
+            throw new RuntimeException("JDI restore failed: " + e.getMessage(), e);
+        }
     }
 
     /**
@@ -457,10 +414,7 @@ final class ThreadRestorer {
                 String jdiClassName = loc.declaringType().name().replace('.', '/');
                 String jdiMethodName = loc.method().name();
                 // Skip infrastructure frames
-                if (jdiClassName.startsWith("ai/jacc/durableThreads/ReplayState")
-                        || jdiClassName.startsWith("java/")
-                        || jdiClassName.startsWith("jdk/")
-                        || jdiClassName.startsWith("sun/")) {
+                if (isInfrastructureFrame(jdiClassName)) {
                     continue;
                 }
                 // First user frame — check if it matches
@@ -552,10 +506,7 @@ final class ThreadRestorer {
                 String jdiMethodName = loc.method().name();
 
                 // Skip infrastructure frames (ReplayState, CountDownLatch, JDK, etc.)
-                if (jdiClassName.startsWith("ai/jacc/durableThreads/ReplayState")
-                        || jdiClassName.startsWith("java/")
-                        || jdiClassName.startsWith("jdk/")
-                        || jdiClassName.startsWith("sun/")) {
+                if (isInfrastructureFrame(jdiClassName)) {
                     continue;
                 }
 
@@ -564,13 +515,10 @@ final class ThreadRestorer {
                 // Match by class name and method name
                 if (jdiClassName.equals(snapFrame.className())
                         && jdiMethodName.equals(snapFrame.methodName())) {
-                    // Only require all locals for the top frame (where localsReady()
-                    // executes in original code). Intermediate frames are still inside
-                    // resume stub code where non-parameter locals are out of scope.
-                    boolean requireForFrame = requireAllLocals
-                            && snapshotIdx == topFrameIdx;
+                        // With the direct-jump architecture, all frames are in their
+                    // original code sections, so all locals should be in scope.
                     setFrameLocals(vm, threadRef, jdiFrame, snapFrame,
-                            restoredHeap, heapRestorer, requireForFrame);
+                            restoredHeap, heapRestorer, requireAllLocals);
                     snapshotIdx--;
                 }
                 // If no match, skip this JDI frame (it's infrastructure / reflection)
@@ -604,10 +552,7 @@ final class ThreadRestorer {
                 String jdiMethodName = loc.method().name();
 
                 // Skip infrastructure frames
-                if (jdiClassName.startsWith("ai/jacc/durableThreads/ReplayState")
-                        || jdiClassName.startsWith("java/")
-                        || jdiClassName.startsWith("jdk/")
-                        || jdiClassName.startsWith("sun/")) {
+                if (isInfrastructureFrame(jdiClassName)) {
                     continue;
                 }
 
@@ -665,11 +610,20 @@ final class ThreadRestorer {
                     + "for thread restore to set local variables.", e);
         }
 
-        // Build a map of JDI locals by name for quick lookup
+        // Build a map of JDI locals by name for quick lookup.
+        // When multiple variables share the same name and slot (e.g., two
+        // for-loops both declaring 'int i'), prefer the one that is VISIBLE
+        // at the current frame location. This is critical for the single-pass
+        // architecture where the thread is at the freeze point's BCI.
         Map<String, com.sun.jdi.LocalVariable> jdiLocalsByName = new HashMap<>();
         for (com.sun.jdi.LocalVariable jdiLocal : jdiLocals) {
-            // Use the first variable with each name (shadowed variables are rare)
-            jdiLocalsByName.putIfAbsent(jdiLocal.name(), jdiLocal);
+            com.sun.jdi.LocalVariable existing = jdiLocalsByName.get(jdiLocal.name());
+            if (existing == null) {
+                jdiLocalsByName.put(jdiLocal.name(), jdiLocal);
+            } else if (jdiLocal.isVisible(jdiFrame)) {
+                // Prefer the visible one (in scope at current BCI)
+                jdiLocalsByName.put(jdiLocal.name(), jdiLocal);
+            }
         }
 
         // Pre-resolve all values and pin object references to prevent GC collection.
@@ -953,7 +907,8 @@ final class ThreadRestorer {
                         + "Cannot resolve heap reference " + snapshotId);
             }
 
-            Value result = getObjectFromBridgeArray(vm, bridgeType, snapshotId);
+            Value result = JdiHelper.getConcurrentHashMapValue(
+                    mapRef, String.valueOf(snapshotId));
             if (result == null) {
                 throw new RuntimeException("Heap object with snapshot ID " + snapshotId
                         + " not found in HeapObjectBridge. The restored heap may be incomplete.");
@@ -965,78 +920,6 @@ final class ThreadRestorer {
             throw new RuntimeException("Failed to resolve heap reference " + snapshotId
                     + " via JDI", e);
         }
-    }
-
-    /**
-     * Get a restored object from the bridge by walking ConcurrentHashMap internals via JDI.
-     * Returns null only if the key genuinely doesn't exist in the map.
-     */
-    private static Value getObjectFromBridgeArray(VirtualMachine vm,
-                                                   ReferenceType bridgeType,
-                                                   long snapshotId) {
-        // Read the static 'objects' map field
-        com.sun.jdi.Field objectsField = bridgeType.fieldByName("objects");
-        if (objectsField == null) {
-            throw new RuntimeException("HeapObjectBridge.objects field not found via JDI");
-        }
-
-        ObjectReference mapRef = (ObjectReference) bridgeType.getValue(objectsField);
-        if (mapRef == null) {
-            throw new RuntimeException("HeapObjectBridge.objects map is null via JDI");
-        }
-
-        ReferenceType mapType = mapRef.referenceType();
-
-        com.sun.jdi.Field tableField = findField(mapType, "table");
-        if (tableField == null) {
-            throw new RuntimeException(
-                    "Cannot find 'table' field in ConcurrentHashMap via JDI. "
-                    + "Cannot resolve heap reference " + snapshotId);
-        }
-
-        ArrayReference table = (ArrayReference) mapRef.getValue(tableField);
-        if (table == null) return null; // empty map — key genuinely missing
-
-        String targetKey = String.valueOf(snapshotId);
-
-        // Walk the hash table buckets
-        for (int i = 0; i < table.length(); i++) {
-            ObjectReference node = (ObjectReference) table.getValue(i);
-            while (node != null) {
-                // Read key and val fields from the Node
-                com.sun.jdi.Field keyField = findField(node.referenceType(), "key");
-                com.sun.jdi.Field valField = findField(node.referenceType(), "val");
-                com.sun.jdi.Field nextField = findField(node.referenceType(), "next");
-
-                if (keyField == null || valField == null) break;
-
-                Value keyVal = node.getValue(keyField);
-                if (keyVal instanceof StringReference && ((StringReference) keyVal).value().equals(targetKey)) {
-                    return node.getValue(valField);
-                }
-
-                // Follow the chain
-                if (nextField != null) {
-                    Value nextVal = node.getValue(nextField);
-                    node = (nextVal instanceof ObjectReference) ? (ObjectReference) nextVal : null;
-                } else {
-                    break;
-                }
-            }
-        }
-        return null; // key not found in map
-    }
-
-    /**
-     * Find a field by name in a type or its supertypes.
-     */
-    private static com.sun.jdi.Field findField(ReferenceType type, String name) {
-        com.sun.jdi.Field f = type.fieldByName(name);
-        if (f != null) return f;
-        if (type instanceof ClassType && ((ClassType) type).superclass() != null) {
-            return findField(((ClassType) type).superclass(), name);
-        }
-        return null;
     }
 
     /**

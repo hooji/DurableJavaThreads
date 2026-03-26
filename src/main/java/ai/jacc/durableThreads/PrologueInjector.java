@@ -10,36 +10,39 @@ import java.util.Objects;
 /**
  * ASM-based bytecode transformer that injects the universal replay prologue.
  *
- * <h3>Architecture (Direct-Jump)</h3>
+ * <h3>Architecture (Direct-Jump / Single-Pass Restore)</h3>
  * <pre>
  * METHOD ENTRY:
- *   __retVal = null
  *   if (!isReplayThread()) goto ORIGINAL_CODE
  *   switch (currentResumeIndex()):
  *     case N: goto RESUME_N
  *
- * RESUME_N:
- *   if (isLastFrame) { resumePoint(); } else { advanceFrame(); invoke next; }
- *   initLocalDefaults()                  // init non-param locals for verifier
- *   localsReady()                        // block for JDI to set actual locals
- *   [push return value if non-void]
- *   goto POST_INVOKE_N                   // jump directly past the invoke
+ * RESUME_N (deepest frame):
+ *   initLocalDefaults()
+ *   deactivate()                         // exit replay mode
+ *   setRestoreInProgress(true)           // so freeze() blocks on go-latch
+ *   pushSubStackDefaults + dummyArgs
+ *   goto BEFORE_INVOKE_N                 // jump to original code — calls freeze()
+ *
+ * RESUME_N (non-deepest frame):
+ *   advanceFrame()
+ *   initLocalDefaults()
+ *   pushSubStackDefaults + dummyArgs
+ *   goto BEFORE_INVOKE_N                 // jump to original code — calls deeper method
  *
  * ORIGINAL_CODE:
  *   ... original bytecode ...
+ *   BEFORE_INVOKE_0:
  *   invoke 0
  *   POST_INVOKE_0:
  *   ...
- *   invoke 1
- *   POST_INVOKE_1:
- *   ...
  * </pre>
  *
- * <p>During replay, the resume stub jumps directly to the post-invoke label
- * for the target invoke. No original code is re-executed, so there are no
- * side effects from println, I/O, field writes, etc. The JDI worker sets
- * all local variables at {@code localsReady()}, then execution continues
- * past the freeze point with correct locals.</p>
+ * <p>During replay, ALL frames end up in their original code sections.
+ * The deepest frame calls freeze(), which detects restore mode and blocks
+ * on the go-latch. JDI sets ALL locals in ALL frames in a single pass
+ * (all locals are naturally in scope). When RestoredThread.resume()
+ * releases the go-latch, freeze() returns and user code continues.</p>
  */
 public final class PrologueInjector extends ClassVisitor {
 
@@ -290,6 +293,13 @@ public final class PrologueInjector extends ClassVisitor {
                     case Opcodes.LSTORE: case Opcodes.DSTORE: simPop(); break;
                 }
             }
+            // Record store instructions so buildPerInvokeScopeMaps can track slot types
+            switch (opcode) {
+                case Opcodes.ISTORE: case Opcodes.LSTORE: case Opcodes.FSTORE:
+                case Opcodes.DSTORE: case Opcodes.ASTORE:
+                    bufferedOps.add(new StoreRecord(opcode, varIndex));
+                    break;
+            }
             bufferedOps.add(() -> target.visitVarInsn(opcode, varIndex));
         }
         @Override public void visitTypeInsn(int opcode, String type) {
@@ -516,11 +526,15 @@ public final class PrologueInjector extends ClassVisitor {
         }
 
         /**
-         * Emit local variable debug info. Method parameters get method-wide scope
-         * so JDI can set them at resume stub BCIs (Phase 1 of two-phase restore).
-         * Non-parameter locals keep their original scope — they are set in Phase 2
-         * when the thread is at localsReady() in the original code section where
-         * the original scopes naturally apply.
+         * Emit local variable debug info with method-wide scope for parameters
+         * only. Non-parameter locals keep their original scope ranges.
+         *
+         * <p>Parameters need method-wide scope because the replay prologue
+         * accesses them (via {@code isReplayThread()} check) before control
+         * reaches the original code section where the compiler's ranges begin.
+         * Non-parameter locals are only accessed by JDI when the thread is in
+         * the original code section (at the freeze/invoke point), where the
+         * compiler's ranges naturally cover them.</p>
          */
         private void emitLocalVariables() {
             if (methodStartLabel == null || methodEndLabel == null) {
@@ -532,27 +546,28 @@ public final class PrologueInjector extends ClassVisitor {
                 return;
             }
 
-            // Compute parameter slot count from method descriptor
+            // Compute the number of parameter slots
             int paramSlots = 0;
-            if ((methodAccess & Opcodes.ACC_STATIC) == 0) {
-                paramSlots = 1; // 'this'
-            }
-            for (Type t : Type.getArgumentTypes(methodDesc)) {
-                paramSlots += t.getSize();
-            }
+            if ((methodAccess & Opcodes.ACC_STATIC) == 0) paramSlots = 1; // "this"
+            for (Type t : Type.getArgumentTypes(methodDesc)) paramSlots += t.getSize();
 
-            // Extend scope only for parameter slots; deduplicate to avoid
-            // Duplicated LocalVariableTable errors from if/else branches
-            java.util.Set<String> seenParams = new java.util.HashSet<>();
+            // Extend parameter scopes to method-wide; keep non-parameter scopes original.
+            // Only deduplicate PARAMETERS (which share the same method-wide scope).
+            // Non-parameters must emit ALL entries — the same (name, desc, slot) can
+            // appear multiple times with different scope ranges (e.g., two for-loops
+            // each declaring 'int i' at the same slot). Dropping any entry would make
+            // the variable invisible to JDI at the freeze point.
+            java.util.Set<String> paramsSeen = new java.util.HashSet<>();
             for (LocalVarInfo lv : localVars) {
                 if (lv.index() < paramSlots) {
+                    // Parameter — extend to method-wide scope, deduplicate
                     String key = lv.name() + "\0" + lv.desc() + "\0" + lv.index();
-                    if (seenParams.add(key)) {
+                    if (paramsSeen.add(key)) {
                         target.visitLocalVariable(lv.name(), lv.desc(), lv.sig(),
                                 methodStartLabel, methodEndLabel, lv.index());
                     }
                 } else {
-                    // Non-parameter: keep original scope
+                    // Non-parameter — keep original scope, emit ALL entries
                     target.visitLocalVariable(lv.name(), lv.desc(), lv.sig(),
                             lv.start(), lv.end(), lv.index());
                 }
@@ -580,15 +595,16 @@ public final class PrologueInjector extends ClassVisitor {
 
         private void emitFullPrologue() {
             // Build per-invoke scope maps before emitting stubs so each stub
-            // initializes locals with types matching the target post-invoke label.
+            // initializes locals with types matching the target invoke label.
             buildPerInvokeScopeMaps();
 
-            int retValSlot = originalMaxLocals;
             Label originalCode = new Label();
 
-            // Pre-create post-invoke labels for direct-jump targets
+            // Pre-create labels for jump targets in original code
+            Label[] beforeInvokeLabels = new Label[invokeInfos.size()];
             Label[] postInvokeLabels = new Label[invokeInfos.size()];
-            for (int i = 0; i < postInvokeLabels.length; i++) {
+            for (int i = 0; i < invokeInfos.size(); i++) {
+                beforeInvokeLabels[i] = new Label();
                 postInvokeLabels[i] = new Label();
             }
 
@@ -598,10 +614,6 @@ public final class PrologueInjector extends ClassVisitor {
             target.visitLabel(methodStartLabel);
 
             // --- PROLOGUE ---
-
-            // __retVal = null (boxed return value from resume stub)
-            target.visitInsn(Opcodes.ACONST_NULL);
-            target.visitVarInsn(Opcodes.ASTORE, retValSlot);
 
             // Normal execution: skip straight to original code
             target.visitMethodInsn(Opcodes.INVOKESTATIC,
@@ -621,33 +633,34 @@ public final class PrologueInjector extends ClassVisitor {
             // --- RESUME STUBS ---
             for (int i = 0; i < invokeInfos.size(); i++) {
                 target.visitLabel(resumeLabels[i]);
-                emitResumeStub(i, invokeInfos.get(i), retValSlot, postInvokeLabels[i]);
+                emitResumeStub(i, invokeInfos.get(i),
+                        beforeInvokeLabels[i], postInvokeLabels[i]);
             }
 
-            // --- ORIGINAL CODE with post-invoke labels ---
+            // --- ORIGINAL CODE with before/post-invoke labels ---
             target.visitLabel(originalCode);
-            emitOriginalCode(postInvokeLabels);
+            emitOriginalCode(beforeInvokeLabels, postInvokeLabels);
 
             // End label for method-wide local variable scope
             target.visitLabel(methodEndLabel);
         }
 
         /**
-         * Resume stub: direct-jump approach.
+         * Resume stub: direct-jump-to-original-code approach.
          *
-         * <p>For the deepest frame: {@code resumePoint()} blocks, then local
-         * defaults are initialized (for verifier compatibility), then
-         * {@code localsReady()} blocks for JDI to set actual values, then a
-         * dummy return value is pushed (if non-void) and we jump directly to
-         * the post-invoke label.</p>
+         * <p>For the deepest frame: init local defaults, deactivate replay,
+         * set restoreInProgress flag, push sub-stack defaults + dummy args,
+         * jump to BEFORE_INVOKE. The original freeze() call fires, detects
+         * restore mode, and blocks on the go-latch. JDI sets all locals.</p>
          *
-         * <p>For non-deepest frames: the inner method is re-invoked to rebuild
-         * the call stack. Its return value is boxed and saved. After
-         * {@code localsReady()}, the return value is unboxed and pushed,
-         * then we jump to the post-invoke label.</p>
+         * <p>For non-deepest frames: advance frame, init local defaults,
+         * push sub-stack defaults + dummy args, jump to BEFORE_INVOKE.
+         * The original invoke fires, calling the deeper method whose
+         * prologue takes over. Frame stays in original code with locals
+         * in scope.</p>
          */
         private void emitResumeStub(int invokeIndex, InvokeInfo info,
-                                    int retValSlot, Label postInvokeLabel) {
+                                    Label beforeInvokeLabel, Label postInvokeLabel) {
             List<Character> subStack = invokeSubStacks.getOrDefault(invokeIndex,
                     java.util.Collections.emptyList());
             Label notLastFrame = new Label();
@@ -656,59 +669,55 @@ public final class PrologueInjector extends ClassVisitor {
                     "ai/jacc/durableThreads/ReplayState", "isLastFrame", "()Z", false);
             target.visitJumpInsn(Opcodes.IFEQ, notLastFrame);
 
-            // Deepest frame: resumePoint(), init locals, deactivate replay, push sub-stack + return, goto postInvoke
-            // localsReady() is called at the postInvoke label in the original code
-            // where all local variables are naturally in scope for JDI.
-            target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                    "ai/jacc/durableThreads/ReplayState", "resumePoint", "()V", false);
+            // === Deepest frame ===
+            // Deactivate replay mode so freeze() doesn't re-enter the prologue.
+            // The restoreInProgress flag was already set by ThreadRestorer before
+            // the replay thread started, so freeze() will detect restore mode
+            // and block on the go-latch. Init local defaults, then jump to
+            // BEFORE_INVOKE — the original freeze() call fires, detects restore
+            // mode, and blocks. JDI sets all locals while blocked.
             emitLocalDefaults(invokeIndex);
-            // Deactivate replay so subsequent method calls in the original code
-            // execute normally (not re-entering their resume stubs). In production,
-            // JDI already deactivated replay between resumePoint() and localsReady(),
-            // so this is a harmless no-op. In tests without JDI, this prevents
-            // infinite recursion from replay-mode re-entry.
             target.visitMethodInsn(Opcodes.INVOKESTATIC,
                     "ai/jacc/durableThreads/ReplayState", "deactivate", "()V", false);
-            // Arm the localsReady gate BEFORE pushing sub-stack values (must be
-            // called with empty operand stack to avoid OperandStackChecker false positives)
-            target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                    RS, "armLocalsAwait", "()V", false);
-            pushSubStackDefaults(subStack);
-            pushDummyReturnValue(info.descriptor);
-            target.visitJumpInsn(Opcodes.GOTO, postInvokeLabel);
 
-            // Not deepest: advance, re-invoke, box return, init locals, push sub-stack + unbox, goto postInvoke
+            if (info.opcode == Opcodes.INVOKEDYNAMIC) {
+                // Invokedynamic can't be re-invoked from the stub.
+                // Jump to POST_INVOKE with dummy return.
+                pushSubStackDefaults(subStack);
+                pushDummyReturnValue(info.descriptor);
+                target.visitJumpInsn(Opcodes.GOTO, postInvokeLabel);
+            } else {
+                pushSubStackDefaults(subStack);
+                pushDummyArguments(info);
+                target.visitJumpInsn(Opcodes.GOTO, beforeInvokeLabel);
+            }
+
+            // === Non-deepest frame ===
+            // Advance to next frame, init local defaults, then jump into the
+            // original code right before the invoke instruction. The original
+            // bytecode makes the call, putting this frame in its original code
+            // section with all locals in scope.
             target.visitLabel(notLastFrame);
             target.visitMethodInsn(Opcodes.INVOKESTATIC,
                     "ai/jacc/durableThreads/ReplayState", "advanceFrame", "()V", false);
 
-            if (info.opcode == Opcodes.INVOKEDYNAMIC) {
-                target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                        "ai/jacc/durableThreads/ReplayState", "resumePoint", "()V", false);
-                emitLocalDefaults(invokeIndex);
-            } else {
-                pushDummyArguments(info);
-                target.visitMethodInsn(info.opcode, info.owner, info.name,
-                        info.descriptor, info.isInterface);
-                // Box the return value and save it
-                boxReturnValue(Type.getReturnType(info.descriptor));
-                target.visitVarInsn(Opcodes.ASTORE, retValSlot);
-                emitLocalDefaults(invokeIndex);
-            }
-
-            // Arm the localsReady gate BEFORE pushing sub-stack values
-            target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                    RS, "armLocalsAwait", "()V", false);
+            emitLocalDefaults(invokeIndex);
 
             if (info.opcode == Opcodes.INVOKEDYNAMIC) {
+                // Invokedynamic can't be re-invoked from the stub (bootstrap
+                // method complexity). Jump to POST_INVOKE with dummy return.
                 pushSubStackDefaults(subStack);
                 pushDummyReturnValue(info.descriptor);
+                target.visitJumpInsn(Opcodes.GOTO, postInvokeLabel);
             } else {
+                // Push sub-stack defaults + dummy receiver + dummy args to match
+                // the operand stack shape at BEFORE_INVOKE, then jump there.
+                // The original invoke instruction executes, calling the deeper
+                // method whose prologue will take over.
                 pushSubStackDefaults(subStack);
-                unboxReturnValue(Type.getReturnType(info.descriptor), retValSlot);
+                pushDummyArguments(info);
+                target.visitJumpInsn(Opcodes.GOTO, beforeInvokeLabel);
             }
-
-            target.visitJumpInsn(Opcodes.GOTO, postInvokeLabel);
         }
 
         /**
@@ -730,29 +739,29 @@ public final class PrologueInjector extends ClassVisitor {
         }
 
         /**
-         * Emit original code with post-invoke labels and localsReady() calls
-         * inserted after each invoke. The localsReady() call is where the JDI
-         * worker sets local variables (Phase 2). On the normal path (no replay),
-         * localsLatch is null so localsReady() returns immediately (zero cost).
-         * On the replay path (jumped from resume stub), localsReady() blocks
-         * until JDI sets locals and releases the latch.
+         * Emit original code with before-invoke and post-invoke labels.
+         *
+         * <p>Before-invoke labels are jump targets for non-deepest resume stubs
+         * (they jump here so the original invoke instruction makes the call,
+         * keeping the frame in its original code section with locals in scope).
+         * Post-invoke labels are jump targets for the deepest resume stub
+         * (it jumps past the freeze call to continue user code).</p>
          */
-        private void emitOriginalCode(Label[] postInvokeLabels) {
+        private void emitOriginalCode(Label[] beforeInvokeLabels,
+                                      Label[] postInvokeLabels) {
             for (Runnable op : bufferedOps) {
                 if (op instanceof InvokeMarker) {
                     InvokeMarker marker = (InvokeMarker) op;
+                    target.visitLabel(beforeInvokeLabels[marker.index]);
                     target.visitMethodInsn(marker.opcode, marker.owner, marker.name,
                             marker.descriptor, marker.isInterface);
                     target.visitLabel(postInvokeLabels[marker.index]);
-                    target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                            RS, "localsReady", "()V", false);
                 } else if (op instanceof InvokeDynamicMarker) {
                     InvokeDynamicMarker marker = (InvokeDynamicMarker) op;
+                    target.visitLabel(beforeInvokeLabels[marker.index]);
                     target.visitInvokeDynamicInsn(marker.name, marker.descriptor,
                             marker.bootstrapMethodHandle, marker.bootstrapMethodArguments);
                     target.visitLabel(postInvokeLabels[marker.index]);
-                    target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                            RS, "localsReady", "()V", false);
                 } else {
                     op.run();
                 }
@@ -768,10 +777,19 @@ public final class PrologueInjector extends ClassVisitor {
 
         /**
          * Build the per-invoke scope maps by walking through the buffered ops and
-         * tracking which local variables are in scope at each invoke position.
-         * This handles slot reuse (e.g., loop variable 'i' then StringBuilder 'sb'
-         * at the same slot) by using the LAST variable assigned to each slot
-         * before each invoke.
+         * tracking the last-stored type for each local variable slot.
+         *
+         * <p>We track both LocalVariableTable entries (for explicitly declared
+         * variables) and actual store instructions (ISTORE, ASTORE, etc.) to
+         * capture compiler-generated temporaries that aren't in the debug info.
+         * This prevents VerifyError from type mismatches at merge points when
+         * the resume stub path converges with the normal execution path at
+         * BEFORE_INVOKE labels.</p>
+         *
+         * <p>Only slots with a known type are initialized. Untracked slots are
+         * left uninitialized (Top) on the stub path — this is safe because the
+         * verifier will also see them as Top on normal paths that bypass the
+         * store instruction.</p>
          */
         private void buildPerInvokeScopeMaps() {
             int paramSlots = 0;
@@ -780,33 +798,66 @@ public final class PrologueInjector extends ClassVisitor {
 
             perInvokeScopeMaps = new java.util.HashMap<>();
 
-            // Track which labels have been visited as we walk through buffered ops
+            // Track the last-stored type for each slot by walking buffered ops.
+            // StoreRecord markers (inserted during visitVarInsn buffering) tell us
+            // the actual type last stored into each slot. This captures compiler
+            // temporaries that aren't in the LocalVariableTable.
+            java.util.Map<Integer, Character> lastStoreTypes = new java.util.TreeMap<>();
             java.util.Set<Label> visitedLabels = new java.util.HashSet<>();
+
             for (Runnable op : bufferedOps) {
                 if (op instanceof LabelOp) {
                     visitedLabels.add(((LabelOp) op).label);
+                } else if (op instanceof StoreRecord) {
+                    StoreRecord sr = (StoreRecord) op;
+                    if (sr.slot >= paramSlots) {
+                        lastStoreTypes.put(sr.slot, sr.typeCategory());
+                    }
                 } else if (op instanceof InvokeMarker || op instanceof InvokeDynamicMarker) {
                     int idx = (op instanceof InvokeMarker)
                             ? ((InvokeMarker) op).index
                             : ((InvokeDynamicMarker) op).index;
 
-                    // Determine slot types at this invoke position
-                    java.util.Map<Integer, Character> slotTypes = new java.util.TreeMap<>();
+                    // Start with lastStoreTypes snapshot — the actual type last
+                    // stored into each slot on the linear path to this invoke.
+                    java.util.Map<Integer, Character> slotTypes = new java.util.TreeMap<>(lastStoreTypes);
+
+                    // Override with LocalVariableTable info where available —
+                    // declared variables in scope are more precise than store
+                    // tracking (handles cases where a store in an earlier branch
+                    // set a type that's no longer correct at this invoke position)
                     for (LocalVarInfo lv : localVars) {
-                        if (lv.index() >= paramSlots
-                                && visitedLabels.contains(lv.start())
-                                && !visitedLabels.contains(lv.end())) {
-                            // Variable is in scope: start visited, end not yet
-                            slotTypes.put(lv.index(), typeCategory(Type.getType(lv.desc())));
+                        if (lv.index() >= paramSlots) {
+                            if (visitedLabels.contains(lv.start())
+                                    && !visitedLabels.contains(lv.end())) {
+                                slotTypes.put(lv.index(), typeCategory(Type.getType(lv.desc())));
+                            }
                         }
                     }
-                    // Fill remaining slots with reference default
-                    for (int i = paramSlots; i < originalMaxLocals; i++) {
-                        slotTypes.putIfAbsent(i, 'A');
-                    }
+
                     perInvokeScopeMaps.put(idx, slotTypes);
                 }
             }
+        }
+
+        // --- Store tracking ---
+        // Record (opcode, slot) pairs for store instructions as they are buffered,
+        // so buildPerInvokeScopeMaps() can infer actual slot types.
+        static final class StoreRecord implements Runnable {
+            final int opcode;
+            final int slot;
+            StoreRecord(int opcode, int slot) { this.opcode = opcode; this.slot = slot; }
+            char typeCategory() {
+                switch (opcode) {
+                    case Opcodes.ISTORE: return 'I';
+                    case Opcodes.LSTORE: return 'J';
+                    case Opcodes.FSTORE: return 'F';
+                    case Opcodes.DSTORE: return 'D';
+                    case Opcodes.ASTORE: return 'A';
+                    default: return 'A';
+                }
+            }
+            @Override public void run() { /* no-op marker — skipped during emit */ }
         }
 
         /**
@@ -814,41 +865,26 @@ public final class PrologueInjector extends ClassVisitor {
          * for a specific invoke target. The types are determined by which
          * variables are in scope at the invoke's position in the original code.
          */
+        /**
+         * Initialize non-parameter local slots to type-appropriate defaults
+         * for a specific invoke target. The types come from perInvokeScopeMaps,
+         * which tracks both LocalVariableTable entries and actual store instructions
+         * for each invoke position.
+         *
+         * <p>buildPerInvokeScopeMaps() creates an entry for every invoke index,
+         * so the lookup should never miss. If it does (defensive), we emit nothing
+         * rather than guessing — uninitialized slots merge as Top in the verifier,
+         * which is safe (no silent corruption).</p>
+         */
         private void emitLocalDefaults(int invokeIndex) {
             java.util.Map<Integer, Character> slotCategories =
                     perInvokeScopeMaps != null ? perInvokeScopeMaps.get(invokeIndex) : null;
 
             if (slotCategories == null) {
-                // Fallback: use all locals
-                slotCategories = buildFallbackSlotCategories();
+                return; // defensive: emit nothing rather than guessing wrong types
             }
 
             emitSlotDefaults(slotCategories);
-        }
-
-        /**
-         * Initialize non-parameter local slots to type-appropriate defaults.
-         * Fallback version used when per-invoke maps aren't available.
-         */
-        private void emitLocalDefaults() {
-            emitSlotDefaults(buildFallbackSlotCategories());
-        }
-
-        private java.util.Map<Integer, Character> buildFallbackSlotCategories() {
-            int paramSlots = 0;
-            if ((methodAccess & Opcodes.ACC_STATIC) == 0) paramSlots = 1;
-            for (Type t : Type.getArgumentTypes(methodDesc)) paramSlots += t.getSize();
-
-            java.util.Map<Integer, Character> slotCategories = new java.util.TreeMap<>();
-            for (LocalVarInfo lv : localVars) {
-                if (lv.index() >= paramSlots) {
-                    slotCategories.putIfAbsent(lv.index(), typeCategory(Type.getType(lv.desc())));
-                }
-            }
-            for (int i = paramSlots; i < originalMaxLocals; i++) {
-                slotCategories.putIfAbsent(i, 'A');
-            }
-            return slotCategories;
         }
 
         private void emitSlotDefaults(java.util.Map<Integer, Character> slotCategories) {
@@ -1062,18 +1098,6 @@ public final class PrologueInjector extends ClassVisitor {
                     break;
                 default:
                     break;
-            }
-        }
-
-        private void emitIntConst(int value) {
-            if (value >= -1 && value <= 5) {
-                target.visitInsn(Opcodes.ICONST_0 + value);
-            } else if (value >= Byte.MIN_VALUE && value <= Byte.MAX_VALUE) {
-                target.visitIntInsn(Opcodes.BIPUSH, value);
-            } else if (value >= Short.MIN_VALUE && value <= Short.MAX_VALUE) {
-                target.visitIntInsn(Opcodes.SIPUSH, value);
-            } else {
-                target.visitLdcInsn(value);
             }
         }
 

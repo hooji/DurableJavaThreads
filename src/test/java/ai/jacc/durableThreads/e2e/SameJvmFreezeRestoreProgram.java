@@ -7,7 +7,7 @@ import ai.jacc.durableThreads.Durable;
  *
  * <p>A worker thread counts from 2 to 12, freezing at i==5.
  * The main thread waits for the freeze, then calls
- * {@code Durable.restore(file, true, true)} to restore and
+ * {@code Durable.restore(file)} to restore and
  * wait for the thread in the same process.</p>
  *
  * <p>Expected output (stdout only, no exceptions on stderr):</p>
@@ -63,7 +63,7 @@ public class SameJvmFreezeRestoreProgram {
 
         // Now restore in the SAME JVM
         try {
-            Durable.restore(snapshotFile, true, true);
+            Durable.restore(snapshotFile);
             System.out.println("RESTORE_COMPLETE");
         } catch (Exception e) {
             System.out.println("RESTORE_FAILED=" + e.getClass().getName() + ": " + e.getMessage());

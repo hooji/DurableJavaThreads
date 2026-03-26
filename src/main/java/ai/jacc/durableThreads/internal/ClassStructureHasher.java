@@ -77,7 +77,12 @@ public final class ClassStructureHasher {
                     if (java.lang.reflect.Modifier.isTransient(field.getModifiers())) continue;
 
                     digest.update(field.getName().getBytes(StandardCharsets.UTF_8));
-                    digest.update(field.getType().getName().getBytes(StandardCharsets.UTF_8));
+                    // Use the same format as JDI's field.typeName() so hashes
+                    // match between freeze (JDI) and restore (reflection).
+                    // JDI returns "byte[]", "int[][]", "com.foo.Bar" etc.
+                    // Reflection's getType().getName() returns "[B", "[[I",
+                    // "com.foo.Bar" — different for array types.
+                    digest.update(toJdiTypeName(field.getType()).getBytes(StandardCharsets.UTF_8));
                 }
 
                 current = current.getSuperclass();
@@ -87,5 +92,28 @@ public final class ClassStructureHasher {
         } catch (NoSuchAlgorithmException e) {
             throw new AssertionError("SHA-256 not available", e);
         }
+    }
+
+    /**
+     * Convert a Java reflection Class to the type name format that JDI uses.
+     * JDI uses human-readable names like "byte[]", "int[][]", "java.lang.String".
+     * Reflection uses JVM internal names like "[B", "[[I", "java.lang.String".
+     */
+    private static String toJdiTypeName(Class<?> type) {
+        if (type.isArray()) {
+            // Count array dimensions and find the component type
+            int dims = 0;
+            Class<?> component = type;
+            while (component.isArray()) {
+                dims++;
+                component = component.getComponentType();
+            }
+            StringBuilder sb = new StringBuilder(component.getName());
+            for (int i = 0; i < dims; i++) {
+                sb.append("[]");
+            }
+            return sb.toString();
+        }
+        return type.getName();
     }
 }

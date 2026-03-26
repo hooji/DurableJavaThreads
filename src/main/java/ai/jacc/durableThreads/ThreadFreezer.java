@@ -7,6 +7,7 @@ import ai.jacc.durableThreads.exception.LambdaFrameException;
 import ai.jacc.durableThreads.exception.NonEmptyStackException;
 import ai.jacc.durableThreads.exception.ThreadFrozenError;
 import ai.jacc.durableThreads.internal.*;
+import static ai.jacc.durableThreads.internal.FrameFilter.isInfrastructureFrame;
 import ai.jacc.durableThreads.snapshot.*;
 
 import java.time.Instant;
@@ -28,12 +29,6 @@ import java.util.function.Consumer;
  */
 final class ThreadFreezer {
 
-    /**
-     * Serializes freeze operations so concurrent freeze/restore cycles
-     * don't interfere with each other's JDI connections and thread state.
-     */
-    static final Object FREEZE_LOCK = new Object();
-
     private ThreadFreezer() {}
 
     /**
@@ -51,6 +46,17 @@ final class ThreadFreezer {
      * @param namedObjects user-assigned names for heap objects (may be null)
      */
     static void freeze(Consumer<ThreadSnapshot> handler, Map<String, Object> namedObjects) {
+        // During restore, freeze() is called from the deepest frame's original
+        // code. Instead of actually freezing, block on the go-latch until
+        // RestoredThread.resume() is called.
+        if (ReplayState.isRestoreInProgress()) {
+            ReplayState.awaitGoLatch();
+            // Clear the flag so subsequent freeze() calls from this thread
+            // (re-freeze) go through the normal freeze path.
+            ReplayState.setRestoreInProgress(false);
+            return; // return normally — user code continues after freeze()
+        }
+
         Thread callerThread = Thread.currentThread();
         Object lock = new Object();
         Throwable[] error = new Throwable[1];
@@ -81,6 +87,7 @@ final class ThreadFreezer {
                 // Thread B interrupted us after capturing the snapshot.
                 // Throw ThreadFrozenError to cleanly terminate this thread.
                 if (FreezeFlag.isFrozen(Thread.currentThread())) {
+                    FreezeFlag.clearFrozen(Thread.currentThread());
                     throw new ThreadFrozenError();
                 }
                 // If we weren't marked as frozen, this was an unexpected interrupt
@@ -94,6 +101,7 @@ final class ThreadFreezer {
         // raced ahead of targetThread.interrupt() in performFreeze.
         // Check the freeze flag — if set, we were successfully frozen.
         if (FreezeFlag.isFrozen(Thread.currentThread())) {
+            FreezeFlag.clearFrozen(Thread.currentThread());
             throw new ThreadFrozenError();
         }
 
@@ -114,6 +122,7 @@ final class ThreadFreezer {
         if (Thread.currentThread().isInterrupted()) {
             // Clear the flag so sleep doesn't immediately throw
             Thread.interrupted();
+            FreezeFlag.clearFrozen(Thread.currentThread());
             throw new ThreadFrozenError();
         }
         blockForever();
@@ -127,6 +136,7 @@ final class ThreadFreezer {
         // Phase 1: sleep loop (low CPU cost)
         for (int i = 0; i < 100; i++) {
             if (FreezeFlag.isFrozen(Thread.currentThread())) {
+                FreezeFlag.clearFrozen(Thread.currentThread());
                 throw new ThreadFrozenError();
             }
             try {
@@ -134,6 +144,7 @@ final class ThreadFreezer {
             } catch (InterruptedException e) {
                 // Re-check flag on each wake
                 if (FreezeFlag.isFrozen(Thread.currentThread())) {
+                    FreezeFlag.clearFrozen(Thread.currentThread());
                     throw new ThreadFrozenError();
                 }
             }
@@ -147,13 +158,6 @@ final class ThreadFreezer {
 
     private static void performFreeze(Thread targetThread, Consumer<ThreadSnapshot> handler,
                                        Map<String, Object> namedObjects) {
-        synchronized (FREEZE_LOCK) {
-            performFreezeInternal(targetThread, handler, namedObjects);
-        }
-    }
-
-    private static void performFreezeInternal(Thread targetThread, Consumer<ThreadSnapshot> handler,
-                                               Map<String, Object> namedObjects) {
         // Connect to this JVM via JDI
         int port = JdiHelper.detectJdwpPort();
         if (port < 0) {
@@ -249,34 +253,6 @@ final class ThreadFreezer {
         });
         FreezeFlag.markFrozen(targetThread);
         targetThread.interrupt();
-    }
-
-    /** Prefixes of classes whose frames should be excluded from the snapshot. */
-    private static final String[] EXCLUDED_FRAME_PREFIXES = {
-            "java/", "javax/", "jdk/", "sun/", "com/sun/",
-    };
-
-    /** Specific library classes to exclude (not the whole package — user subpackages may exist). */
-    private static final String[] EXCLUDED_FRAME_CLASSES = {
-            "ai/jacc/durableThreads/Durable",
-            "ai/jacc/durableThreads/ThreadFreezer",
-            "ai/jacc/durableThreads/ThreadRestorer",
-            "ai/jacc/durableThreads/ReplayState",
-    };
-
-    /**
-     * Check if a frame is a JDK/library infrastructure frame that should be
-     * silently skipped (not captured). These are frames that get recreated
-     * naturally during restore (Thread.run, reflection, etc.).
-     */
-    private static boolean isInfrastructureFrame(String className) {
-        for (String prefix : EXCLUDED_FRAME_PREFIXES) {
-            if (className.startsWith(prefix)) return true;
-        }
-        for (String excluded : EXCLUDED_FRAME_CLASSES) {
-            if (className.equals(excluded) || className.startsWith(excluded + "$")) return true;
-        }
-        return false;
     }
 
     /**
@@ -460,47 +436,13 @@ final class ThreadFreezer {
             ObjectReference mapRef = (ObjectReference) bridgeType.getValue(objectsField);
             if (mapRef == null) return;
 
-            // Walk the ConcurrentHashMap to find our entries
-            ReferenceType mapType = mapRef.referenceType();
-            com.sun.jdi.Field tableField = findFieldInType(mapType, "table");
-            if (tableField == null) return;
-
-            ArrayReference table = (ArrayReference) mapRef.getValue(tableField);
-            if (table == null) return;
-
-            for (int i = 0; i < table.length(); i++) {
-                ObjectReference node = (ObjectReference) table.getValue(i);
-                while (node != null) {
-                    com.sun.jdi.Field keyField = findFieldInType(node.referenceType(), "key");
-                    com.sun.jdi.Field valField = findFieldInType(node.referenceType(), "val");
-                    com.sun.jdi.Field nextField = findFieldInType(node.referenceType(), "next");
-
-                    if (keyField != null && valField != null) {
-                        Value keyVal = node.getValue(keyField);
-                        if (keyVal instanceof StringReference) {
-                            String keyStr = ((StringReference) keyVal).value();
-                            try {
-                                long bridgeKey = Long.parseLong(keyStr);
-                                String name = keyToName.get(bridgeKey);
-                                if (name != null) {
-                                    Value objVal = node.getValue(valField);
-                                    if (objVal instanceof ObjectReference) {
-                                        heapWalker.registerNamedObject(
-                                                ((ObjectReference) objVal).uniqueID(), name);
-                                    }
-                                }
-                            } catch (NumberFormatException ignored) {
-                                // Not one of our keys
-                            }
-                        }
-                    }
-
-                    if (nextField != null) {
-                        Value nextVal = node.getValue(nextField);
-                        node = (nextVal instanceof ObjectReference) ? (ObjectReference) nextVal : null;
-                    } else {
-                        break;
-                    }
+            // Look up each named object in the ConcurrentHashMap via JDI
+            for (Map.Entry<Long, String> ke : keyToName.entrySet()) {
+                Value objVal = JdiHelper.getConcurrentHashMapValue(
+                        mapRef, String.valueOf(ke.getKey()));
+                if (objVal instanceof ObjectReference) {
+                    heapWalker.registerNamedObject(
+                            ((ObjectReference) objVal).uniqueID(), ke.getValue());
                 }
             }
         } finally {
@@ -509,16 +451,6 @@ final class ThreadFreezer {
                 HeapObjectBridge.remove(key);
             }
         }
-    }
-
-    /** Find a field by name in a type or its supertypes (for ConcurrentHashMap walking). */
-    private static com.sun.jdi.Field findFieldInType(ReferenceType type, String name) {
-        com.sun.jdi.Field f = type.fieldByName(name);
-        if (f != null) return f;
-        if (type instanceof ClassType && ((ClassType) type).superclass() != null) {
-            return findFieldInType(((ClassType) type).superclass(), name);
-        }
-        return null;
     }
 
     /**
@@ -609,8 +541,23 @@ final class ThreadFreezer {
             frozenThreads.add(t.getId());
         }
 
+        /**
+         * Check if a thread has been marked as frozen. Non-destructive — the flag
+         * remains set so multiple checks (e.g., in blockForever's retry loop) all
+         * see the frozen state. Call {@link #clearFrozen(Thread)} when the thread
+         * is about to terminate.
+         */
         static boolean isFrozen(Thread t) {
-            return frozenThreads.remove(t.getId());
+            return frozenThreads.contains(t.getId());
+        }
+
+        /**
+         * Remove the frozen flag for a thread. Called just before throwing
+         * {@link ThreadFrozenError} to prevent stale entries from accumulating
+         * (thread IDs can be reused after termination).
+         */
+        static void clearFrozen(Thread t) {
+            frozenThreads.remove(t.getId());
         }
     }
 }

@@ -58,7 +58,7 @@ public class NamedHeapObjectsProgram implements Runnable {
         replacements.put("this", replacement);
 
         try {
-            Durable.restore(snapshotFile, replacements, true, true);
+            Durable.restore(snapshotFile, replacements);
             System.out.println("RESTORE_COMPLETE");
         } catch (Exception e) {
             System.out.println("RESTORE_FAILED=" + e.getClass().getName() + ": " + e.getMessage());

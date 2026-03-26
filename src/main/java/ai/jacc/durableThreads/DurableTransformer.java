@@ -28,6 +28,8 @@ public final class DurableTransformer implements ClassFileTransformer {
             "jdk/",
             "sun/",
             "com/sun/",
+            // IDE runtime classes — not user code, complex bytecode patterns
+            "com/intellij/",
     };
 
     /** Specific library classes that must NOT be instrumented (to avoid recursion). */
