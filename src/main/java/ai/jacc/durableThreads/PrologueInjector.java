@@ -885,7 +885,11 @@ public final class PrologueInjector extends ClassVisitor {
             java.util.Map<Integer, Character> slotCategories = new java.util.TreeMap<>();
             for (LocalVarInfo lv : localVars) {
                 if (lv.index() >= paramSlots) {
-                    slotCategories.putIfAbsent(lv.index(), typeCategory(Type.getType(lv.desc())));
+                    // Use put() (not putIfAbsent) so later variables at the same
+                    // slot override earlier ones. When a slot is reused across
+                    // scopes (e.g., two for-loops with 'int i'), the last entry
+                    // is a better guess than the first.
+                    slotCategories.put(lv.index(), typeCategory(Type.getType(lv.desc())));
                 }
             }
             // Do NOT fill remaining slots with a default type — untracked slots
