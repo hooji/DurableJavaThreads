@@ -177,6 +177,13 @@ public final class HeapRestorer {
                     Class<?> clazz = Class.forName(snap.className());
                     obj = OBJENESIS.newInstance(clazz);
                 } catch (ClassNotFoundException e) {
+                    // Lambda/hidden classes ($$Lambda) can't be found by name.
+                    // Use a placeholder — the lambda instance is not needed for
+                    // restore (a dynamic proxy handles the dispatch instead).
+                    if (snap.className().contains("$$Lambda")) {
+                        obj = new Object(); // placeholder
+                        break;
+                    }
                     throw new RuntimeException("Cannot restore object of type: " + snap.className(), e);
                 }
                 break;
@@ -395,6 +402,9 @@ public final class HeapRestorer {
                 Object value = resolve(entry.getValue());
                 field.set(obj, value);
             } catch (ClassNotFoundException e) {
+                // Lambda/hidden classes can't be found by name — skip their fields.
+                // The lambda instance is a placeholder anyway (proxy handles dispatch).
+                if (declaringClassName.contains("$$Lambda")) continue;
                 throw new RuntimeException("Cannot restore field '" + fieldKey
                         + "': declaring class not found", e);
             } catch (NoSuchFieldException e) {

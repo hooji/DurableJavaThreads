@@ -10,7 +10,7 @@ Durable Threads is a pure-Java library that captures the full execution state of
 
 ### Download
 
-Download [`durable-threads-1.2.0.jar`](https://github.com/hooji/DurableJavaThreads/releases/download/v1.2.0/durable-threads-1.2.0.jar) from the [latest release](https://github.com/hooji/DurableJavaThreads/releases/latest). This is a shaded jar that bundles all dependencies (ASM and Objenesis).
+Download [`durable-threads-1.3.0.jar`](https://github.com/hooji/DurableJavaThreads/releases/download/v1.3.0/durable-threads-1.3.0.jar) from the [latest release](https://github.com/hooji/DurableJavaThreads/releases/latest). This is a shaded jar that bundles all dependencies (ASM and Objenesis).
 
 ### Hello World
 
@@ -54,12 +54,12 @@ public class RestoreDemo {
 Both JVMs must be started with the agent and JDWP enabled:
 
 ```bash
-% javac -g -cp durable-threads-1.2.0.jar FreezeDemo.java RestoreDemo.java
+% javac -g -cp durable-threads-1.3.0.jar FreezeDemo.java RestoreDemo.java
 
-% java -javaagent:durable-threads-1.2.0.jar \
+% java -javaagent:durable-threads-1.3.0.jar \
        -agentlib:jdwp=transport=dt_socket,server=y,suspend=n \
        --add-modules jdk.jdi \
-       -cp .:durable-threads-1.2.0.jar \
+       -cp .:durable-threads-1.3.0.jar \
        FreezeDemo
 i=0
 i=1
@@ -69,10 +69,10 @@ i=4
 i=5
 About to freeze!
 
-% java -javaagent:durable-threads-1.2.0.jar \
+% java -javaagent:durable-threads-1.3.0.jar \
        -agentlib:jdwp=transport=dt_socket,server=y,suspend=n \
        --add-modules jdk.jdi \
-       -cp .:durable-threads-1.2.0.jar \
+       -cp .:durable-threads-1.3.0.jar \
        RestoreDemo
 Resumed!
 i=6
@@ -255,7 +255,7 @@ cd DurableJavaThreads
 mvn clean package -DskipTests
 ```
 
-This produces `target/durable-threads-1.2.0.jar` — a shaded jar that bundles ASM and Objenesis.
+This produces `target/durable-threads-1.3.0.jar` — a shaded jar that bundles ASM and Objenesis.
 
 ### Running Tests
 
@@ -284,14 +284,14 @@ mvn package -DskipTests && mvn failsafe:integration-test -Dit.test=PerformanceBe
 <dependency>
     <groupId>ai.jacc</groupId>
     <artifactId>durable-threads</artifactId>
-    <version>1.2.0</version>
+    <version>1.3.0</version>
 </dependency>
 ```
 
 ### Gradle
 
 ```groovy
-implementation 'ai.jacc:durable-threads:1.2.0'
+implementation 'ai.jacc:durable-threads:1.3.0'
 ```
 
 > **Note:** Durable Threads is not yet published to Maven Central. For now, download the jar from the [releases page](https://github.com/hooji/DurableJavaThreads/releases) or build from source.
@@ -321,7 +321,7 @@ src/main/java/ai/jacc/durableThreads/
 
 - **Heap object references** — Objects referenced by local variables are captured and restored via JDI. Transient fields are skipped. Objects don't need to implement `Serializable` — the library extracts field data directly via reflection/JDI.
 
-- **No lambda frames in call stack** — If `Durable.freeze()` is called from within a lambda, or if any frame in the frozen thread's call stack is a lambda-generated class (`$$Lambda`), the library throws `LambdaFrameException`. Lambda class names are JVM-specific and cannot be replayed during restore. To fix: refactor the lambda into a named method or inner class, or move the `freeze()` call outside the lambda.
+- **Lambda support** — Lambdas on the call stack are supported. You can call `freeze()` from within a lambda body, a callback passed as a lambda, or a method reference (`this::method`). The library transparently skips the `$$Lambda` dispatch frame and enters the compiler-generated synthetic method directly via a dynamic proxy bridge. Captured variables (which become parameters of the synthetic method) are restored by JDI in the single-pass restore. **Not supported:** stream pipelines (`stream().filter().map().collect()`) and deeply-chained functional APIs — these create complex JDK infrastructure frame chains that can't be replayed.
 
 ## Requirements
 
