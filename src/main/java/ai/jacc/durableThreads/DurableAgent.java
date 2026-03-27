@@ -61,6 +61,16 @@ public final class DurableAgent {
     }
 
     /**
+     * Cache a successfully detected JDWP port so subsequent calls to
+     * {@code detectJdwpPort()} skip expensive port scanning.
+     */
+    public static void cacheJdwpPort(int port) {
+        if (port > 0) {
+            cachedJdwpPort = port;
+        }
+    }
+
+    /**
      * Eagerly detect and cache the JDWP port at startup.
      */
     private static void eagerlyDetectJdwpPort() {
