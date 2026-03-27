@@ -66,7 +66,7 @@ public final class Durable {
      * @throws AgentNotLoadedException if the durable agent is not loaded
      */
     public static void freeze(String filePath) {
-        freeze(filePath != null ? new SnapshotFileWriter(filePath) : null, null);
+        freeze(new SnapshotFileWriter(filePath), null);
     }
 
     /**
@@ -78,7 +78,7 @@ public final class Durable {
      * @throws AgentNotLoadedException if the durable agent is not loaded
      */
     public static void freeze(Path path) {
-        freeze(path != null ? new SnapshotFileWriter(path) : null, null);
+        freeze(new SnapshotFileWriter(path), null);
     }
 
     /**
@@ -128,7 +128,7 @@ public final class Durable {
      * @throws AgentNotLoadedException if the durable agent is not loaded
      */
     public static void freeze(String filePath, Map<String, Object> namedObjects) {
-        freeze(filePath != null ? new SnapshotFileWriter(filePath) : null, namedObjects);
+        freeze(new SnapshotFileWriter(filePath), namedObjects);
     }
 
     /**
@@ -139,7 +139,7 @@ public final class Durable {
      * @throws AgentNotLoadedException if the durable agent is not loaded
      */
     public static void freeze(Path path, Map<String, Object> namedObjects) {
-        freeze(path != null ? new SnapshotFileWriter(path) : null, namedObjects);
+        freeze(new SnapshotFileWriter(path), namedObjects);
     }
 
     // ===================================================================
