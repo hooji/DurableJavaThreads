@@ -28,14 +28,22 @@ public final class SnapshotFileWriter implements Consumer<ThreadSnapshot> {
      *
      * @param filePath the file path as a string
      */
+    /**
+     * Create a writer that serializes snapshots to the given file path.
+     * If filePath is null, the writer is a no-op (used during restore when
+     * the replay stub re-executes freeze() with dummy null arguments).
+     *
+     * @param filePath the file path as a string, or null for a no-op writer
+     */
     public SnapshotFileWriter(String filePath) {
-        this(Paths.get(filePath));
+        this.path = filePath != null ? Paths.get(filePath) : null;
     }
 
     /**
      * Create a writer that serializes snapshots to the given file path.
+     * If path is null, the writer is a no-op.
      *
-     * @param path the file path
+     * @param path the file path, or null for a no-op writer
      */
     public SnapshotFileWriter(Path path) {
         this.path = path;
@@ -43,6 +51,7 @@ public final class SnapshotFileWriter implements Consumer<ThreadSnapshot> {
 
     @Override
     public void accept(ThreadSnapshot snapshot) {
+        if (path == null) return; // no-op during restore replay
         try (OutputStream fos = Files.newOutputStream(path);
              ObjectOutputStream oos = new ObjectOutputStream(fos)) {
             oos.writeObject(snapshot);
