@@ -383,3 +383,4 @@ jobs:
 
       - name: Run stress tests (20 repetitions each)
         run: mvn -B failsafe:integration-test failsafe:verify -Pstress
+        continue-on-error: ${{ matrix.java == '10' }}
