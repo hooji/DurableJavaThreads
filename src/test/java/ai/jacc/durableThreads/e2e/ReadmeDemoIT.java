@@ -194,6 +194,7 @@ class ReadmeDemoIT {
         List<String> userLines = Arrays.stream(rOut.split("\n"))
                 .filter(l -> !l.trim().isEmpty())
                 .filter(l -> !l.startsWith("Listening for transport dt_socket"))
+                .filter(l -> !l.startsWith("Ignoring cmd"))
                 .collect(Collectors.toList());
         assertEquals(Arrays.asList(
                 "Resumed!", "i=6", "i=7", "i=8", "i=9", "i=10", "Done!"),

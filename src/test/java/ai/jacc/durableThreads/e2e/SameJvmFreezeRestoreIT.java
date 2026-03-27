@@ -79,6 +79,7 @@ class SameJvmFreezeRestoreIT {
     private static String filterStderr(String stderr) {
         return Arrays.stream(stderr.split("\n"))
                 .filter(line -> !line.startsWith("Listening for transport dt_socket"))
+                .filter(line -> !line.startsWith("Ignoring cmd"))
                 .filter(line -> !line.startsWith("Picked up"))
                 .filter(line -> !line.trim().isEmpty())
                 .collect(Collectors.joining("\n"));
@@ -92,6 +93,7 @@ class SameJvmFreezeRestoreIT {
                 .filter(line -> !line.equals("RESTORE_COMPLETE"))
                 .filter(line -> !line.startsWith("RESTORE_FAILED"))
                 .filter(line -> !line.startsWith("Listening for transport dt_socket"))
+                .filter(line -> !line.startsWith("Ignoring cmd"))
                 .filter(line -> !line.startsWith("Picked up"))
                 .filter(line -> !line.trim().isEmpty())
                 .collect(Collectors.toList());

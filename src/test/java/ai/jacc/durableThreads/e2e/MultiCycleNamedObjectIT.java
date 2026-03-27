@@ -56,6 +56,7 @@ class MultiCycleNamedObjectIT {
     private static String filterStderr(String stderr) {
         return Arrays.stream(stderr.split("\n"))
                 .filter(line -> !line.startsWith("Listening for transport dt_socket"))
+                .filter(line -> !line.startsWith("Ignoring cmd"))
                 .filter(line -> !line.startsWith("Picked up"))
                 .filter(line -> !line.startsWith("[DurableThreads] NOTE:"))
                 .filter(line -> !line.trim().isEmpty())
