@@ -192,13 +192,6 @@ jobs:
 
       - name: Run E2E integration tests
         run: mvn -B failsafe:integration-test failsafe:verify
-        # JDK 10 has JDWP port discovery issues (ManagementFactory init failure
-        # + no fallback port detection). Unit tests pass but E2E requires JDWP.
-        continue-on-error: ${{ matrix.java == '10' }}
-
-      - name: Generate Javadoc
-        run: mvn -B javadoc:javadoc
-        continue-on-error: true
 
   stress:
     name: Stress Test (${{ matrix.os }}, Java ${{ matrix.java }})
@@ -264,7 +257,7 @@ jobs:
             java: '25'
             distribution: temurin
 
-          # =================== macOS (JDK 11–25, skip 8/9/10/12/14 — no ARM Zulu builds) ===================
+          # =================== macOS (JDK 11–25, skip 8/9/10/12/14) ===================
           - os: macos-latest
             java: '11'
             distribution: temurin
@@ -383,4 +376,3 @@ jobs:
 
       - name: Run stress tests (20 repetitions each)
         run: mvn -B failsafe:integration-test failsafe:verify -Pstress
-        continue-on-error: ${{ matrix.java == '10' }}

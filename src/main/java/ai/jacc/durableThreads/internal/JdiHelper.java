@@ -404,7 +404,9 @@ public final class JdiHelper {
                 }
             }
         } catch (Throwable ignored) {
-            // NoClassDefFoundError on some JDK versions (10-14)
+            // ManagementFactory fails on some JDK versions (10-14).
+            // Assume JDWP might be present — let the port scanner check.
+            return true;
         }
         return false;
     }
@@ -568,10 +570,23 @@ public final class JdiHelper {
     }
 
     /**
-     * Get the current process ID in a Java 8 compatible way.
-     * Uses ManagementFactory.getRuntimeMXBean().getName() which returns "pid@hostname".
+     * Get the current process ID.
+     *
+     * <p>Tries ProcessHandle.current().pid() first (JDK 9+), falling back to
+     * ManagementFactory.getRuntimeMXBean().getName() for JDK 8. The fallback
+     * can fail on JDK 10-14 with ManagementFactory initialization errors.</p>
      */
     private static long getPid() {
+        // JDK 9+: ProcessHandle.current().pid() — no ManagementFactory dependency
+        try {
+            Class<?> phClass = Class.forName("java.lang.ProcessHandle");
+            Object current = phClass.getMethod("current").invoke(null);
+            return (long) phClass.getMethod("pid").invoke(current);
+        } catch (Throwable ignored) {
+            // JDK 8 or reflection failure — fall through
+        }
+
+        // JDK 8 fallback: ManagementFactory
         try {
             String name = java.lang.management.ManagementFactory.getRuntimeMXBean().getName();
             int atIdx = name.indexOf('@');
@@ -579,7 +594,6 @@ public final class JdiHelper {
                 return Long.parseLong(name.substring(0, atIdx));
             }
         } catch (Throwable ignored) {
-            // NoClassDefFoundError on some JDK versions (10-14)
         }
         return -1;
     }

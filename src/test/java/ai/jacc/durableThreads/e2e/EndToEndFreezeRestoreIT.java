@@ -49,6 +49,7 @@ class EndToEndFreezeRestoreIT {
                 .filter(line -> !line.startsWith("FRAME_COUNT="))
                 .filter(line -> !line.equals("RESTORE_COMPLETE"))
                 .filter(line -> !line.startsWith("Listening for transport dt_socket"))
+                .filter(line -> !line.startsWith("Ignoring cmd"))
                 .filter(line -> !line.trim().isEmpty())
                 .collect(java.util.stream.Collectors.toList());
     }
