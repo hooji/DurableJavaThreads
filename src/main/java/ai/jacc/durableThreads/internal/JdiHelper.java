@@ -81,18 +81,21 @@ public final class JdiHelper {
         // Parse from command-line arguments (works for any fixed port)
         int argPort = detectPortFromArguments();
         if (argPort > 0) {
+            ai.jacc.durableThreads.DurableAgent.cacheJdwpPort(argPort);
             return argPort;
         }
 
         // Scan listening ports (platform-specific) with nonce verification
         int listenPort = detectPortFromListeningSockets();
         if (listenPort > 0) {
+            ai.jacc.durableThreads.DurableAgent.cacheJdwpPort(listenPort);
             return listenPort;
         }
 
         // Scan nearby ephemeral ports for JDWP with nonce verification
         int discoveredPort = discoverJdwpPort();
         if (discoveredPort > 0) {
+            ai.jacc.durableThreads.DurableAgent.cacheJdwpPort(discoveredPort);
             return discoveredPort;
         }
 
