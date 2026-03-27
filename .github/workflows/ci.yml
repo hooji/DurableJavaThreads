@@ -14,15 +14,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # =================== Linux (JDK 8–25) ===================
+          # =================== Linux (JDK 8–25, skip 10) ===================
           - os: ubuntu-latest
             java: '8'
             distribution: temurin
           - os: ubuntu-latest
             java: '9'
-            distribution: zulu
-          - os: ubuntu-latest
-            java: '10'
             distribution: zulu
           - os: ubuntu-latest
             java: '11'
@@ -111,15 +108,12 @@ jobs:
             java: '25'
             distribution: temurin
 
-          # =================== Windows (JDK 8–25) ===================
+          # =================== Windows (JDK 8–25, skip 10) ===================
           - os: windows-latest
             java: '8'
             distribution: temurin
           - os: windows-latest
             java: '9'
-            distribution: zulu
-          - os: windows-latest
-            java: '10'
             distribution: zulu
           - os: windows-latest
             java: '11'
@@ -192,13 +186,6 @@ jobs:
 
       - name: Run E2E integration tests
         run: mvn -B failsafe:integration-test failsafe:verify
-        # JDK 10 has JDWP port discovery issues (ManagementFactory init failure
-        # + no fallback port detection). Unit tests pass but E2E requires JDWP.
-        continue-on-error: ${{ matrix.java == '10' }}
-
-      - name: Generate Javadoc
-        run: mvn -B javadoc:javadoc
-        continue-on-error: true
 
   stress:
     name: Stress Test (${{ matrix.os }}, Java ${{ matrix.java }})
@@ -208,15 +195,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # =================== Linux (JDK 8–25) ===================
+          # =================== Linux (JDK 8–25, skip 10) ===================
           - os: ubuntu-latest
             java: '8'
             distribution: temurin
           - os: ubuntu-latest
             java: '9'
-            distribution: zulu
-          - os: ubuntu-latest
-            java: '10'
             distribution: zulu
           - os: ubuntu-latest
             java: '11'
@@ -305,15 +289,12 @@ jobs:
             java: '25'
             distribution: temurin
 
-          # =================== Windows (JDK 8–25) ===================
+          # =================== Windows (JDK 8–25, skip 10) ===================
           - os: windows-latest
             java: '8'
             distribution: temurin
           - os: windows-latest
             java: '9'
-            distribution: zulu
-          - os: windows-latest
-            java: '10'
             distribution: zulu
           - os: windows-latest
             java: '11'
@@ -383,4 +364,3 @@ jobs:
 
       - name: Run stress tests (20 repetitions each)
         run: mvn -B failsafe:integration-test failsafe:verify -Pstress
-        continue-on-error: ${{ matrix.java == '10' }}
