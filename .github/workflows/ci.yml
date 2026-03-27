@@ -14,12 +14,158 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # =================== Linux (JDK 8–25) ===================
+          - os: ubuntu-latest
+            java: '8'
+            distribution: temurin
+          - os: ubuntu-latest
+            java: '9'
+            distribution: zulu
           - os: ubuntu-latest
             java: '10'
+            distribution: zulu
+          - os: ubuntu-latest
+            java: '11'
+            distribution: temurin
+          - os: ubuntu-latest
+            java: '12'
+            distribution: zulu
+          - os: ubuntu-latest
+            java: '13'
+            distribution: zulu
+          - os: ubuntu-latest
+            java: '14'
+            distribution: zulu
+          - os: ubuntu-latest
+            java: '15'
+            distribution: zulu
+          - os: ubuntu-latest
+            java: '16'
+            distribution: zulu
+          - os: ubuntu-latest
+            java: '17'
+            distribution: temurin
+          - os: ubuntu-latest
+            java: '18'
+            distribution: zulu
+          - os: ubuntu-latest
+            java: '19'
+            distribution: zulu
+          - os: ubuntu-latest
+            java: '20'
+            distribution: zulu
+          - os: ubuntu-latest
+            java: '21'
+            distribution: temurin
+          - os: ubuntu-latest
+            java: '22'
+            distribution: zulu
+          - os: ubuntu-latest
+            java: '23'
+            distribution: zulu
+          - os: ubuntu-latest
+            java: '24'
+            distribution: temurin
+          - os: ubuntu-latest
+            java: '25'
+            distribution: temurin
+
+          # =================== macOS (JDK 11–25, skip 8/9/10/12/14 — no ARM Zulu builds) ===================
+          - os: macos-latest
+            java: '11'
+            distribution: temurin
+          - os: macos-latest
+            java: '13'
+            distribution: zulu
+          - os: macos-latest
+            java: '15'
+            distribution: zulu
+          - os: macos-latest
+            java: '16'
+            distribution: zulu
+          - os: macos-latest
+            java: '17'
+            distribution: temurin
+          - os: macos-latest
+            java: '18'
+            distribution: zulu
+          - os: macos-latest
+            java: '19'
+            distribution: zulu
+          - os: macos-latest
+            java: '20'
+            distribution: zulu
+          - os: macos-latest
+            java: '21'
+            distribution: temurin
+          - os: macos-latest
+            java: '22'
+            distribution: zulu
+          - os: macos-latest
+            java: '23'
+            distribution: zulu
+          - os: macos-latest
+            java: '24'
+            distribution: temurin
+          - os: macos-latest
+            java: '25'
+            distribution: temurin
+
+          # =================== Windows (JDK 8–25) ===================
+          - os: windows-latest
+            java: '8'
+            distribution: temurin
+          - os: windows-latest
+            java: '9'
             distribution: zulu
           - os: windows-latest
             java: '10'
             distribution: zulu
+          - os: windows-latest
+            java: '11'
+            distribution: temurin
+          - os: windows-latest
+            java: '12'
+            distribution: zulu
+          - os: windows-latest
+            java: '13'
+            distribution: zulu
+          - os: windows-latest
+            java: '14'
+            distribution: zulu
+          - os: windows-latest
+            java: '15'
+            distribution: zulu
+          - os: windows-latest
+            java: '16'
+            distribution: zulu
+          - os: windows-latest
+            java: '17'
+            distribution: temurin
+          - os: windows-latest
+            java: '18'
+            distribution: zulu
+          - os: windows-latest
+            java: '19'
+            distribution: zulu
+          - os: windows-latest
+            java: '20'
+            distribution: zulu
+          - os: windows-latest
+            java: '21'
+            distribution: temurin
+          - os: windows-latest
+            java: '22'
+            distribution: zulu
+          - os: windows-latest
+            java: '23'
+            distribution: zulu
+          - os: windows-latest
+            java: '24'
+            distribution: temurin
+          - os: windows-latest
+            java: '25'
+            distribution: temurin
 
     steps:
       - name: Checkout
@@ -55,12 +201,158 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # =================== Linux (JDK 8–25) ===================
+          - os: ubuntu-latest
+            java: '8'
+            distribution: temurin
+          - os: ubuntu-latest
+            java: '9'
+            distribution: zulu
           - os: ubuntu-latest
             java: '10'
+            distribution: zulu
+          - os: ubuntu-latest
+            java: '11'
+            distribution: temurin
+          - os: ubuntu-latest
+            java: '12'
+            distribution: zulu
+          - os: ubuntu-latest
+            java: '13'
+            distribution: zulu
+          - os: ubuntu-latest
+            java: '14'
+            distribution: zulu
+          - os: ubuntu-latest
+            java: '15'
+            distribution: zulu
+          - os: ubuntu-latest
+            java: '16'
+            distribution: zulu
+          - os: ubuntu-latest
+            java: '17'
+            distribution: temurin
+          - os: ubuntu-latest
+            java: '18'
+            distribution: zulu
+          - os: ubuntu-latest
+            java: '19'
+            distribution: zulu
+          - os: ubuntu-latest
+            java: '20'
+            distribution: zulu
+          - os: ubuntu-latest
+            java: '21'
+            distribution: temurin
+          - os: ubuntu-latest
+            java: '22'
+            distribution: zulu
+          - os: ubuntu-latest
+            java: '23'
+            distribution: zulu
+          - os: ubuntu-latest
+            java: '24'
+            distribution: temurin
+          - os: ubuntu-latest
+            java: '25'
+            distribution: temurin
+
+          # =================== macOS (JDK 11–25, skip 8/9/10/12/14) ===================
+          - os: macos-latest
+            java: '11'
+            distribution: temurin
+          - os: macos-latest
+            java: '13'
+            distribution: zulu
+          - os: macos-latest
+            java: '15'
+            distribution: zulu
+          - os: macos-latest
+            java: '16'
+            distribution: zulu
+          - os: macos-latest
+            java: '17'
+            distribution: temurin
+          - os: macos-latest
+            java: '18'
+            distribution: zulu
+          - os: macos-latest
+            java: '19'
+            distribution: zulu
+          - os: macos-latest
+            java: '20'
+            distribution: zulu
+          - os: macos-latest
+            java: '21'
+            distribution: temurin
+          - os: macos-latest
+            java: '22'
+            distribution: zulu
+          - os: macos-latest
+            java: '23'
+            distribution: zulu
+          - os: macos-latest
+            java: '24'
+            distribution: temurin
+          - os: macos-latest
+            java: '25'
+            distribution: temurin
+
+          # =================== Windows (JDK 8–25) ===================
+          - os: windows-latest
+            java: '8'
+            distribution: temurin
+          - os: windows-latest
+            java: '9'
             distribution: zulu
           - os: windows-latest
             java: '10'
             distribution: zulu
+          - os: windows-latest
+            java: '11'
+            distribution: temurin
+          - os: windows-latest
+            java: '12'
+            distribution: zulu
+          - os: windows-latest
+            java: '13'
+            distribution: zulu
+          - os: windows-latest
+            java: '14'
+            distribution: zulu
+          - os: windows-latest
+            java: '15'
+            distribution: zulu
+          - os: windows-latest
+            java: '16'
+            distribution: zulu
+          - os: windows-latest
+            java: '17'
+            distribution: temurin
+          - os: windows-latest
+            java: '18'
+            distribution: zulu
+          - os: windows-latest
+            java: '19'
+            distribution: zulu
+          - os: windows-latest
+            java: '20'
+            distribution: zulu
+          - os: windows-latest
+            java: '21'
+            distribution: temurin
+          - os: windows-latest
+            java: '22'
+            distribution: zulu
+          - os: windows-latest
+            java: '23'
+            distribution: zulu
+          - os: windows-latest
+            java: '24'
+            distribution: temurin
+          - os: windows-latest
+            java: '25'
+            distribution: temurin
 
     steps:
       - name: Checkout
