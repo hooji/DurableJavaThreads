@@ -295,7 +295,15 @@ public final class JdiHelper {
      * or if port 0 was specified (meaning OS-assigned).
      */
     private static int detectPortFromArguments() {
-        List<String> args = java.lang.management.ManagementFactory.getRuntimeMXBean().getInputArguments();
+        List<String> args;
+        try {
+            args = java.lang.management.ManagementFactory.getRuntimeMXBean().getInputArguments();
+        } catch (Throwable t) {
+            // ManagementFactory can fail on some JDK versions (10-14) with
+            // NoClassDefFoundError: Could not initialize class PlatformMBeanFinder.
+            // Fall through to other port detection methods.
+            return -1;
+        }
         for (String arg : args) {
             if (arg.contains("jdwp") && arg.contains("address=")) {
                 String addressPart = extractValue(arg, "address");
@@ -395,7 +403,8 @@ public final class JdiHelper {
                     return true;
                 }
             }
-        } catch (Exception ignored) {
+        } catch (Throwable ignored) {
+            // NoClassDefFoundError on some JDK versions (10-14)
         }
         return false;
     }
@@ -563,13 +572,14 @@ public final class JdiHelper {
      * Uses ManagementFactory.getRuntimeMXBean().getName() which returns "pid@hostname".
      */
     private static long getPid() {
-        String name = java.lang.management.ManagementFactory.getRuntimeMXBean().getName();
-        int atIdx = name.indexOf('@');
-        if (atIdx > 0) {
-            try {
+        try {
+            String name = java.lang.management.ManagementFactory.getRuntimeMXBean().getName();
+            int atIdx = name.indexOf('@');
+            if (atIdx > 0) {
                 return Long.parseLong(name.substring(0, atIdx));
-            } catch (NumberFormatException ignored) {
             }
+        } catch (Throwable ignored) {
+            // NoClassDefFoundError on some JDK versions (10-14)
         }
         return -1;
     }
