@@ -26,6 +26,26 @@ import java.util.function.Consumer;
  */
 final class ThreadFreezer {
 
+    /**
+     * Maximum time (in milliseconds) that the caller thread will wait for the
+     * freeze worker to complete before timing out.
+     *
+     * <p>Override via the system property {@code durable.freeze.timeout.ms}.</p>
+     */
+    private static final long FREEZE_TIMEOUT_MS = getFreezeTimeoutMs();
+
+    private static long getFreezeTimeoutMs() {
+        String prop = System.getProperty("durable.freeze.timeout.ms");
+        if (prop != null) {
+            try {
+                long val = Long.parseLong(prop.trim());
+                if (val > 0) return val;
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        return 30_000; // 30 seconds
+    }
+
     private ThreadFreezer() {}
 
     /**
@@ -78,7 +98,7 @@ final class ThreadFreezer {
         // 2. Fail (and we'll get the error)
         synchronized (lock) {
             try {
-                lock.wait(30_000); // 30 second timeout
+                lock.wait(FREEZE_TIMEOUT_MS);
             } catch (InterruptedException e) {
                 // This is the expected freeze termination path.
                 // Thread B interrupted us after capturing the snapshot.

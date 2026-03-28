@@ -14,6 +14,26 @@ import java.util.concurrent.CountDownLatch;
  */
 final class ThreadRestorer {
 
+    /**
+     * Maximum time (in milliseconds) that the JDI worker will wait for the
+     * replay thread to reach {@code awaitGoLatch()} before timing out.
+     *
+     * <p>Override via the system property {@code durable.jdi.wait.timeout.ms}.</p>
+     */
+    private static final long JDI_WAIT_TIMEOUT_MS = getJdiWaitTimeoutMs();
+
+    private static long getJdiWaitTimeoutMs() {
+        String prop = System.getProperty("durable.jdi.wait.timeout.ms");
+        if (prop != null) {
+            try {
+                long val = Long.parseLong(prop.trim());
+                if (val > 0) return val;
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        return 30_000; // 30 seconds
+    }
+
     private ThreadRestorer() {}
 
     /**
@@ -266,7 +286,7 @@ final class ThreadRestorer {
             // to BEFORE_INVOKE, which called freeze(). freeze() detected
             // restoreInProgress and is now blocked on the go-latch.
             ThreadReference tr = waitForThreadAtMethod(vm, threadName,
-                    "awaitGoLatch", "ReplayState", 30_000);
+                    "awaitGoLatch", "ReplayState", JDI_WAIT_TIMEOUT_MS);
             if (tr == null) {
                 throw new RuntimeException(
                         "Timeout waiting for replay thread '" + threadName
