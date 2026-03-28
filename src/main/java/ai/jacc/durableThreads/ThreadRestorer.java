@@ -1,7 +1,6 @@
 package ai.jacc.durableThreads;
 
 import com.sun.jdi.*;
-import ai.jacc.durableThreads.exception.BytecodeMismatchException;
 import ai.jacc.durableThreads.internal.*;
 import ai.jacc.durableThreads.snapshot.*;
 import static ai.jacc.durableThreads.internal.FrameFilter.isInfrastructureFrame;
@@ -75,14 +74,10 @@ final class ThreadRestorer {
                     + "(see JdiHelper.findThread).");
         }
 
-        // Step 1: Force-load all classes referenced in the snapshot.
-        ensureClassesLoaded(snapshot);
-
-        // Step 2: Validate bytecode hashes
-        validateBytecodeHashes(snapshot);
-
-        // Step 2b: Validate class structure hashes for heap objects
-        validateClassStructureHashes(snapshot);
+        // Step 1: Force-load all classes and validate hashes
+        SnapshotValidator.ensureClassesLoaded(snapshot);
+        SnapshotValidator.validateBytecodeHashes(snapshot);
+        SnapshotValidator.validateClassStructureHashes(snapshot);
 
         // Step 3: Rebuild the heap
         HeapRestorer heapRestorer = new HeapRestorer();
@@ -164,70 +159,6 @@ final class ThreadRestorer {
         return new RestoredThread(replayThread, ReplayState.getGoLatch());
     }
 
-    private static void validateBytecodeHashes(ThreadSnapshot snapshot) {
-        List<String> mismatched = new ArrayList<>();
-
-        for (FrameSnapshot frame : snapshot.frames()) {
-            if (frame.bytecodeHash() == null || frame.bytecodeHash().length == 0) {
-                continue;
-            }
-
-            byte[] classBytecode = InvokeRegistry.getInstrumentedBytecode(frame.className());
-            if (classBytecode == null) {
-                // Class not instrumented — may be a JDK class that was stripped
-                continue;
-            }
-
-            byte[] currentHash = BytecodeHasher.hash(
-                    classBytecode, frame.methodName(), frame.methodSignature());
-            if (currentHash == null || !Arrays.equals(frame.bytecodeHash(), currentHash)) {
-                mismatched.add(frame.className().replace('/', '.') + "." + frame.methodName());
-            }
-        }
-
-        if (!mismatched.isEmpty()) {
-            throw new BytecodeMismatchException(mismatched);
-        }
-    }
-
-    /**
-     * Validate class structure hashes for heap objects to detect incompatible
-     * class changes (added/removed/renamed fields, type changes).
-     */
-    private static void validateClassStructureHashes(ThreadSnapshot snapshot) {
-        List<String> mismatched = new ArrayList<>();
-
-        for (ObjectSnapshot objSnap : snapshot.heap()) {
-            if (objSnap.classStructureHash() == null || objSnap.classStructureHash().length == 0) {
-                continue;
-            }
-            if (objSnap.kind() != ObjectKind.REGULAR) {
-                continue;
-            }
-
-            // Skip lambda/hidden classes — their names are JVM-generated and
-            // non-deterministic, so Class.forName will fail. They're captured
-            // as heap objects when reachable from locals but don't need
-            // structure validation (their layout is trivial).
-            if (objSnap.className().contains("$$Lambda")) {
-                continue;
-            }
-
-            try {
-                Class<?> clazz = Class.forName(objSnap.className());
-                byte[] currentHash = ClassStructureHasher.hashClassStructure(clazz);
-                if (!Arrays.equals(objSnap.classStructureHash(), currentHash)) {
-                    mismatched.add(objSnap.className());
-                }
-            } catch (ClassNotFoundException e) {
-                mismatched.add(objSnap.className() + " (class not found)");
-            }
-        }
-
-        if (!mismatched.isEmpty()) {
-            throw new BytecodeMismatchException(mismatched);
-        }
-    }
 
     /**
      * Read the pre-computed invoke indices directly from the snapshot.
@@ -924,22 +855,6 @@ final class ThreadRestorer {
         if (value instanceof Double) return vm.mirrorOf((Double) value);
         if (value instanceof String) return vm.mirrorOf((String) value);
         return null;
-    }
-
-    /**
-     * Force-load all classes referenced in the snapshot frames.
-     * This triggers the agent's ClassFileTransformer which populates
-     * InvokeRegistry with invoke offset maps needed by computeResumeIndices().
-     */
-    private static void ensureClassesLoaded(ThreadSnapshot snapshot) {
-        for (FrameSnapshot frame : snapshot.frames()) {
-            String className = frame.className().replace('/', '.');
-            try {
-                Class.forName(className);
-            } catch (ClassNotFoundException e) {
-                // Class not available in this JVM — will fail later at invoke time
-            }
-        }
     }
 
     // --- Reflection helpers ---
