@@ -1,9 +1,6 @@
 package ai.jacc.durableThreads;
 
 import com.sun.jdi.*;
-import com.sun.jdi.event.EventQueue;
-import com.sun.jdi.event.EventSet;
-import ai.jacc.durableThreads.exception.LambdaFrameException;
 import ai.jacc.durableThreads.exception.NonEmptyStackException;
 import ai.jacc.durableThreads.exception.ThreadFrozenError;
 import ai.jacc.durableThreads.internal.*;
@@ -109,120 +106,40 @@ final class ThreadFreezer {
             throw new RuntimeException("Freeze failed", error[0]);
         }
 
-        // Safety net: if we somehow reach this point in the ORIGINAL thread
-        // (not a restored thread), block forever. This should never happen —
-        // the freeze flag check above should catch it — but a frozen thread
-        // must NEVER be allowed to continue executing user code.
-        //
-        // For restored threads this code is unreachable: the replay prologue
-        // skips past the freeze() call entirely and resumes after it.
-        //
-        // We sleep in a loop (re-checking the freeze flag on each wake)
-        // and fall back to a busy spin as an absolute last resort.
+        // EXPERIMENT: If this point is reached, the interrupt/flag mechanism
+        // failed to terminate the frozen thread. A blockForever() safety net
+        // used to live here, but untestable code is a liability. If this
+        // throw fires in CI, we need to investigate the termination path.
         if (Thread.currentThread().isInterrupted()) {
-            // Clear the flag so sleep doesn't immediately throw
             Thread.interrupted();
             FreezeFlag.clearFrozen(Thread.currentThread());
             throw new ThreadFrozenError();
         }
-        blockForever();
-    }
-
-    /**
-     * Block the current thread indefinitely. Called as a safety net to
-     * guarantee that a frozen thread can never continue past freeze().
-     */
-    private static void blockForever() {
-        // Phase 1: sleep loop (low CPU cost)
-        for (int i = 0; i < 100; i++) {
-            if (FreezeFlag.isFrozen(Thread.currentThread())) {
-                FreezeFlag.clearFrozen(Thread.currentThread());
-                throw new ThreadFrozenError();
-            }
-            try {
-                Thread.sleep(Long.MAX_VALUE);
-            } catch (InterruptedException e) {
-                // Re-check flag on each wake
-                if (FreezeFlag.isFrozen(Thread.currentThread())) {
-                    FreezeFlag.clearFrozen(Thread.currentThread());
-                    throw new ThreadFrozenError();
-                }
-            }
-        }
-        // Phase 2: busy spin (should truly never be reached)
-        //noinspection InfiniteLoopStatement
-        while (true) {
-            Thread.yield();
-        }
+        throw new AssertionError(
+                "[EXPERIMENT] Frozen thread reached end of freeze() without "
+                + "being terminated. The interrupt/flag mechanism failed. "
+                + "FreezeFlag.isFrozen=" + FreezeFlag.isFrozen(Thread.currentThread())
+                + ", interrupted=" + Thread.currentThread().isInterrupted());
     }
 
     private static void performFreeze(Thread targetThread, Consumer<ThreadSnapshot> handler,
                                        Map<String, Object> namedObjects) {
-        // Connect to this JVM via JDI
-        int port = JdiHelper.detectJdwpPort();
-        if (port < 0) {
-            throw new RuntimeException(
-                    "JDWP not enabled. Start with: -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005");
-        }
+        VirtualMachine vm = JdiHelper.getConnection();
 
-        VirtualMachine vm = JdiHelper.connect(port);
+        // Find the target thread in JDI
+        ThreadReference threadRef = JdiHelper.findThread(vm, targetThread);
+
+        // Suspend the target thread and capture its state.
+        ThreadSnapshot snapshot;
+        threadRef.suspend();
         try {
-            // Find the target thread in JDI
-            ThreadReference threadRef = JdiHelper.findThread(vm, targetThread);
+            snapshot = captureSnapshot(vm, threadRef, targetThread.getName(), namedObjects);
 
-            // Suspend the target thread and capture its state.
-            // Retry on InvalidStackFrameException — this can happen when
-            // reusing a JDI connection from a prior freeze/restore cycle,
-            // because the previous cycle's pending resume events can race
-            // with our suspend.
-            //
-            // Mitigations:
-            // 1. Drain pending events from the JDI event queue before each attempt
-            //    to clear stale resume-triggering events from prior cycles.
-            // 2. Double-suspend (suspend count = 2) so a single spurious resume
-            //    doesn't drop the count to 0.
-            // 3. Exponential backoff with up to 10 retries.
-            ThreadSnapshot snapshot = null;
-            int maxRetries = 10;
-            for (int attempt = 0; attempt < maxRetries; attempt++) {
-                // Drain any pending events that could trigger spurious resumes
-                drainPendingEvents(vm);
-
-                // Double suspend: suspend count = 2, so a single spurious
-                // resume (dropping count to 1) won't actually run the thread
-                threadRef.suspend();
-                threadRef.suspend();
-                try {
-                    snapshot = captureSnapshot(vm, threadRef, targetThread.getName(), namedObjects);
-
-                    // Call the handler while the thread is still suspended,
-                    // so it can safely write the snapshot without racing.
-                    handler.accept(snapshot);
-                    break; // success
-                } catch (com.sun.jdi.InvalidStackFrameException e) {
-                    // Thread was resumed between suspend and frame read —
-                    // retry after a brief pause with exponential backoff
-                    if (attempt == maxRetries - 1) {
-                        throw new RuntimeException(
-                                "Failed to capture snapshot after " + maxRetries
-                                + " attempts — thread keeps being resumed", e);
-                    }
-                    long backoff = 50L * (1L << Math.min(attempt, 4)); // 50, 100, 200, 400, 800ms
-                    try { Thread.sleep(backoff); } catch (InterruptedException ie) {
-                        Thread.currentThread().interrupt();
-                        throw new RuntimeException("Freeze interrupted during retry", ie);
-                    }
-                } finally {
-                    // Match the double suspend with double resume
-                    threadRef.resume();
-                    threadRef.resume();
-                }
-            }
-
+            // Call the handler while the thread is still suspended,
+            // so it can safely write the snapshot without racing.
+            handler.accept(snapshot);
         } finally {
-            // Do NOT call vm.dispose() — disconnecting causes JDWP to re-listen
-            // and print a confusing "Listening for transport..." message on stderr.
-            // The connection is cleaned up automatically when the JVM exits.
+            threadRef.resume();
         }
 
         // Terminate the target thread AFTER all JDI housekeeping is complete.
@@ -487,30 +404,6 @@ final class ThreadFreezer {
             // Clean up bridge entries
             for (long key : keyToName.keySet()) {
                 HeapObjectBridge.remove(key);
-            }
-        }
-    }
-
-    /**
-     * Drain pending events from the JDI event queue without resuming threads.
-     * In multi-cycle freeze/restore scenarios, stale events from prior cycles
-     * can race with our thread suspension and cause InvalidStackFrameException.
-     */
-    private static void drainPendingEvents(VirtualMachine vm) {
-        EventQueue queue = vm.eventQueue();
-        while (true) {
-            try {
-                EventSet eventSet = queue.remove(1); // 1ms timeout (non-blocking)
-                if (eventSet == null) break;
-                // Discard without calling eventSet.resume() — we don't want
-                // to trigger any resumes. The suspend count from these events
-                // will be balanced by our explicit suspend/resume.
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                break;
-            } catch (Exception e) {
-                // VMDisconnectedException or other — stop draining
-                break;
             }
         }
     }

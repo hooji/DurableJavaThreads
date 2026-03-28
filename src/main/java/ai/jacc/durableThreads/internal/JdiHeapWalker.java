@@ -844,12 +844,11 @@ public final class JdiHeapWalker {
                                    ReferenceType refType, String className, String name) {
         List<ObjectRef> elements = new ArrayList<>();
 
-        // Try to read size and elementData (ArrayList) or navigate linked structure
-        com.sun.jdi.Field sizeField = findField(refType, "size");
+        // ArrayList: read elementData array up to size
         com.sun.jdi.Field elementDataField = findField(refType, "elementData");
+        com.sun.jdi.Field sizeField = findField(refType, "size");
 
         if (elementDataField != null && sizeField != null) {
-            // ArrayList-like: read elementData array up to size
             Value sizeVal = objRef.getValue(sizeField);
             int size = (sizeVal instanceof IntegerValue) ? ((IntegerValue) sizeVal).value() : 0;
             Value dataVal = objRef.getValue(elementDataField);
@@ -859,8 +858,26 @@ public final class JdiHeapWalker {
                     elements.add(capture(arr.getValue(i)));
                 }
             }
+        } else if (findField(refType, "first") != null) {
+            // LinkedList: walk the first → next node chain
+            captureLinkedListElements(objRef, refType, elements);
+        } else if (findField(refType, "m") != null) {
+            // TreeSet: wraps a NavigableMap (TreeMap) — extract keys
+            com.sun.jdi.Field mField = findField(refType, "m");
+            Value mVal = objRef.getValue(mField);
+            if (mVal instanceof ObjectReference) {
+                List<ObjectRef> pairs = extractMapEntries((ObjectReference) mVal);
+                // TreeSet: only keep keys (even indices)
+                for (int i = 0; i < pairs.size(); i += 2) {
+                    elements.add(pairs.get(i));
+                }
+            }
+        } else if (findField(refType, "elements") != null
+                && findField(refType, "head") != null) {
+            // ArrayDeque: circular buffer with head/tail indices
+            captureArrayDequeElements(objRef, refType, elements);
         } else {
-            // HashSet wraps a HashMap — read the map's keys
+            // HashSet/LinkedHashSet: wraps a HashMap — read the map's keys
             com.sun.jdi.Field mapField = findField(refType, "map");
             if (mapField != null) {
                 Value mapVal = objRef.getValue(mapField);
@@ -878,6 +895,66 @@ public final class JdiHeapWalker {
                 ObjectKind.COLLECTION, Collections.<String, ObjectRef>emptyMap(), elements.toArray(new ObjectRef[0]), null, name));
     }
 
+    /**
+     * Walk LinkedList's internal node chain via JDI: first → next → next ...
+     * Node fields: item (element), next (Node), prev (Node).
+     * Stable across JDK 8-25.
+     */
+    private void captureLinkedListElements(ObjectReference listRef,
+                                            ReferenceType refType,
+                                            List<ObjectRef> elements) {
+        com.sun.jdi.Field firstField = findField(refType, "first");
+        if (firstField == null) return;
+
+        Value nodeVal = listRef.getValue(firstField);
+        while (nodeVal instanceof ObjectReference) {
+            ObjectReference node = (ObjectReference) nodeVal;
+            com.sun.jdi.Field itemField = findField(node.referenceType(), "item");
+            com.sun.jdi.Field nextField = findField(node.referenceType(), "next");
+            if (itemField == null) break;
+
+            elements.add(capture(node.getValue(itemField)));
+
+            if (nextField != null) {
+                nodeVal = node.getValue(nextField);
+            } else {
+                break;
+            }
+        }
+    }
+
+    /**
+     * Read ArrayDeque's circular buffer via JDI.
+     * Fields: elements (Object[]), head (int), tail (int).
+     * Elements are stored in elements[head..tail) wrapping around the array.
+     * Stable across JDK 8-25.
+     */
+    private void captureArrayDequeElements(ObjectReference dequeRef,
+                                            ReferenceType refType,
+                                            List<ObjectRef> elements) {
+        com.sun.jdi.Field elementsField = findField(refType, "elements");
+        com.sun.jdi.Field headField = findField(refType, "head");
+        com.sun.jdi.Field tailField = findField(refType, "tail");
+        if (elementsField == null || headField == null || tailField == null) return;
+
+        Value elemsVal = dequeRef.getValue(elementsField);
+        Value headVal = dequeRef.getValue(headField);
+        Value tailVal = dequeRef.getValue(tailField);
+
+        if (!(elemsVal instanceof ArrayReference)) return;
+        ArrayReference arr = (ArrayReference) elemsVal;
+        int head = (headVal instanceof IntegerValue) ? ((IntegerValue) headVal).value() : 0;
+        int tail = (tailVal instanceof IntegerValue) ? ((IntegerValue) tailVal).value() : 0;
+        int capacity = arr.length();
+
+        // Walk from head to tail, wrapping around the circular buffer
+        int i = head;
+        while (i != tail) {
+            elements.add(capture(arr.getValue(i)));
+            i = (i + 1) % capacity;
+        }
+    }
+
     private void captureMap(long snapId, ObjectReference objRef,
                              ReferenceType refType, String className, String name) {
         List<ObjectRef> pairs = extractMapEntries(objRef);
@@ -885,11 +962,23 @@ public final class JdiHeapWalker {
                 ObjectKind.COLLECTION, Collections.<String, ObjectRef>emptyMap(), pairs.toArray(new ObjectRef[0]), null, name));
     }
 
-    /** Extract key/value pairs from a HashMap-like structure via JDI. */
+    /** Extract key/value pairs from a HashMap-like or TreeMap structure via JDI. */
     private List<ObjectRef> extractMapEntries(ObjectReference mapRef) {
         List<ObjectRef> pairs = new ArrayList<>();
         try {
             ReferenceType mapType = mapRef.referenceType();
+
+            // TreeMap: walk the red-black tree via root → left/right
+            com.sun.jdi.Field rootField = findField(mapType, "root");
+            if (rootField != null && findField(mapType, "table") == null) {
+                Value rootVal = mapRef.getValue(rootField);
+                if (rootVal instanceof ObjectReference) {
+                    walkTreeMapNode((ObjectReference) rootVal, pairs);
+                }
+                return pairs;
+            }
+
+            // HashMap/ConcurrentHashMap/LinkedHashMap: walk table array + node chains
             com.sun.jdi.Field tableField = findField(mapType, "table");
             if (tableField == null) return pairs;
 
@@ -928,6 +1017,40 @@ public final class JdiHeapWalker {
             throw new RuntimeException("Failed to extract map entries via JDI", e);
         }
         return pairs;
+    }
+
+    /**
+     * In-order traversal of a TreeMap's red-black tree, collecting key/value pairs.
+     * TreeMap.Entry fields: key, value, left, right (stable across JDK 8-25).
+     */
+    private void walkTreeMapNode(ObjectReference node, List<ObjectRef> pairs) {
+        if (node == null) return;
+        ReferenceType nodeType = node.referenceType();
+
+        com.sun.jdi.Field leftField = findField(nodeType, "left");
+        com.sun.jdi.Field rightField = findField(nodeType, "right");
+        com.sun.jdi.Field keyField = findField(nodeType, "key");
+        com.sun.jdi.Field valField = findField(nodeType, "value");
+
+        // In-order: left, self, right — preserves sorted order
+        if (leftField != null) {
+            Value leftVal = node.getValue(leftField);
+            if (leftVal instanceof ObjectReference) {
+                walkTreeMapNode((ObjectReference) leftVal, pairs);
+            }
+        }
+
+        if (keyField != null && valField != null) {
+            pairs.add(capture(node.getValue(keyField)));
+            pairs.add(capture(node.getValue(valField)));
+        }
+
+        if (rightField != null) {
+            Value rightVal = node.getValue(rightField);
+            if (rightVal instanceof ObjectReference) {
+                walkTreeMapNode((ObjectReference) rightVal, pairs);
+            }
+        }
     }
 
     private static com.sun.jdi.Field findField(ReferenceType type, String name) {

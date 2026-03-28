@@ -9,25 +9,37 @@ import java.util.concurrent.TimeUnit;
  * <p>During normal execution, {@link #isReplayThread()} returns false and the prologue
  * is a single not-taken branch. During replay, it provides the resume index for each
  * frame so the prologue can dispatch to the correct resume stub.</p>
+ *
+ * <h3>Why goLatch, restoreError, and restoreInProgress are static</h3>
+ *
+ * <p>During restore, the replay thread re-enters the user's original
+ * {@code freeze()} call site. That call was compiled by the user — it has
+ * no reference to any internal session or restore context object. The call
+ * chain is: user code → {@code Durable.freeze()} → {@code ThreadFreezer.freeze()}
+ * → {@code ReplayState.awaitGoLatch()}. There is no place to inject an
+ * instance reference through this path, so these fields must be static
+ * (or accessed via ThreadLocal).</p>
+ *
+ * <p><b>Thread safety:</b> This is safe because all freeze and restore
+ * operations are serialized via {@code synchronized(Durable.class)}.
+ * The entire {@code ThreadRestorer.restore()} call — including JDI worker
+ * completion — runs under that monitor. By the time the monitor is released
+ * and a second restore could begin, the first restore's JDI worker has
+ * finished and the go-latch has been captured by value into the
+ * {@link RestoredThread} instance. The replay thread's
+ * {@code awaitGoLatch()} reads the latch into a local variable before
+ * calling {@code await()}, so it is unaffected by any subsequent overwrite
+ * of the static field by a later restore.</p>
  */
 public final class ReplayState {
 
     private static final ThreadLocal<ReplayData> REPLAY = new ThreadLocal<>();
 
     /**
-     * Lock that serializes latch operations. Both the replay thread (localsReady,
-     * resumePoint) and the JDI worker (release, activate) must hold this lock
-     * when reading or writing latch references. This prevents the race where the
-     * replay thread recreates a latch after the JDI worker already counted down
-     * the old one, causing the next frame's localsReady() to block forever.
-     */
-    private static final Object LATCH_LOCK = new Object();
-
-    /**
      * Maximum time (in seconds) that the replay thread will wait for the JDI
-     * worker to release a latch before throwing a timeout error. This prevents
-     * the replay thread from blocking forever if the JDI worker crashes or
-     * fails to connect.
+     * worker to release the go-latch before throwing a timeout error. This
+     * prevents the replay thread from blocking forever if the JDI worker
+     * crashes or fails to connect.
      *
      * <p>The default is 5 minutes, which is generous enough for restoring
      * frames with many local variables and large object graphs (each local
@@ -49,20 +61,6 @@ public final class ReplayState {
     }
 
     /**
-     * Latch that the replay thread blocks on inside {@link #resumePoint()}.
-     * The JDI worker counts it down after deactivating replay mode (Phase 1).
-     * Guarded by {@link #LATCH_LOCK}.
-     */
-    private static volatile CountDownLatch resumeLatch;
-
-    /**
-     * Latch that the replay thread blocks on inside {@link #localsReady()}.
-     * The JDI worker counts it down after setting local variables via JDI (Phase 2).
-     * Guarded by {@link #LATCH_LOCK}.
-     */
-    private static volatile CountDownLatch localsLatch;
-
-    /**
      * Go-latch: the replay thread blocks on this inside {@code freeze()} during
      * restore. After JDI sets all locals, this latch is captured by
      * {@link RestoredThread} and counted down by {@link RestoredThread#resume()}.
@@ -78,7 +76,7 @@ public final class ReplayState {
 
     /**
      * If the JDI worker encounters a fatal error, it stores the message here
-     * before releasing the latch. The replay thread checks this after waking
+     * before releasing the go-latch. The replay thread checks this after waking
      * and throws instead of continuing with incorrect state.
      */
     private static volatile String restoreError;
@@ -142,8 +140,8 @@ public final class ReplayState {
 
     /**
      * Check if we've reached the deepest (top) frame.
-     * If true, the resume stub should call {@link #resumePoint()} instead of
-     * re-invoking the next method.
+     * If true, the deepest frame's resume stub deactivates replay and jumps
+     * into the original code where freeze() is called.
      */
     public static boolean isLastFrame() {
         ReplayData data = REPLAY.get();
@@ -151,149 +149,23 @@ public final class ReplayState {
     }
 
     /**
-     * Called at the deepest frame during replay. This method <b>blocks</b> until
-     * the JDI worker has:
-     * <ol>
-     *   <li>Suspended this thread</li>
-     *   <li>Set local variables in all frames</li>
-     *   <li>Deactivated replay mode</li>
-     *   <li>Released the latch</li>
-     * </ol>
-     *
-     * <p>After this method returns, the calling resume stub's {@code __skip} value
-     * causes execution to skip the freeze invoke and continue with the restored
-     * locals in the original code.</p>
-     */
-    public static void resumePoint() {
-        CountDownLatch latch = resumeLatch;
-        if (latch != null) {
-            try {
-                if (!latch.await(LATCH_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
-                    throw new RuntimeException(
-                            "Thread restore timed out: JDI worker did not release "
-                            + "resumePoint latch within " + LATCH_TIMEOUT_SECONDS
-                            + " seconds. The JDI worker may have crashed or "
-                            + "failed to connect.");
-                }
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
-        }
-        // Check if the JDI worker signalled a restore failure
-        String error = restoreError;
-        if (error != null) {
-            restoreError = null;
-            throw new RuntimeException("Thread restore failed: " + error);
-        }
-    }
-
-    /**
-     * Release the resume latch, allowing the replay thread to continue past
-     * {@link #resumePoint()}. Called by the JDI worker after deactivating
-     * replay mode (Phase 1).
-     */
-    public static void releaseResumePoint() {
-        CountDownLatch latch = resumeLatch;
-        if (latch != null) {
-            latch.countDown();
-        }
-    }
-
-    /**
-     * Thread-local flag that controls whether the next {@link #localsReady()} call
-     * should block. Armed by the resume stub before jumping to the post-invoke label.
-     * This ensures that only the TARGET invoke's post-invoke localsReady() blocks —
-     * subsequent invokes in the same frame's original code do NOT block.
-     */
-    private static final ThreadLocal<Boolean> localsAwaitArmed = ThreadLocal.withInitial(() -> false);
-
-    /**
-     * Arm the localsReady gate for the current thread. Called by resume stubs
-     * before jumping to the post-invoke label in the original code.
-     */
-    public static void armLocalsAwait() {
-        localsAwaitArmed.set(true);
-    }
-
-    /**
-     * Called at every post-invoke label in the original code. Only blocks when
-     * the localsReady gate is armed (by the resume stub). After blocking, the
-     * gate is disarmed so subsequent post-invoke calls in the same frame's
-     * original code pass through immediately.
-     *
-     * <p>During normal execution (no replay), the gate is never armed, so this
-     * is a single thread-local read — effectively zero cost.</p>
-     */
-    public static void localsReady() {
-        if (!localsAwaitArmed.get()) return;
-        localsAwaitArmed.set(false);
-
-        // Read the latch under lock, then await WITHOUT holding the lock
-        // (holding it during await would deadlock with releaseLocalsReady).
-        CountDownLatch latch;
-        synchronized (LATCH_LOCK) {
-            latch = localsLatch;
-        }
-        if (latch != null) {
-            try {
-                if (!latch.await(LATCH_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
-                    throw new RuntimeException(
-                            "Thread restore timed out: JDI worker did not release "
-                            + "localsReady latch within " + LATCH_TIMEOUT_SECONDS
-                            + " seconds. The JDI worker may have crashed or "
-                            + "failed to set local variables.");
-                }
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
-            // Recreate the latch under lock so releaseLocalsReady() can't
-            // race between this recreation and the next frame's await.
-            synchronized (LATCH_LOCK) {
-                localsLatch = new CountDownLatch(1);
-            }
-        }
-        // Check if the JDI worker signalled a restore failure
-        String error = restoreError;
-        if (error != null) {
-            restoreError = null;
-            throw new RuntimeException("Thread restore failed (Phase 2): " + error);
-        }
-    }
-
-    /**
-     * Release the locals latch, allowing the replay thread to continue past
-     * {@link #localsReady()}. Called by the JDI worker after setting local
-     * variables via JDI (Phase 2).
-     */
-    public static void releaseLocalsReady() {
-        synchronized (LATCH_LOCK) {
-            CountDownLatch latch = localsLatch;
-            if (latch != null) {
-                latch.countDown();
-            }
-        }
-    }
-
-    /**
      * Activate replay mode for the current thread.
-     * The resume point will NOT block (suitable for in-process replay tests).
+     * The go-latch will NOT block (suitable for in-process replay tests).
      *
      * @param resumeIndices invoke-index for each frame, bottom (0) to top
      */
     public static void activate(int[] resumeIndices) {
-        resumeLatch = null;
-        localsLatch = null;
         REPLAY.set(new ReplayData(resumeIndices));
     }
 
     /**
-     * Activate replay mode with blocking latches for two-phase restore.
-     * <ul>
-     *   <li>Phase 1: The replay thread blocks inside {@link #resumePoint()} until
-     *       the JDI worker deactivates replay and calls {@link #releaseResumePoint()}.</li>
-     *   <li>Phase 2: The replay thread blocks inside {@link #localsReady()} until
-     *       the JDI worker sets locals and calls {@link #releaseLocalsReady()}.</li>
-     * </ul>
+     * Activate replay mode with a go-latch for single-pass restore.
+     *
+     * <p>The replay thread rebuilds the call stack via instrumented prologues,
+     * then blocks inside {@code freeze()} on the go-latch. The JDI worker sets
+     * all locals in all frames while the thread is blocked. When
+     * {@link RestoredThread#resume()} releases the go-latch, {@code freeze()}
+     * returns and user code continues.</p>
      *
      * @param resumeIndices invoke-index for each frame, bottom (0) to top
      */
@@ -302,25 +174,20 @@ public final class ReplayState {
     }
 
     /**
-     * Activate replay mode with blocking latches and pre-resolved frame receivers.
+     * Activate replay mode with a go-latch and pre-resolved frame receivers.
      *
      * @param resumeIndices invoke-index for each frame, bottom (0) to top
      * @param frameReceivers pre-resolved receiver ("this") for each frame, or null
      */
     public static void activateWithLatch(int[] resumeIndices, Object[] frameReceivers) {
-        synchronized (LATCH_LOCK) {
-            restoreError = null;
-            resumeLatch = new CountDownLatch(1);
-            localsLatch = new CountDownLatch(1);
-            goLatch = new CountDownLatch(1);
-        }
+        restoreError = null;
+        goLatch = new CountDownLatch(1);
         REPLAY.set(new ReplayData(resumeIndices, frameReceivers));
     }
 
     /**
      * Signal a restore failure. The replay thread will throw after waking
-     * from {@link #resumePoint()} instead of continuing with incorrect state.
-     * Must be called BEFORE {@link #releaseResumePoint()}.
+     * from the go-latch instead of continuing with incorrect state.
      */
     public static void signalRestoreError(String message) {
         restoreError = message;
@@ -328,15 +195,10 @@ public final class ReplayState {
 
     /**
      * Deactivate replay mode for the current thread.
-     * Called by JDI after all locals have been set.
+     * Called by the deepest frame's resume stub before jumping to original code.
      */
     public static void deactivate() {
         REPLAY.remove();
-    }
-
-    /** Package-private access to resume latch for ThreadRestorer (legacy). */
-    static java.util.concurrent.CountDownLatch getResumeLatch() {
-        return resumeLatch;
     }
 
     /**
@@ -386,30 +248,6 @@ public final class ReplayState {
         return goLatch;
     }
 
-    // --- Boxing/unboxing helpers ---
-    // These MUST live in ReplayState so that RawBytecodeScanner filters them out.
-    // If boxing/unboxing were done via direct calls to java.lang.Integer.valueOf() etc.
-    // in the injected skip-check code, the scanner would count them as original-code
-    // invokes, corrupting the invoke index mapping between freeze and restore.
-
-    public static Object boxBoolean(boolean v) { return Boolean.valueOf(v); }
-    public static Object boxByte(byte v) { return Byte.valueOf(v); }
-    public static Object boxChar(char v) { return Character.valueOf(v); }
-    public static Object boxShort(short v) { return Short.valueOf(v); }
-    public static Object boxInt(int v) { return Integer.valueOf(v); }
-    public static Object boxLong(long v) { return Long.valueOf(v); }
-    public static Object boxFloat(float v) { return Float.valueOf(v); }
-    public static Object boxDouble(double v) { return Double.valueOf(v); }
-
-    public static boolean unboxBoolean(Object o) { return ((Boolean) o).booleanValue(); }
-    public static byte unboxByte(Object o) { return ((Byte) o).byteValue(); }
-    public static char unboxChar(Object o) { return ((Character) o).charValue(); }
-    public static short unboxShort(Object o) { return ((Short) o).shortValue(); }
-    public static int unboxInt(Object o) { return ((Integer) o).intValue(); }
-    public static long unboxLong(Object o) { return ((Long) o).longValue(); }
-    public static float unboxFloat(Object o) { return ((Float) o).floatValue(); }
-    public static double unboxDouble(Object o) { return ((Double) o).doubleValue(); }
-
     /**
      * Resolve the receiver for the current frame during replay.
      *
@@ -445,10 +283,7 @@ public final class ReplayState {
     public static Object dummyInstance(String className) {
         try {
             Class<?> clazz = Class.forName(className);
-            java.lang.reflect.Field unsafeField = sun.misc.Unsafe.class.getDeclaredField("theUnsafe");
-            unsafeField.setAccessible(true);
-            sun.misc.Unsafe unsafe = (sun.misc.Unsafe) unsafeField.get(null);
-            return unsafe.allocateInstance(clazz);
+            return new org.objenesis.ObjenesisStd(true).newInstance(clazz);
         } catch (Exception e) {
             throw new RuntimeException(
                     "Failed to create dummy receiver instance for replay of class '"

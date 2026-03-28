@@ -25,13 +25,9 @@ public final class SnapshotFileWriter implements Consumer<ThreadSnapshot> {
 
     /**
      * Create a writer that serializes snapshots to the given file path.
-     *
-     * @param filePath the file path as a string
-     */
-    /**
-     * Create a writer that serializes snapshots to the given file path.
-     * If filePath is null, the writer is a no-op (used during restore when
-     * the replay stub re-executes freeze() with dummy null arguments).
+     * If filePath is null, the writer is a no-op — this happens during restore
+     * when the replay thread re-enters freeze() with dummy (null) arguments
+     * before JDI has set the real local variable values.
      *
      * @param filePath the file path as a string, or null for a no-op writer
      */
@@ -41,7 +37,7 @@ public final class SnapshotFileWriter implements Consumer<ThreadSnapshot> {
 
     /**
      * Create a writer that serializes snapshots to the given file path.
-     * If path is null, the writer is a no-op.
+     * If path is null, the writer is a no-op (see String constructor).
      *
      * @param path the file path, or null for a no-op writer
      */

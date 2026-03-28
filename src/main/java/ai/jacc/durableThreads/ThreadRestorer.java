@@ -1,7 +1,6 @@
 package ai.jacc.durableThreads;
 
 import com.sun.jdi.*;
-import ai.jacc.durableThreads.exception.BytecodeMismatchException;
 import ai.jacc.durableThreads.internal.*;
 import ai.jacc.durableThreads.snapshot.*;
 import static ai.jacc.durableThreads.internal.FrameFilter.isInfrastructureFrame;
@@ -75,14 +74,10 @@ final class ThreadRestorer {
                     + "(see JdiHelper.findThread).");
         }
 
-        // Step 1: Force-load all classes referenced in the snapshot.
-        ensureClassesLoaded(snapshot);
-
-        // Step 2: Validate bytecode hashes
-        validateBytecodeHashes(snapshot);
-
-        // Step 2b: Validate class structure hashes for heap objects
-        validateClassStructureHashes(snapshot);
+        // Step 1: Force-load all classes and validate hashes
+        SnapshotValidator.ensureClassesLoaded(snapshot);
+        SnapshotValidator.validateBytecodeHashes(snapshot);
+        SnapshotValidator.validateClassStructureHashes(snapshot);
 
         // Step 3: Rebuild the heap
         HeapRestorer heapRestorer = new HeapRestorer();
@@ -119,11 +114,11 @@ final class ThreadRestorer {
 
             try {
                 FrameSnapshot bottomFrame = snapshot.bottomFrame();
-                invokeBottomFrame(bottomFrame, restoredHeap, heapRestorer, snapshot);
+                ReflectionHelpers.invokeBottomFrame(bottomFrame, restoredHeap, heapRestorer, snapshot);
             } catch (ai.jacc.durableThreads.exception.ThreadFrozenError e) {
                 // Expected — thread was re-frozen
             } catch (Exception e) {
-                if (hasCause(e, ai.jacc.durableThreads.exception.ThreadFrozenError.class)) {
+                if (ReflectionHelpers.hasCause(e, ai.jacc.durableThreads.exception.ThreadFrozenError.class)) {
                     // Expected — thread was re-frozen via reflected call
                 } else {
                     throw new RuntimeException("Failed to replay thread from snapshot", e);
@@ -164,70 +159,6 @@ final class ThreadRestorer {
         return new RestoredThread(replayThread, ReplayState.getGoLatch());
     }
 
-    private static void validateBytecodeHashes(ThreadSnapshot snapshot) {
-        List<String> mismatched = new ArrayList<>();
-
-        for (FrameSnapshot frame : snapshot.frames()) {
-            if (frame.bytecodeHash() == null || frame.bytecodeHash().length == 0) {
-                continue;
-            }
-
-            byte[] classBytecode = InvokeRegistry.getInstrumentedBytecode(frame.className());
-            if (classBytecode == null) {
-                // Class not instrumented — may be a JDK class that was stripped
-                continue;
-            }
-
-            byte[] currentHash = BytecodeHasher.hash(
-                    classBytecode, frame.methodName(), frame.methodSignature());
-            if (currentHash == null || !Arrays.equals(frame.bytecodeHash(), currentHash)) {
-                mismatched.add(frame.className().replace('/', '.') + "." + frame.methodName());
-            }
-        }
-
-        if (!mismatched.isEmpty()) {
-            throw new BytecodeMismatchException(mismatched);
-        }
-    }
-
-    /**
-     * Validate class structure hashes for heap objects to detect incompatible
-     * class changes (added/removed/renamed fields, type changes).
-     */
-    private static void validateClassStructureHashes(ThreadSnapshot snapshot) {
-        List<String> mismatched = new ArrayList<>();
-
-        for (ObjectSnapshot objSnap : snapshot.heap()) {
-            if (objSnap.classStructureHash() == null || objSnap.classStructureHash().length == 0) {
-                continue;
-            }
-            if (objSnap.kind() != ObjectKind.REGULAR) {
-                continue;
-            }
-
-            // Skip lambda/hidden classes — their names are JVM-generated and
-            // non-deterministic, so Class.forName will fail. They're captured
-            // as heap objects when reachable from locals but don't need
-            // structure validation (their layout is trivial).
-            if (objSnap.className().contains("$$Lambda")) {
-                continue;
-            }
-
-            try {
-                Class<?> clazz = Class.forName(objSnap.className());
-                byte[] currentHash = ClassStructureHasher.hashClassStructure(clazz);
-                if (!Arrays.equals(objSnap.classStructureHash(), currentHash)) {
-                    mismatched.add(objSnap.className());
-                }
-            } catch (ClassNotFoundException e) {
-                mismatched.add(objSnap.className() + " (class not found)");
-            }
-        }
-
-        if (!mismatched.isEmpty()) {
-            throw new BytecodeMismatchException(mismatched);
-        }
-    }
 
     /**
      * Read the pre-computed invoke indices directly from the snapshot.
@@ -352,32 +283,6 @@ final class ThreadRestorer {
         }
     }
 
-    private static void invokeBottomFrame(FrameSnapshot bottomFrame,
-                                          Map<Long, Object> restoredHeap,
-                                          HeapRestorer heapRestorer,
-                                          ThreadSnapshot snapshot) throws Exception {
-        String className = bottomFrame.className().replace('/', '.');
-        Class<?> clazz = Class.forName(className);
-
-        java.lang.reflect.Method method = findMethod(clazz, bottomFrame.methodName(),
-                bottomFrame.methodSignature());
-        if (method == null) {
-            throw new RuntimeException("Cannot find method: " + className + "."
-                    + bottomFrame.methodName() + bottomFrame.methodSignature());
-        }
-
-        method.setAccessible(true);
-
-        Object[] args = createDummyArgs(method.getParameterTypes());
-        Object receiver = null;
-
-        if (!java.lang.reflect.Modifier.isStatic(method.getModifiers())) {
-            receiver = findOrCreateReceiver(clazz, bottomFrame, restoredHeap, heapRestorer);
-        }
-
-        method.invoke(receiver, args);
-    }
-
     /**
      * Run single-pass JDI restore synchronously.
      *
@@ -393,53 +298,41 @@ final class ThreadRestorer {
                                       Map<Long, Object> restoredHeap,
                                       HeapRestorer heapRestorer) {
         try {
-            int port = JdiHelper.detectJdwpPort();
-            if (port < 0) {
+            VirtualMachine vm = JdiHelper.getConnection();
+
+            // Wait for thread to reach awaitGoLatch() inside freeze().
+            // The deepest frame's resume stub deactivated replay and jumped
+            // to BEFORE_INVOKE, which called freeze(). freeze() detected
+            // restoreInProgress and is now blocked on the go-latch.
+            ThreadReference tr = waitForThreadAtMethod(vm, threadName,
+                    "awaitGoLatch", "ReplayState", 30_000);
+            if (tr == null) {
                 throw new RuntimeException(
-                        "JDWP not available for restore. "
-                        + "Start with: -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005");
+                        "Timeout waiting for replay thread '" + threadName
+                        + "' to reach awaitGoLatch(). The thread may have failed "
+                        + "during replay prologue execution.");
             }
 
-            VirtualMachine vm = JdiHelper.connect(port);
+            // Pre-load all classes referenced by snapshot locals
+            tr.suspend();
             try {
-                // Wait for thread to reach awaitGoLatch() inside freeze().
-                // The deepest frame's resume stub deactivated replay and jumped
-                // to BEFORE_INVOKE, which called freeze(). freeze() detected
-                // restoreInProgress and is now blocked on the go-latch.
-                ThreadReference tr = waitForThreadAtMethod(vm, threadName,
-                        "awaitGoLatch", "ReplayState", 30_000);
-                if (tr == null) {
-                    throw new RuntimeException(
-                            "Timeout waiting for replay thread '" + threadName
-                            + "' to reach awaitGoLatch(). The thread may have failed "
-                            + "during replay prologue execution.");
-                }
-
-                // Pre-load all classes referenced by snapshot locals
-                tr.suspend();
-                try {
-                    preloadSnapshotClasses(vm, tr, snapshot);
-                } finally {
-                    tr.resume();
-                }
-
-                // Set ALL locals in ALL frames in a single pass.
-                // All frames are in their original code sections (resume stubs
-                // jumped to BEFORE_INVOKE labels), so all locals are in scope.
-                tr.suspend();
-                tr.suspend();
-                try {
-                    setLocalsViaJdi(vm, tr, snapshot, restoredHeap, heapRestorer, true);
-                } finally {
-                    tr.resume();
-                    tr.resume();
-                }
-
-                // Clean up the heap bridge
-                HeapObjectBridge.clear();
+                preloadSnapshotClasses(vm, tr, snapshot);
             } finally {
-                // Do NOT call vm.dispose()
+                tr.resume();
             }
+
+            // Set ALL locals in ALL frames in a single pass.
+            // All frames are in their original code sections (resume stubs
+            // jumped to BEFORE_INVOKE labels), so all locals are in scope.
+            tr.suspend();
+            try {
+                setLocalsViaJdi(vm, tr, snapshot, restoredHeap, heapRestorer);
+            } finally {
+                tr.resume();
+            }
+
+            // Clean up the heap bridge
+            HeapObjectBridge.clear();
         } catch (Exception e) {
             System.err.println("[DurableThreads] JDI restore failed: " + e.getMessage());
             e.printStackTrace(System.err);
@@ -460,7 +353,7 @@ final class ThreadRestorer {
      * We verify the thread is actually blocked inside the target method by
      * inspecting its top stack frames.</p>
      *
-     * @param targetMethodName the method name to look for (e.g. "resumePoint", "localsReady")
+     * @param targetMethodName the method name to look for (e.g. "awaitGoLatch")
      * @param targetClassName  partial class name match (e.g. "ReplayState")
      */
     private static ThreadReference waitForThreadAtMethod(VirtualMachine vm, String threadName,
@@ -491,33 +384,6 @@ final class ThreadRestorer {
     }
 
     /**
-     * Check if the first user frame on the JDI stack matches the expected snapshot frame.
-     * Used to detect when the replay thread is still in a previous frame's localsReady()
-     * vs. having advanced to the correct frame's localsReady().
-     * Thread must already be suspended.
-     */
-    private static boolean isCorrectFrame(ThreadReference tr, FrameSnapshot snapFrame) {
-        try {
-            List<StackFrame> jdiFrames = tr.frames(0, Math.min(15, tr.frameCount()));
-            for (StackFrame jdiFrame : jdiFrames) {
-                Location loc = jdiFrame.location();
-                String jdiClassName = loc.declaringType().name().replace('.', '/');
-                String jdiMethodName = loc.method().name();
-                // Skip infrastructure frames
-                if (isInfrastructureFrame(jdiClassName)) {
-                    continue;
-                }
-                // First user frame — check if it matches
-                return jdiClassName.equals(snapFrame.className())
-                        && jdiMethodName.equals(snapFrame.methodName());
-            }
-        } catch (IncompatibleThreadStateException e) {
-            // Can't read frames
-        }
-        return false;
-    }
-
-    /**
      * Check if a thread is blocked inside the specified method by inspecting
      * its top stack frames. Looks for the target method in the call stack,
      * allowing for CountDownLatch internals above it.
@@ -525,8 +391,6 @@ final class ThreadRestorer {
     private static boolean isAtMethod(ThreadReference tr, String targetMethodName,
                                        String targetClassName) {
         try {
-            // Double-suspend for resilience against spurious JDI resumes
-            tr.suspend();
             tr.suspend();
             try {
                 List<StackFrame> frames = tr.frames(0, Math.min(10, tr.frameCount()));
@@ -542,44 +406,40 @@ final class ThreadRestorer {
                 }
             } finally {
                 tr.resume();
-                tr.resume();
             }
         } catch (IncompatibleThreadStateException e) {
             // Can't read frames — not yet in proper state
-        } catch (com.sun.jdi.InvalidStackFrameException e) {
-            // Thread was resumed despite double-suspend — will retry in polling loop
         }
         return false;
     }
 
     /**
-     * Set local variables in each frame via JDI.
+     * Set local variables in each frame via JDI (single-pass).
      *
-     * <p>In Phase 2, the JDI call stack looks like:</p>
+     * <p>The JDI call stack looks like:</p>
      * <pre>
-     * JDI frame 0:   localsReady() [or CountDownLatch internals]
-     * JDI frame 1:   deepest user method (in original code section, at skip-check)
-     * JDI frame 2:   next method up (called from original code)
+     * JDI frame 0:   awaitGoLatch() [or CountDownLatch internals]
+     * JDI frame 1:   freeze() [detecting restore mode]
+     * JDI frame 2:   deepest user method (in original code section)
+     * JDI frame 3:   next method up (in original code section)
      * ...
      * JDI frame K:   bottom user method
      * JDI frame K+1: invokeBottomFrame / reflection / Thread.run
      * </pre>
      *
+     * <p>All frames are in their original code sections (resume stubs jumped
+     * to BEFORE_INVOKE labels), so all locals are naturally in scope.</p>
+     *
      * <p>The snapshot frames are ordered [bottom, ..., top] (indices 0..N-1).
      * We match them by className + methodName, working from the top of the
      * JDI stack downward. We skip JDI frames that belong to ReplayState,
      * CountDownLatch, or other infrastructure.</p>
-     */
-    /**
-     * @param requireAllLocals if true (Phase 2), any local that cannot be set
-     *        is a fatal error. If false (Phase 1), out-of-scope locals are
-     *        silently skipped (they'll be set in Phase 2).
+     *
      */
     private static void setLocalsViaJdi(VirtualMachine vm, ThreadReference threadRef,
                                         ThreadSnapshot snapshot,
                                         Map<Long, Object> restoredHeap,
-                                        HeapRestorer heapRestorer,
-                                        boolean requireAllLocals) {
+                                        HeapRestorer heapRestorer) {
         try {
             List<StackFrame> jdiFrames = threadRef.frames();
             List<FrameSnapshot> snapshotFrames = snapshot.frames();
@@ -587,7 +447,6 @@ final class ThreadRestorer {
             // Match JDI frames to snapshot frames.
             // JDI is top-to-bottom, snapshot is bottom-to-top.
             int snapshotIdx = snapshotFrames.size() - 1; // start from top (deepest)
-            int topFrameIdx = snapshotIdx; // the deepest (top) frame index
 
             for (int jdiIdx = 0; jdiIdx < jdiFrames.size() && snapshotIdx >= 0; jdiIdx++) {
                 StackFrame jdiFrame = jdiFrames.get(jdiIdx);
@@ -608,66 +467,11 @@ final class ThreadRestorer {
                         // With the direct-jump architecture, all frames are in their
                     // original code sections, so all locals should be in scope.
                     setFrameLocals(vm, threadRef, jdiFrame, snapFrame,
-                            restoredHeap, heapRestorer, requireAllLocals);
+                            restoredHeap, heapRestorer);
                     snapshotIdx--;
                 }
                 // If no match, skip this JDI frame (it's infrastructure / reflection)
             }
-
-        } catch (IncompatibleThreadStateException e) {
-            throw new RuntimeException("Thread not suspended for local variable setting", e);
-        }
-    }
-
-    /**
-     * Set locals for the single user frame that is currently blocked at localsReady().
-     * Walks the JDI stack to find the first user frame (skipping ReplayState and JDK
-     * infrastructure), verifies it matches the expected snapshot frame, and sets ALL
-     * its local variables.
-     *
-     * @param snapshotFrameIdx index into snapshot.frames() for the expected frame
-     */
-    private static void setLocalsForSingleFrame(VirtualMachine vm, ThreadReference threadRef,
-                                                 ThreadSnapshot snapshot,
-                                                 Map<Long, Object> restoredHeap,
-                                                 HeapRestorer heapRestorer,
-                                                 int snapshotFrameIdx) {
-        try {
-            List<StackFrame> jdiFrames = threadRef.frames();
-            FrameSnapshot snapFrame = snapshot.frames().get(snapshotFrameIdx);
-
-            for (StackFrame jdiFrame : jdiFrames) {
-                Location loc = jdiFrame.location();
-                String jdiClassName = loc.declaringType().name().replace('.', '/');
-                String jdiMethodName = loc.method().name();
-
-                // Skip infrastructure frames
-                if (isInfrastructureFrame(jdiClassName)) {
-                    continue;
-                }
-
-                // First user frame — verify it matches the expected snapshot frame
-                if (jdiClassName.equals(snapFrame.className())
-                        && jdiMethodName.equals(snapFrame.methodName())) {
-                    setFrameLocals(vm, threadRef, jdiFrame, snapFrame,
-                            restoredHeap, heapRestorer, true);
-                    return;
-                }
-
-                // First user frame doesn't match — something went wrong
-                throw new RuntimeException(
-                        "[DurableThreads] Frame mismatch at localsReady(): expected "
-                        + snapFrame.className().replace('/', '.') + "."
-                        + snapFrame.methodName() + " but found "
-                        + jdiClassName.replace('/', '.') + "." + jdiMethodName
-                        + ". The call stack structure may have changed between "
-                        + "freeze and restore.");
-            }
-
-            throw new RuntimeException(
-                    "[DurableThreads] No user frame found in JDI stack at localsReady() "
-                    + "for expected frame " + snapFrame.className().replace('/', '.')
-                    + "." + snapFrame.methodName());
 
         } catch (IncompatibleThreadStateException e) {
             throw new RuntimeException("Thread not suspended for local variable setting", e);
@@ -686,8 +490,7 @@ final class ThreadRestorer {
     private static void setFrameLocals(VirtualMachine vm, ThreadReference threadRef,
                                        StackFrame jdiFrame, FrameSnapshot snapFrame,
                                        Map<Long, Object> restoredHeap,
-                                       HeapRestorer heapRestorer,
-                                       boolean requireAllLocals) {
+                                       HeapRestorer heapRestorer) {
         Method method = jdiFrame.location().method();
 
         List<com.sun.jdi.LocalVariable> jdiLocals;
@@ -788,26 +591,18 @@ final class ThreadRestorer {
                             + method.declaringType().name() + "." + method.name()
                             + ": " + e.getMessage(), e);
                 } catch (IllegalArgumentException e) {
-                    if (requireAllLocals) {
-                        throw new RuntimeException(
-                                "Cannot set local '" + entry.jdiLocal().name() + "' in "
-                                + method.declaringType().name() + "." + method.name()
-                                + " — not in scope at current BCP. "
-                                + "Thread restore cannot proceed with incomplete state.",
-                                e);
-                    }
-                    // Phase 1: non-parameter locals may not be in scope yet
+                    throw new RuntimeException(
+                            "Cannot set local '" + entry.jdiLocal().name() + "' in "
+                            + method.declaringType().name() + "." + method.name()
+                            + " — not in scope at current BCP. "
+                            + "Thread restore cannot proceed with incomplete state.",
+                            e);
                 } catch (com.sun.jdi.InternalException e) {
-                    // JDWP Error 35 (INVALID_SLOT): variable not in scope at current
-                    // BCI. In Phase 1 the thread is in the resume stub where
-                    // non-parameter locals haven't entered scope yet — this is expected.
-                    // In Phase 2 (requireAllLocals), this is a real error.
-                    if (requireAllLocals) {
-                        throw new RuntimeException(
-                                "Failed to set local '" + entry.jdiLocal().name() + "' in "
-                                + method.declaringType().name() + "." + method.name()
-                                + ": " + e.getMessage(), e);
-                    }
+                    // JDWP Error 35 (INVALID_SLOT): variable not in scope at current BCI.
+                    throw new RuntimeException(
+                            "Failed to set local '" + entry.jdiLocal().name() + "' in "
+                            + method.declaringType().name() + "." + method.name()
+                            + ": " + e.getMessage(), e);
                 } catch (Exception e) {
                     throw new RuntimeException(
                             "Failed to set local '" + entry.jdiLocal().name() + "' in "
@@ -1034,116 +829,5 @@ final class ThreadRestorer {
         if (value instanceof Double) return vm.mirrorOf((Double) value);
         if (value instanceof String) return vm.mirrorOf((String) value);
         return null;
-    }
-
-    /**
-     * Force-load all classes referenced in the snapshot frames.
-     * This triggers the agent's ClassFileTransformer which populates
-     * InvokeRegistry with invoke offset maps needed by computeResumeIndices().
-     */
-    private static void ensureClassesLoaded(ThreadSnapshot snapshot) {
-        for (FrameSnapshot frame : snapshot.frames()) {
-            String className = frame.className().replace('/', '.');
-            try {
-                Class.forName(className);
-            } catch (ClassNotFoundException e) {
-                // Class not available in this JVM — will fail later at invoke time
-            }
-        }
-    }
-
-    // --- Reflection helpers ---
-
-    private static java.lang.reflect.Method findMethod(Class<?> clazz, String name, String desc) {
-        for (java.lang.reflect.Method m : clazz.getDeclaredMethods()) {
-            if (m.getName().equals(name) && descriptorMatches(m, desc)) {
-                return m;
-            }
-        }
-        if (clazz.getSuperclass() != null) {
-            return findMethod(clazz.getSuperclass(), name, desc);
-        }
-        return null;
-    }
-
-    private static boolean descriptorMatches(java.lang.reflect.Method m, String desc) {
-        StringBuilder sb = new StringBuilder("(");
-        for (Class<?> param : m.getParameterTypes()) {
-            sb.append(typeToDescriptor(param));
-        }
-        sb.append(")");
-        sb.append(typeToDescriptor(m.getReturnType()));
-        return sb.toString().equals(desc);
-    }
-
-    private static String typeToDescriptor(Class<?> type) {
-        if (type == void.class) return "V";
-        if (type == boolean.class) return "Z";
-        if (type == byte.class) return "B";
-        if (type == char.class) return "C";
-        if (type == short.class) return "S";
-        if (type == int.class) return "I";
-        if (type == long.class) return "J";
-        if (type == float.class) return "F";
-        if (type == double.class) return "D";
-        if (type.isArray()) return type.getName().replace('.', '/');
-        return "L" + type.getName().replace('.', '/') + ";";
-    }
-
-    private static Object[] createDummyArgs(Class<?>[] paramTypes) {
-        Object[] args = new Object[paramTypes.length];
-        for (int i = 0; i < paramTypes.length; i++) {
-            args[i] = defaultValue(paramTypes[i]);
-        }
-        return args;
-    }
-
-    private static Object defaultValue(Class<?> type) {
-        if (type == boolean.class) return false;
-        if (type == byte.class) return (byte) 0;
-        if (type == char.class) return (char) 0;
-        if (type == short.class) return (short) 0;
-        if (type == int.class) return 0;
-        if (type == long.class) return 0L;
-        if (type == float.class) return 0.0f;
-        if (type == double.class) return 0.0d;
-        return null;
-    }
-
-    private static Object findOrCreateReceiver(Class<?> clazz, FrameSnapshot frame,
-                                               Map<Long, Object> restoredHeap,
-                                               HeapRestorer heapRestorer) {
-        for (ai.jacc.durableThreads.snapshot.LocalVariable local : frame.locals()) {
-            if (local.slot() == 0 && local.name().equals("this")) {
-                Object resolved = heapRestorer.resolve(local.value());
-                if (resolved != null) return resolved;
-            }
-        }
-
-        // 'this' was not captured or could not be resolved from the heap.
-        // This is expected for anonymous inner classes and other cases where
-        // JDI's method.variables() doesn't include the receiver. Fall back to
-        // creating an uninitialized instance via Objenesis — the actual field
-        // values will be set later by the JDI worker.
-        try {
-            org.objenesis.ObjenesisStd objenesis = new org.objenesis.ObjenesisStd(true);
-            return objenesis.newInstance(clazz);
-        } catch (Exception e) {
-            throw new RuntimeException("Cannot create receiver instance of " + clazz.getName()
-                    + ". The 'this' reference was not captured in the snapshot and Objenesis"
-                    + " fallback failed.", e);
-        }
-    }
-
-    /**
-     * Check if a throwable's cause chain contains an instance of the given type.
-     */
-    private static boolean hasCause(Throwable t, Class<? extends Throwable> type) {
-        for (Throwable cause = t; cause != null; cause = cause.getCause()) {
-            if (type.isInstance(cause)) {
-                return true;
-            }
-        }
-        return false;
     }
 }

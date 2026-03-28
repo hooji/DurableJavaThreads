@@ -37,11 +37,17 @@ public final class DurableTransformer implements ClassFileTransformer {
             "ai/jacc/durableThreads/Durable",
             "ai/jacc/durableThreads/DurableAgent",
             "ai/jacc/durableThreads/DurableTransformer",
+            "ai/jacc/durableThreads/OperandStackSimulator",
+            "ai/jacc/durableThreads/PrologueEmitter",
             "ai/jacc/durableThreads/PrologueInjector",
+            "ai/jacc/durableThreads/PrologueTypes",
+            "ai/jacc/durableThreads/ReflectionHelpers",
             "ai/jacc/durableThreads/ReplayState",
+            "ai/jacc/durableThreads/RestoredThread",
+            "ai/jacc/durableThreads/SnapshotFileWriter",
+            "ai/jacc/durableThreads/SnapshotValidator",
             "ai/jacc/durableThreads/ThreadFreezer",
             "ai/jacc/durableThreads/ThreadRestorer",
-            "ai/jacc/durableThreads/SnapshotFileWriter",
     };
 
     @Override
