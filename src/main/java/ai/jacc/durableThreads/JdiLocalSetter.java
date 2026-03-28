@@ -1,7 +1,9 @@
 package ai.jacc.durableThreads;
 
 import com.sun.jdi.*;
+import ai.jacc.durableThreads.internal.*;
 import ai.jacc.durableThreads.snapshot.*;
+import static ai.jacc.durableThreads.internal.FrameFilter.isInfrastructureFrame;
 
 import java.util.*;
 
@@ -50,6 +52,214 @@ final class JdiLocalSetter {
         public String toString() {
             return "LocalEntry[jdiLocal=" + jdiLocal + ", jdiValue=" + jdiValue
                     + ", isNull=" + isNull + "]";
+        }
+    }
+
+    /**
+     * Set local variables in each frame via JDI (single-pass).
+     *
+     * <p>The JDI call stack looks like:</p>
+     * <pre>
+     * JDI frame 0:   awaitGoLatch() [or CountDownLatch internals]
+     * JDI frame 1:   freeze() [detecting restore mode]
+     * JDI frame 2:   deepest user method (in original code section)
+     * JDI frame 3:   next method up (in original code section)
+     * ...
+     * JDI frame K:   bottom user method
+     * JDI frame K+1: invokeBottomFrame / reflection / Thread.run
+     * </pre>
+     *
+     * <p>All frames are in their original code sections (resume stubs jumped
+     * to BEFORE_INVOKE labels), so all locals are naturally in scope.</p>
+     *
+     * <p>The snapshot frames are ordered [bottom, ..., top] (indices 0..N-1).
+     * We match them by className + methodName, working from the top of the
+     * JDI stack downward. We skip JDI frames that belong to ReplayState,
+     * CountDownLatch, or other infrastructure.</p>
+     *
+     */
+    static void setLocalsViaJdi(VirtualMachine vm, ThreadReference threadRef,
+                                ThreadSnapshot snapshot,
+                                Map<Long, Object> restoredHeap,
+                                HeapRestorer heapRestorer) {
+        try {
+            List<StackFrame> jdiFrames = threadRef.frames();
+            List<FrameSnapshot> snapshotFrames = snapshot.frames();
+
+            // Match JDI frames to snapshot frames.
+            // JDI is top-to-bottom, snapshot is bottom-to-top.
+            int snapshotIdx = snapshotFrames.size() - 1; // start from top (deepest)
+
+            for (int jdiIdx = 0; jdiIdx < jdiFrames.size() && snapshotIdx >= 0; jdiIdx++) {
+                StackFrame jdiFrame = jdiFrames.get(jdiIdx);
+                Location loc = jdiFrame.location();
+                String jdiClassName = loc.declaringType().name().replace('.', '/');
+                String jdiMethodName = loc.method().name();
+
+                // Skip infrastructure frames (ReplayState, CountDownLatch, JDK, etc.)
+                if (isInfrastructureFrame(jdiClassName)) {
+                    continue;
+                }
+
+                FrameSnapshot snapFrame = snapshotFrames.get(snapshotIdx);
+
+                // Match by class name and method name
+                if (jdiClassName.equals(snapFrame.className())
+                        && jdiMethodName.equals(snapFrame.methodName())) {
+                        // With the direct-jump architecture, all frames are in their
+                    // original code sections, so all locals should be in scope.
+                    setFrameLocals(vm, threadRef, jdiFrame, snapFrame,
+                            restoredHeap, heapRestorer);
+                    snapshotIdx--;
+                }
+                // If no match, skip this JDI frame (it's infrastructure / reflection)
+            }
+
+        } catch (IncompatibleThreadStateException e) {
+            throw new RuntimeException("Thread not suspended for local variable setting", e);
+        }
+    }
+
+    /**
+     * Set local variables in a single JDI frame from a snapshot frame.
+     *
+     * <p>Object references resolved from the heap bridge are protected from
+     * garbage collection via {@link ObjectReference#disableCollection()} while
+     * locals are being set. Without this, the target JVM's GC can collect the
+     * mirrored object between resolution and {@code setValue()}, causing a
+     * {@code ObjectCollectedException}.</p>
+     */
+    private static void setFrameLocals(VirtualMachine vm, ThreadReference threadRef,
+                                       StackFrame jdiFrame, FrameSnapshot snapFrame,
+                                       Map<Long, Object> restoredHeap,
+                                       HeapRestorer heapRestorer) {
+        Method method = jdiFrame.location().method();
+
+        List<com.sun.jdi.LocalVariable> jdiLocals;
+        try {
+            jdiLocals = method.variables();
+        } catch (AbsentInformationException e) {
+            throw new RuntimeException(
+                    "No debug info for method " + method.declaringType().name() + "."
+                    + method.name() + ". Classes must be compiled with debug info (-g) "
+                    + "for thread restore to set local variables.", e);
+        }
+
+        // Build a map of JDI locals by name for quick lookup.
+        // When multiple variables share the same name and slot (e.g., two
+        // for-loops both declaring 'int i'), prefer the one that is VISIBLE
+        // at the current frame location. This is critical for the single-pass
+        // architecture where the thread is at the freeze point's BCI.
+        Map<String, com.sun.jdi.LocalVariable> jdiLocalsByName = new HashMap<>();
+        for (com.sun.jdi.LocalVariable jdiLocal : jdiLocals) {
+            com.sun.jdi.LocalVariable existing = jdiLocalsByName.get(jdiLocal.name());
+            if (existing == null) {
+                jdiLocalsByName.put(jdiLocal.name(), jdiLocal);
+            } else if (jdiLocal.isVisible(jdiFrame)) {
+                // Prefer the visible one (in scope at current BCI)
+                jdiLocalsByName.put(jdiLocal.name(), jdiLocal);
+            }
+        }
+
+        // Pre-resolve all values and pin object references to prevent GC collection.
+        // The target JVM's GC can collect objects between resolve and setValue(),
+        // causing ObjectCollectedException. disableCollection() prevents this.
+        List<LocalEntry> entries = new ArrayList<>();
+        List<ObjectReference> pinnedRefs = new ArrayList<>();
+
+        for (ai.jacc.durableThreads.snapshot.LocalVariable snapLocal : snapFrame.locals()) {
+            com.sun.jdi.LocalVariable jdiLocal = jdiLocalsByName.get(snapLocal.name());
+            if (jdiLocal == null) continue;
+
+            Value jdiValue = JdiValueConverter.convertToJdiValue(vm, snapLocal.value(),
+                    restoredHeap, heapRestorer);
+            boolean isNull = snapLocal.value() instanceof NullRef;
+
+            if (jdiValue instanceof ObjectReference) {
+                ObjectReference objRef = (ObjectReference) jdiValue;
+                try {
+                    objRef.disableCollection();
+                    pinnedRefs.add(objRef);
+                } catch (ObjectCollectedException alreadyGone) {
+                    // Object was collected before we could pin it — re-resolve
+                    jdiValue = JdiValueConverter.convertToJdiValue(vm, snapLocal.value(),
+                            restoredHeap, heapRestorer);
+                    if (jdiValue instanceof ObjectReference) {
+                        ObjectReference retryRef = (ObjectReference) jdiValue;
+                        retryRef.disableCollection();
+                        pinnedRefs.add(retryRef);
+                    }
+                }
+            }
+
+            if (jdiValue != null || isNull) {
+                entries.add(new LocalEntry(jdiLocal, jdiValue, isNull));
+            }
+        }
+
+        try {
+            for (LocalEntry entry : entries) {
+                try {
+                    jdiFrame.setValue(entry.jdiLocal(), entry.jdiValue());
+                } catch (ClassNotLoadedException cnle) {
+                    // On Java 8, JDI's classloader lookup can fail for bootstrap-loaded
+                    // classes (like TimeUnit) when the declaring class uses the app
+                    // classloader. The class IS loaded in the JVM, but JDI's
+                    // LocalVariableImpl.findType() only searches the declaring type's
+                    // classloader, not parent classloaders. Fixed in Java 9+.
+                    //
+                    // Bypass JDI's client-side type check by setting the slot value
+                    // directly via reflection on JDI internals.
+                    if (!setValueBypassTypeCheck(jdiFrame, entry.jdiLocal(), entry.jdiValue())) {
+                        // Fallback: skip this local with a warning rather than
+                        // crashing the entire restore
+                        System.err.println("[DurableThreads] Warning: skipping local '"
+                                + entry.jdiLocal().name() + "' — class '"
+                                + cnle.className() + "' not resolvable by JDI classloader"
+                                + " (Java 8 limitation)");
+                    }
+                } catch (InvalidTypeException e) {
+                    // Lambda instances captured in the heap are restored as
+                    // Object placeholders (hidden class can't be found). When
+                    // JDI tries to set a local typed as a functional interface
+                    // to an Object, the type check fails. Skip these silently —
+                    // the frame's lambda dispatch uses the proxy receiver.
+                    if (e.getMessage() != null && e.getMessage().contains("java.lang.Object")) {
+                        continue;
+                    }
+                    throw new RuntimeException(
+                            "Type mismatch setting local '" + entry.jdiLocal().name() + "' in "
+                            + method.declaringType().name() + "." + method.name()
+                            + ": " + e.getMessage(), e);
+                } catch (IllegalArgumentException e) {
+                    throw new RuntimeException(
+                            "Cannot set local '" + entry.jdiLocal().name() + "' in "
+                            + method.declaringType().name() + "." + method.name()
+                            + " — not in scope at current BCP. "
+                            + "Thread restore cannot proceed with incomplete state.",
+                            e);
+                } catch (com.sun.jdi.InternalException e) {
+                    // JDWP Error 35 (INVALID_SLOT): variable not in scope at current BCI.
+                    throw new RuntimeException(
+                            "Failed to set local '" + entry.jdiLocal().name() + "' in "
+                            + method.declaringType().name() + "." + method.name()
+                            + ": " + e.getMessage(), e);
+                } catch (Exception e) {
+                    throw new RuntimeException(
+                            "Failed to set local '" + entry.jdiLocal().name() + "' in "
+                            + method.declaringType().name() + "." + method.name()
+                            + ": " + e.getMessage(), e);
+                }
+            }
+        } finally {
+            // Re-enable GC on all pinned references
+            for (ObjectReference ref : pinnedRefs) {
+                try {
+                    ref.enableCollection();
+                } catch (ObjectCollectedException ignored) {
+                    // already collected after setValue — harmless
+                }
+            }
         }
     }
 
