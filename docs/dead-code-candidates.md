@@ -150,14 +150,17 @@ Never thrown anywhere in the codebase. Was thrown before lambda bridge proxy sup
 
 ---
 
-## 10. SnapshotFileWriter Null Path
+## 10. ~~SnapshotFileWriter Null Path~~ — NOT DEAD CODE
 
-**File:** `SnapshotFileWriter.java:38-39, 54`
-**Confidence:** 99%+ remove (the null-path code, not the class)
+**File:** `SnapshotFileWriter.java`
+**Status:** KEEP — incorrectly identified as dead code.
 
-The constructors accept `null` paths, and `accept()` returns early if path is null. The comment says "used during restore when the replay stub re-executes freeze() with dummy null arguments." This is from the old architecture — in the current architecture, `freeze()` during restore blocks on the go-latch and never calls the handler, so the null path is never exercised.
-
-Both `Durable.freeze(String)` and `Durable.freeze(Path)` pass non-null paths. The `freeze(Consumer, Map)` overload takes a Consumer directly. No code path creates a `SnapshotFileWriter` with null.
+The null-path handling IS required. During restore, the deepest frame's resume
+stub jumps to BEFORE_INVOKE for the original `freeze("path")` call. At that
+point, the local variable holding the path is a dummy null (JDI hasn't set it
+yet). The `SnapshotFileWriter(String)` constructor receives null and must not
+throw. The `accept()` no-op return prevents writing to a null path. Removing
+this causes NPE → replay thread dies → JDI worker times out.
 
 ---
 

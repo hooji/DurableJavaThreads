@@ -20,13 +20,6 @@ public final class InvokeRegistry {
     private static final Map<String, List<Integer>> INVOKE_OFFSETS = new ConcurrentHashMap<>();
 
     /**
-     * Resume-stub invoke offsets, keyed the same way. These map 1:1 to the
-     * same invoke indices as the original offsets. Used when a restored thread
-     * is re-frozen and JDI reports a BCP inside a resume stub.
-     */
-    private static final Map<String, List<Integer>> STUB_OFFSETS = new ConcurrentHashMap<>();
-
-    /**
      * Instrumented bytecode for each class, keyed by internal class name.
      * Used for bytecode hash computation.
      */
@@ -46,30 +39,13 @@ public final class InvokeRegistry {
     }
 
     /**
-     * Register resume-stub invoke offsets for a method. These map 1:1 to the
-     * same invoke indices as the original offsets registered via {@link #register}.
-     */
-    public static void registerStubOffsets(String key, List<Integer> offsets) {
-        STUB_OFFSETS.put(key, Collections.unmodifiableList(new ArrayList<>(offsets)));
-    }
-
-    /**
      * Get the invoke index for a given bytecode position.
      * Returns the index of the invoke instruction at or nearest before the given BCP.
-     *
-     * <p>Checks both original-code offsets and resume-stub offsets. When a restored
-     * thread is re-frozen, the JDI frame BCP may point to a resume stub invoke
-     * rather than the original code invoke.</p>
      *
      * @return the invoke index, or -1 if not found
      */
     public static int getInvokeIndex(String key, long bcp) {
-        // Check original-code invokes first (most common case)
-        int idx = findInvokeIndex(INVOKE_OFFSETS.get(key), bcp);
-        if (idx >= 0) return idx;
-
-        // Fall back to resume-stub invokes (restored thread re-frozen)
-        return findInvokeIndex(STUB_OFFSETS.get(key), bcp);
+        return findInvokeIndex(INVOKE_OFFSETS.get(key), bcp);
     }
 
     private static int findInvokeIndex(List<Integer> offsets, long bcp) {
@@ -78,8 +54,6 @@ public final class InvokeRegistry {
         // Find the invoke instruction at or just before the given BCP.
         // The BCP from JDI may point to the invoke instruction itself or
         // to a position after it (if the thread was suspended after the call).
-        // Entries with value -1 are placeholders (e.g., invokedynamic stubs
-        // that have no re-invoke) and are skipped.
         for (int i = offsets.size() - 1; i >= 0; i--) {
             int offset = offsets.get(i);
             if (offset >= 0 && offset <= bcp) {
@@ -87,13 +61,6 @@ public final class InvokeRegistry {
             }
         }
         return -1;
-    }
-
-    /**
-     * Get the bytecode offsets of invoke instructions for a method.
-     */
-    public static List<Integer> getInvokeOffsets(String key) {
-        return INVOKE_OFFSETS.get(key);
     }
 
     /**
@@ -108,12 +75,5 @@ public final class InvokeRegistry {
      */
     public static byte[] getInstrumentedBytecode(String className) {
         return INSTRUMENTED_BYTECODE.get(className);
-    }
-
-    /**
-     * Check if a class has been instrumented.
-     */
-    public static boolean isInstrumented(String className) {
-        return INSTRUMENTED_BYTECODE.containsKey(className);
     }
 }

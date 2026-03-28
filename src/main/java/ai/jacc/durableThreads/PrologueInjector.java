@@ -49,8 +49,6 @@ public final class PrologueInjector extends ClassVisitor {
     private String className;
     /** method key ("name+desc") → number of original invokes that received indices. */
     private final java.util.Map<String, Integer> invokeCountsByMethod = new java.util.HashMap<>();
-    /** method key → set of invoke indices that are invokedynamic (no stub re-invoke). */
-    private final java.util.Map<String, java.util.Set<Integer>> indyIndicesByMethod = new java.util.HashMap<>();
 
     public PrologueInjector(ClassVisitor cv) {
         super(Opcodes.ASM9, cv);
@@ -66,15 +64,6 @@ public final class PrologueInjector extends ClassVisitor {
     public int getOriginalInvokeCount(String methodName, String methodDesc) {
         Integer n = invokeCountsByMethod.get(methodName + methodDesc);
         return n != null ? n : 0;
-    }
-
-    /**
-     * Returns the set of invoke indices that are invokedynamic in the given method.
-     * These stubs have no user re-invoke, so the raw scanner won't find them.
-     */
-    public java.util.Set<Integer> getInvokeDynamicIndices(String methodName, String methodDesc) {
-        java.util.Set<Integer> s = indyIndicesByMethod.get(methodName + methodDesc);
-        return s != null ? s : java.util.Collections.emptySet();
     }
 
     @Override
@@ -95,7 +84,7 @@ public final class PrologueInjector extends ClassVisitor {
         if ("<init>".equals(name)) return mv;
 
         return new PrologueMethodVisitor(access, name, descriptor, className, mv,
-                invokeCountsByMethod, indyIndicesByMethod);
+                invokeCountsByMethod);
     }
 
     private static class PrologueMethodVisitor extends MethodVisitor {
@@ -106,7 +95,6 @@ public final class PrologueInjector extends ClassVisitor {
         private final String className;
         private final MethodVisitor target;
         private final java.util.Map<String, Integer> invokeCountsOut;
-        private final java.util.Map<String, java.util.Set<Integer>> indyIndicesOut;
 
         private final List<InvokeInfo> invokeInfos = new ArrayList<>();
         private final List<Runnable> bufferedOps = new ArrayList<>();
@@ -149,8 +137,7 @@ public final class PrologueInjector extends ClassVisitor {
 
         PrologueMethodVisitor(int access, String name, String desc, String className,
                               MethodVisitor target,
-                              java.util.Map<String, Integer> invokeCountsOut,
-                              java.util.Map<String, java.util.Set<Integer>> indyIndicesOut) {
+                              java.util.Map<String, Integer> invokeCountsOut) {
             super(Opcodes.ASM9, null);
             this.methodAccess = access;
             this.methodName = name;
@@ -158,7 +145,6 @@ public final class PrologueInjector extends ClassVisitor {
             this.className = className;
             this.target = target;
             this.invokeCountsOut = invokeCountsOut;
-            this.indyIndicesOut = indyIndicesOut;
         }
 
         // --- Buffering ---
@@ -938,126 +924,6 @@ public final class PrologueInjector extends ClassVisitor {
             }
             for (Type argType : Type.getArgumentTypes(info.descriptor)) {
                 pushDefaultValue(argType);
-            }
-        }
-
-        private void pushDummyReturnValue(String desc) {
-            Type retType = Type.getReturnType(desc);
-            if (retType.getSort() != Type.VOID) {
-                pushDefaultValue(retType);
-            }
-        }
-
-        private static final String RS = "ai/jacc/durableThreads/ReplayState";
-
-        /**
-         * Box the return value on top of the operand stack into an Object.
-         * For void returns, pushes null.
-         *
-         * <p>All calls go through ReplayState helpers so that RawBytecodeScanner
-         * filters them out (it excludes ReplayState invokes). Using direct
-         * java.lang.Integer.valueOf() etc. would corrupt the invoke index mapping.</p>
-         */
-        private void boxReturnValue(Type retType) {
-            switch (retType.getSort()) {
-                case Type.VOID:
-                    target.visitInsn(Opcodes.ACONST_NULL);
-                    break;
-                case Type.BOOLEAN:
-                    target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                            RS, "boxBoolean", "(Z)Ljava/lang/Object;", false);
-                    break;
-                case Type.BYTE:
-                    target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                            RS, "boxByte", "(B)Ljava/lang/Object;", false);
-                    break;
-                case Type.CHAR:
-                    target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                            RS, "boxChar", "(C)Ljava/lang/Object;", false);
-                    break;
-                case Type.SHORT:
-                    target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                            RS, "boxShort", "(S)Ljava/lang/Object;", false);
-                    break;
-                case Type.INT:
-                    target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                            RS, "boxInt", "(I)Ljava/lang/Object;", false);
-                    break;
-                case Type.LONG:
-                    target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                            RS, "boxLong", "(J)Ljava/lang/Object;", false);
-                    break;
-                case Type.FLOAT:
-                    target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                            RS, "boxFloat", "(F)Ljava/lang/Object;", false);
-                    break;
-                case Type.DOUBLE:
-                    target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                            RS, "boxDouble", "(D)Ljava/lang/Object;", false);
-                    break;
-                default:
-                    // OBJECT and ARRAY are already references
-                    break;
-            }
-        }
-
-        /**
-         * Load the boxed return value from retValSlot and unbox it to the expected type.
-         * For void returns, does nothing (the boxed null is ignored).
-         *
-         * <p>All calls go through ReplayState helpers so that RawBytecodeScanner
-         * filters them out.</p>
-         */
-        private void unboxReturnValue(Type retType, int retValSlot) {
-            switch (retType.getSort()) {
-                case Type.VOID:
-                    // nothing to push
-                    break;
-                case Type.BOOLEAN:
-                    target.visitVarInsn(Opcodes.ALOAD, retValSlot);
-                    target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                            RS, "unboxBoolean", "(Ljava/lang/Object;)Z", false);
-                    break;
-                case Type.BYTE:
-                    target.visitVarInsn(Opcodes.ALOAD, retValSlot);
-                    target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                            RS, "unboxByte", "(Ljava/lang/Object;)B", false);
-                    break;
-                case Type.CHAR:
-                    target.visitVarInsn(Opcodes.ALOAD, retValSlot);
-                    target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                            RS, "unboxChar", "(Ljava/lang/Object;)C", false);
-                    break;
-                case Type.SHORT:
-                    target.visitVarInsn(Opcodes.ALOAD, retValSlot);
-                    target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                            RS, "unboxShort", "(Ljava/lang/Object;)S", false);
-                    break;
-                case Type.INT:
-                    target.visitVarInsn(Opcodes.ALOAD, retValSlot);
-                    target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                            RS, "unboxInt", "(Ljava/lang/Object;)I", false);
-                    break;
-                case Type.LONG:
-                    target.visitVarInsn(Opcodes.ALOAD, retValSlot);
-                    target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                            RS, "unboxLong", "(Ljava/lang/Object;)J", false);
-                    break;
-                case Type.FLOAT:
-                    target.visitVarInsn(Opcodes.ALOAD, retValSlot);
-                    target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                            RS, "unboxFloat", "(Ljava/lang/Object;)F", false);
-                    break;
-                case Type.DOUBLE:
-                    target.visitVarInsn(Opcodes.ALOAD, retValSlot);
-                    target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                            RS, "unboxDouble", "(Ljava/lang/Object;)D", false);
-                    break;
-                default:
-                    // OBJECT or ARRAY — load and cast to expected type
-                    target.visitVarInsn(Opcodes.ALOAD, retValSlot);
-                    target.visitTypeInsn(Opcodes.CHECKCAST, retType.getInternalName());
-                    break;
             }
         }
 

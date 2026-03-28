@@ -2,8 +2,6 @@ package ai.jacc.durableThreads.internal;
 
 import org.junit.jupiter.api.Test;
 
-import java.util.List;
-
 import static org.junit.jupiter.api.Assertions.*;
 
 class InvokeRegistryTest {
@@ -12,18 +10,6 @@ class InvokeRegistryTest {
     void keyFormat() {
         String key = InvokeRegistry.key("com/example/Foo", "doWork", "(I)V");
         assertEquals("com/example/Foo#doWork+(I)V", key);
-    }
-
-    @Test
-    void registerAndRetrieveOffsets() {
-        String key = InvokeRegistry.key("com/test/A", "method1", "()V");
-        List<Integer> offsets = java.util.Arrays.asList(10, 25, 42);
-        InvokeRegistry.register(key, offsets);
-
-        List<Integer> retrieved = InvokeRegistry.getInvokeOffsets(key);
-        assertNotNull(retrieved);
-        assertEquals(3, retrieved.size());
-        assertEquals(java.util.Arrays.asList(10, 25, 42), retrieved);
     }
 
     @Test
@@ -65,13 +51,11 @@ class InvokeRegistryTest {
         byte[] bytecode = {1, 2, 3, 4, 5};
         InvokeRegistry.storeInstrumentedBytecode("com/test/E", bytecode);
 
-        assertTrue(InvokeRegistry.isInstrumented("com/test/E"));
         assertArrayEquals(bytecode, InvokeRegistry.getInstrumentedBytecode("com/test/E"));
     }
 
     @Test
     void uninstrumentedClassReturnsNull() {
-        assertFalse(InvokeRegistry.isInstrumented("com/test/Nonexistent"));
         assertNull(InvokeRegistry.getInstrumentedBytecode("com/test/Nonexistent"));
     }
 }

@@ -86,28 +86,6 @@ class ReplayStateTest {
     }
 
     @Test
-    void resumePointBlocksUntilReleased() throws InterruptedException {
-        // resumePoint() blocks on a latch when replay is active.
-        // Without activation (no latch), it should return immediately.
-        assertDoesNotThrow(ReplayState::resumePoint);
-
-        // With latch activation, it blocks until releaseResumePoint() is called
-        ReplayState.activateWithLatch(new int[]{0});
-        boolean[] completed = new boolean[1];
-        Thread blocker = new Thread(() -> {
-            ReplayState.resumePoint();
-            completed[0] = true;
-        });
-        blocker.start();
-        Thread.sleep(50);
-        assertFalse(completed[0], "resumePoint should block while latch is held");
-
-        ReplayState.releaseResumePoint();
-        blocker.join(1000);
-        assertTrue(completed[0], "resumePoint should complete after latch released");
-    }
-
-    @Test
     void dummyInstanceCreatesNonNullObject() {
         Object obj = ReplayState.dummyInstance("java.lang.Object");
         assertNotNull(obj);
