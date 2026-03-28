@@ -46,6 +46,7 @@ public final class DurableTransformer implements ClassFileTransformer {
             "ai/jacc/durableThreads/RestoredThread",
             "ai/jacc/durableThreads/SnapshotFileWriter",
             "ai/jacc/durableThreads/SnapshotValidator",
+            "ai/jacc/durableThreads/JdiValueConverter",
             "ai/jacc/durableThreads/ThreadFreezer",
             "ai/jacc/durableThreads/ThreadRestorer",
     };
