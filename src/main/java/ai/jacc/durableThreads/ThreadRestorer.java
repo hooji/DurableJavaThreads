@@ -290,7 +290,7 @@ final class ThreadRestorer {
         String className = bottomFrame.className().replace('/', '.');
         Class<?> clazz = Class.forName(className);
 
-        java.lang.reflect.Method method = findMethod(clazz, bottomFrame.methodName(),
+        java.lang.reflect.Method method = ReflectionHelpers.findMethod(clazz, bottomFrame.methodName(),
                 bottomFrame.methodSignature());
         if (method == null) {
             throw new RuntimeException("Cannot find method: " + className + "."
@@ -858,42 +858,6 @@ final class ThreadRestorer {
     }
 
     // --- Reflection helpers ---
-
-    private static java.lang.reflect.Method findMethod(Class<?> clazz, String name, String desc) {
-        for (java.lang.reflect.Method m : clazz.getDeclaredMethods()) {
-            if (m.getName().equals(name) && descriptorMatches(m, desc)) {
-                return m;
-            }
-        }
-        if (clazz.getSuperclass() != null) {
-            return findMethod(clazz.getSuperclass(), name, desc);
-        }
-        return null;
-    }
-
-    private static boolean descriptorMatches(java.lang.reflect.Method m, String desc) {
-        StringBuilder sb = new StringBuilder("(");
-        for (Class<?> param : m.getParameterTypes()) {
-            sb.append(typeToDescriptor(param));
-        }
-        sb.append(")");
-        sb.append(typeToDescriptor(m.getReturnType()));
-        return sb.toString().equals(desc);
-    }
-
-    private static String typeToDescriptor(Class<?> type) {
-        if (type == void.class) return "V";
-        if (type == boolean.class) return "Z";
-        if (type == byte.class) return "B";
-        if (type == char.class) return "C";
-        if (type == short.class) return "S";
-        if (type == int.class) return "I";
-        if (type == long.class) return "J";
-        if (type == float.class) return "F";
-        if (type == double.class) return "D";
-        if (type.isArray()) return type.getName().replace('.', '/');
-        return "L" + type.getName().replace('.', '/') + ";";
-    }
 
     private static Object[] createDummyArgs(Class<?>[] paramTypes) {
         Object[] args = new Object[paramTypes.length];
