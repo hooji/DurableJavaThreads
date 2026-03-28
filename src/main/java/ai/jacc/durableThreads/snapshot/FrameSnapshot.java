@@ -94,13 +94,14 @@ public final class FrameSnapshot implements Serializable {
                 && Objects.equals(methodName, that.methodName)
                 && Objects.equals(methodSignature, that.methodSignature)
                 && Arrays.equals(bytecodeHash, that.bytecodeHash)
-                && Objects.equals(locals, that.locals);
+                && Objects.equals(locals, that.locals)
+                && Objects.equals(lambdaBridgeInterface, that.lambdaBridgeInterface);
     }
 
     @Override
     public int hashCode() {
         int result = Objects.hash(className, methodName, methodSignature,
-                bytecodeIndex, invokeIndex, locals);
+                bytecodeIndex, invokeIndex, locals, lambdaBridgeInterface);
         result = 31 * result + Arrays.hashCode(bytecodeHash);
         return result;
     }
@@ -113,6 +114,7 @@ public final class FrameSnapshot implements Serializable {
                 + ", bytecodeIndex=" + bytecodeIndex
                 + ", invokeIndex=" + invokeIndex
                 + ", bytecodeHash=" + Arrays.toString(bytecodeHash)
-                + ", locals=" + locals + "]";
+                + ", locals=" + locals
+                + ", lambdaBridgeInterface=" + lambdaBridgeInterface + "]";
     }
 }
