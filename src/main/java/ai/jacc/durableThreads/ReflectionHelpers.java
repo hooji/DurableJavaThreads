@@ -1,6 +1,10 @@
 package ai.jacc.durableThreads;
 
+import ai.jacc.durableThreads.internal.HeapRestorer;
+import ai.jacc.durableThreads.snapshot.FrameSnapshot;
+
 import java.lang.reflect.Method;
+import java.util.Map;
 
 /**
  * Reflection utilities for the restore operation: method lookup by JVM
@@ -80,6 +84,33 @@ final class ReflectionHelpers {
         if (type == float.class) return 0.0f;
         if (type == double.class) return 0.0d;
         return null;
+    }
+
+    /**
+     * Find the receiver ("this") for the bottom frame from the snapshot's
+     * restored heap, or create an uninitialized instance via Objenesis.
+     */
+    static Object findOrCreateReceiver(Class<?> clazz, FrameSnapshot frame,
+                                       Map<Long, Object> restoredHeap,
+                                       HeapRestorer heapRestorer) {
+        for (ai.jacc.durableThreads.snapshot.LocalVariable local : frame.locals()) {
+            if (local.slot() == 0 && local.name().equals("this")) {
+                Object resolved = heapRestorer.resolve(local.value());
+                if (resolved != null) return resolved;
+            }
+        }
+
+        // 'this' was not captured or could not be resolved from the heap.
+        // Fall back to creating an uninitialized instance via Objenesis —
+        // the actual field values will be set later by the JDI worker.
+        try {
+            org.objenesis.ObjenesisStd objenesis = new org.objenesis.ObjenesisStd(true);
+            return objenesis.newInstance(clazz);
+        } catch (Exception e) {
+            throw new RuntimeException("Cannot create receiver instance of " + clazz.getName()
+                    + ". The 'this' reference was not captured in the snapshot and Objenesis"
+                    + " fallback failed.", e);
+        }
     }
 
     /**

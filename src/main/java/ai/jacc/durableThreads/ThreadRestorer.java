@@ -303,7 +303,7 @@ final class ThreadRestorer {
         Object receiver = null;
 
         if (!java.lang.reflect.Modifier.isStatic(method.getModifiers())) {
-            receiver = findOrCreateReceiver(clazz, bottomFrame, restoredHeap, heapRestorer);
+            receiver = ReflectionHelpers.findOrCreateReceiver(clazz, bottomFrame, restoredHeap, heapRestorer);
         }
 
         method.invoke(receiver, args);
@@ -856,30 +856,4 @@ final class ThreadRestorer {
         if (value instanceof String) return vm.mirrorOf((String) value);
         return null;
     }
-
-    private static Object findOrCreateReceiver(Class<?> clazz, FrameSnapshot frame,
-                                               Map<Long, Object> restoredHeap,
-                                               HeapRestorer heapRestorer) {
-        for (ai.jacc.durableThreads.snapshot.LocalVariable local : frame.locals()) {
-            if (local.slot() == 0 && local.name().equals("this")) {
-                Object resolved = heapRestorer.resolve(local.value());
-                if (resolved != null) return resolved;
-            }
-        }
-
-        // 'this' was not captured or could not be resolved from the heap.
-        // This is expected for anonymous inner classes and other cases where
-        // JDI's method.variables() doesn't include the receiver. Fall back to
-        // creating an uninitialized instance via Objenesis — the actual field
-        // values will be set later by the JDI worker.
-        try {
-            org.objenesis.ObjenesisStd objenesis = new org.objenesis.ObjenesisStd(true);
-            return objenesis.newInstance(clazz);
-        } catch (Exception e) {
-            throw new RuntimeException("Cannot create receiver instance of " + clazz.getName()
-                    + ". The 'this' reference was not captured in the snapshot and Objenesis"
-                    + " fallback failed.", e);
-        }
-    }
-
 }
