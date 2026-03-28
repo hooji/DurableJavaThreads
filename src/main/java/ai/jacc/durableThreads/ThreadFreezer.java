@@ -1,9 +1,6 @@
 package ai.jacc.durableThreads;
 
 import com.sun.jdi.*;
-import com.sun.jdi.event.EventQueue;
-import com.sun.jdi.event.EventSet;
-import ai.jacc.durableThreads.exception.LambdaFrameException;
 import ai.jacc.durableThreads.exception.NonEmptyStackException;
 import ai.jacc.durableThreads.exception.ThreadFrozenError;
 import ai.jacc.durableThreads.internal.*;
@@ -171,17 +168,7 @@ final class ThreadFreezer {
             ThreadReference threadRef = JdiHelper.findThread(vm, targetThread);
 
             // Suspend the target thread and capture its state.
-            //
-            // EXPERIMENT: All three race condition mitigations have been removed:
-            //   1. Event draining (drainPendingEvents) — removed
-            //   2. Double-suspend (suspend count=2) — replaced with single suspend
-            //   3. Retry loop with backoff — replaced with hard crash
-            //
-            // If CI (especially stress tests) passes green, all three were
-            // unnecessary and can be permanently removed. If the race fires,
-            // we'll know exactly which mitigation(s) are needed.
             ThreadSnapshot snapshot;
-
             threadRef.suspend();
             try {
                 snapshot = captureSnapshot(vm, threadRef, targetThread.getName(), namedObjects);
@@ -189,13 +176,6 @@ final class ThreadFreezer {
                 // Call the handler while the thread is still suspended,
                 // so it can safely write the snapshot without racing.
                 handler.accept(snapshot);
-            } catch (com.sun.jdi.InvalidStackFrameException e) {
-                // EXPERIMENT: Hard crash instead of retry.
-                throw new RuntimeException(
-                        "[RACE CONDITION EXPERIMENT] InvalidStackFrameException "
-                        + "fired — the spurious resume race condition IS real. "
-                        + "One or more mitigations (event draining, double-suspend, "
-                        + "retry loop) must be restored.", e);
             } finally {
                 threadRef.resume();
             }
@@ -468,30 +448,6 @@ final class ThreadFreezer {
             // Clean up bridge entries
             for (long key : keyToName.keySet()) {
                 HeapObjectBridge.remove(key);
-            }
-        }
-    }
-
-    /**
-     * Drain pending events from the JDI event queue without resuming threads.
-     * In multi-cycle freeze/restore scenarios, stale events from prior cycles
-     * can race with our thread suspension and cause InvalidStackFrameException.
-     */
-    private static void drainPendingEvents(VirtualMachine vm) {
-        EventQueue queue = vm.eventQueue();
-        while (true) {
-            try {
-                EventSet eventSet = queue.remove(1); // 1ms timeout (non-blocking)
-                if (eventSet == null) break;
-                // Discard without calling eventSet.resume() — we don't want
-                // to trigger any resumes. The suspend count from these events
-                // will be balanced by our explicit suspend/resume.
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                break;
-            } catch (Exception e) {
-                // VMDisconnectedException or other — stop draining
-                break;
             }
         }
     }
