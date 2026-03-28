@@ -60,16 +60,17 @@ class PrologueInjectorTest {
     }
 
     @Test
-    void prologueInjectsReplayCheck() throws Exception {
+    void prologueInjectsReplayCheckForMethodsWithInvokes() throws Exception {
         byte[] original = loadClassBytes(SampleTarget.class);
         byte[] instrumented = instrument(original);
 
-        // Verify that isReplayThread is called in each non-trivial method
-        List<String> calledMethods = findMethodCalls(instrumented, "add", "(II)I",
+        // callsMultipleMethods has invoke instructions, so it gets a replay check
+        List<String> calledMethods = findMethodCalls(instrumented,
+                "callsMultipleMethods", "()V",
                 "ai/jacc/durableThreads/ReplayState");
 
         assertTrue(calledMethods.contains("isReplayThread"),
-                "Instrumented method should call ReplayState.isReplayThread()");
+                "Method with invokes should call ReplayState.isReplayThread()");
     }
 
     @Test
@@ -92,16 +93,18 @@ class PrologueInjectorTest {
     }
 
     @Test
-    void methodWithNoInvokesStillGetsReplayCheck() throws Exception {
+    void methodWithNoInvokesSkipsReplayCheck() throws Exception {
         byte[] original = loadClassBytes(SampleTarget.class);
         byte[] instrumented = instrument(original);
 
-        // add(int, int) has no invoke instructions (just IADD and IRETURN)
+        // add(int, int) has no invoke instructions (just IADD and IRETURN).
+        // Methods with no invokes can never be on the replay call chain,
+        // so no replay prologue is injected.
         List<String> calledMethods = findMethodCalls(instrumented, "add", "(II)I",
                 "ai/jacc/durableThreads/ReplayState");
 
-        assertTrue(calledMethods.contains("isReplayThread"),
-                "Even methods without invokes get the replay check");
+        assertTrue(calledMethods.isEmpty(),
+                "Methods without invokes should not get a replay check");
     }
 
     @Test

@@ -555,17 +555,14 @@ public final class PrologueInjector extends ClassVisitor {
         }
 
         private void emitNoInvokePrologue() {
+            // Methods with zero invoke instructions can never be on the replay
+            // call chain (every frame in the chain called a deeper method, which
+            // IS an invoke). No replay prologue is needed — just emit the
+            // original code with method-wide labels for local variable scoping.
             methodStartLabel = new Label();
             methodEndLabel = new Label();
             target.visitLabel(methodStartLabel);
 
-            Label normalCode = new Label();
-            target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                    "ai/jacc/durableThreads/ReplayState", "isReplayThread", "()Z", false);
-            target.visitJumpInsn(Opcodes.IFEQ, normalCode);
-            target.visitMethodInsn(Opcodes.INVOKESTATIC,
-                    "ai/jacc/durableThreads/ReplayState", "resumePoint", "()V", false);
-            target.visitLabel(normalCode);
             for (Runnable op : bufferedOps) {
                 op.run();
             }
