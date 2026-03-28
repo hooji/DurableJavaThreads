@@ -262,10 +262,7 @@ public final class ReplayState {
     public static Object dummyInstance(String className) {
         try {
             Class<?> clazz = Class.forName(className);
-            java.lang.reflect.Field unsafeField = sun.misc.Unsafe.class.getDeclaredField("theUnsafe");
-            unsafeField.setAccessible(true);
-            sun.misc.Unsafe unsafe = (sun.misc.Unsafe) unsafeField.get(null);
-            return unsafe.allocateInstance(clazz);
+            return new org.objenesis.ObjenesisStd(true).newInstance(clazz);
         } catch (Exception e) {
             throw new RuntimeException(
                     "Failed to create dummy receiver instance for replay of class '"
