@@ -17,44 +17,6 @@ final class ThreadRestorer {
 
     private ThreadRestorer() {}
 
-    /** Pre-resolved local variable entry for batch setValue. */
-    static final class LocalEntry {
-        private final com.sun.jdi.LocalVariable jdiLocal;
-        private final Value jdiValue;
-        private final boolean isNull;
-
-        LocalEntry(com.sun.jdi.LocalVariable jdiLocal, Value jdiValue, boolean isNull) {
-            this.jdiLocal = jdiLocal;
-            this.jdiValue = jdiValue;
-            this.isNull = isNull;
-        }
-
-        public com.sun.jdi.LocalVariable jdiLocal() { return jdiLocal; }
-        public Value jdiValue() { return jdiValue; }
-        public boolean isNull() { return isNull; }
-
-        @Override
-        public boolean equals(Object o) {
-            if (this == o) return true;
-            if (!(o instanceof LocalEntry)) return false;
-            LocalEntry that = (LocalEntry) o;
-            return isNull == that.isNull
-                    && Objects.equals(jdiLocal, that.jdiLocal)
-                    && Objects.equals(jdiValue, that.jdiValue);
-        }
-
-        @Override
-        public int hashCode() {
-            return Objects.hash(jdiLocal, jdiValue, isNull);
-        }
-
-        @Override
-        public String toString() {
-            return "LocalEntry[jdiLocal=" + jdiLocal + ", jdiValue=" + jdiValue
-                    + ", isNull=" + isNull + "]";
-        }
-    }
-
     /**
      * Restore a frozen thread from a snapshot.
      *
@@ -522,8 +484,7 @@ final class ThreadRestorer {
         // Pre-resolve all values and pin object references to prevent GC collection.
         // The target JVM's GC can collect objects between resolve and setValue(),
         // causing ObjectCollectedException. disableCollection() prevents this.
-        // LocalEntry is defined as a static inner class of ThreadRestorer
-        List<LocalEntry> entries = new ArrayList<>();
+        List<JdiLocalSetter.LocalEntry> entries = new ArrayList<>();
         List<ObjectReference> pinnedRefs = new ArrayList<>();
 
         for (ai.jacc.durableThreads.snapshot.LocalVariable snapLocal : snapFrame.locals()) {
@@ -552,12 +513,12 @@ final class ThreadRestorer {
             }
 
             if (jdiValue != null || isNull) {
-                entries.add(new LocalEntry(jdiLocal, jdiValue, isNull));
+                entries.add(new JdiLocalSetter.LocalEntry(jdiLocal, jdiValue, isNull));
             }
         }
 
         try {
-            for (LocalEntry entry : entries) {
+            for (JdiLocalSetter.LocalEntry entry : entries) {
                 try {
                     jdiFrame.setValue(entry.jdiLocal(), entry.jdiValue());
                 } catch (ClassNotLoadedException cnle) {
@@ -569,7 +530,7 @@ final class ThreadRestorer {
                     //
                     // Bypass JDI's client-side type check by setting the slot value
                     // directly via reflection on JDI internals.
-                    if (!setValueBypassTypeCheck(jdiFrame, entry.jdiLocal(), entry.jdiValue())) {
+                    if (!JdiLocalSetter.setValueBypassTypeCheck(jdiFrame, entry.jdiLocal(), entry.jdiValue())) {
                         // Fallback: skip this local with a warning rather than
                         // crashing the entire restore
                         System.err.println("[DurableThreads] Warning: skipping local '"
@@ -621,73 +582,5 @@ final class ThreadRestorer {
             }
         }
     }
-
-    /**
-     * Bypass JDI's client-side type check and set a stack frame slot value directly.
-     *
-     * <p>On Java 8, JDI's {@code StackFrameImpl.setValue()} calls
-     * {@code LocalVariableImpl.findType()} which searches only the declaring type's
-     * classloader. Bootstrap-loaded classes (like {@code TimeUnit}) can't be found
-     * when the declaring type uses the app classloader, causing
-     * {@code ClassNotLoadedException} even though the class IS loaded.</p>
-     *
-     * <p>This method uses reflection to access JDI internals and send the
-     * JDWP StackFrame.SetValues command directly, bypassing the type check.</p>
-     */
-    private static boolean setValueBypassTypeCheck(StackFrame frame,
-                                                    com.sun.jdi.LocalVariable local,
-                                                    Value value) {
-        try {
-            // Get the slot number from LocalVariableImpl
-            java.lang.reflect.Method slotMethod = local.getClass().getDeclaredMethod("slot");
-            slotMethod.setAccessible(true);
-            int slot = (int) slotMethod.invoke(local);
-
-            // StackFrameImpl has: ThreadReferenceImpl thread, long id
-            java.lang.reflect.Field threadField = frame.getClass().getDeclaredField("thread");
-            threadField.setAccessible(true);
-            Object threadImpl = threadField.get(frame);
-
-            java.lang.reflect.Field idField = frame.getClass().getDeclaredField("id");
-            idField.setAccessible(true);
-            long frameId = (long) idField.get(frame);
-
-            // Get the VirtualMachineImpl
-            java.lang.reflect.Method vmMethod = frame.getClass().getMethod("virtualMachine");
-            Object vmImpl = vmMethod.invoke(frame);
-
-            // Build JDWP.StackFrame.SetValues.SlotInfo
-            Class<?> slotInfoClass = Class.forName(
-                    "com.sun.tools.jdi.JDWP$StackFrame$SetValues$SlotInfo");
-            java.lang.reflect.Constructor<?> slotInfoCtor = slotInfoClass.getDeclaredConstructor(
-                    int.class, Value.class);
-            slotInfoCtor.setAccessible(true);
-            Object slotInfo = slotInfoCtor.newInstance(slot, value);
-
-            // Create SlotInfo array
-            Object slotInfoArray = java.lang.reflect.Array.newInstance(slotInfoClass, 1);
-            java.lang.reflect.Array.set(slotInfoArray, 0, slotInfo);
-
-            // Call JDWP.StackFrame.SetValues.process(vm, thread, frameId, slotInfos)
-            // Find the method by name since class hierarchy varies across JDK versions
-            Class<?> setValuesClass = Class.forName(
-                    "com.sun.tools.jdi.JDWP$StackFrame$SetValues");
-            java.lang.reflect.Method processMethod = null;
-            for (java.lang.reflect.Method m : setValuesClass.getDeclaredMethods()) {
-                if (m.getName().equals("process") && m.getParameterTypes().length == 4) {
-                    processMethod = m;
-                    break;
-                }
-            }
-            if (processMethod == null) return false;
-            processMethod.setAccessible(true);
-            processMethod.invoke(null, vmImpl, threadImpl, frameId, slotInfoArray);
-            return true;
-        } catch (Exception e) {
-            // Reflection failed — different JDI internal structure than expected
-            return false;
-        }
-    }
-
 
 }
