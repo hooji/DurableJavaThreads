@@ -278,11 +278,7 @@ public final class HeapRestorer {
         Class<?> componentType = array.getClass().getComponentType();
         for (int i = 0; i < elements.length; i++) {
             Object value = resolve(elements[i]);
-            if (componentType.isPrimitive()) {
-                Array.set(array, i, value);
-            } else {
-                Array.set(array, i, value);
-            }
+            Array.set(array, i, value);
         }
     }
 
