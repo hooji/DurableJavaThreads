@@ -420,11 +420,9 @@ final class ThreadRestorer {
             // All frames are in their original code sections (resume stubs
             // jumped to BEFORE_INVOKE labels), so all locals are in scope.
             tr.suspend();
-            tr.suspend();
             try {
-                setLocalsViaJdi(vm, tr, snapshot, restoredHeap, heapRestorer, true);
+                setLocalsViaJdi(vm, tr, snapshot, restoredHeap, heapRestorer);
             } finally {
-                tr.resume();
                 tr.resume();
             }
 
@@ -488,8 +486,6 @@ final class ThreadRestorer {
     private static boolean isAtMethod(ThreadReference tr, String targetMethodName,
                                        String targetClassName) {
         try {
-            // Double-suspend for resilience against spurious JDI resumes
-            tr.suspend();
             tr.suspend();
             try {
                 List<StackFrame> frames = tr.frames(0, Math.min(10, tr.frameCount()));
@@ -505,12 +501,9 @@ final class ThreadRestorer {
                 }
             } finally {
                 tr.resume();
-                tr.resume();
             }
         } catch (IncompatibleThreadStateException e) {
             // Can't read frames — not yet in proper state
-        } catch (com.sun.jdi.InvalidStackFrameException e) {
-            // Thread was resumed despite double-suspend — will retry in polling loop
         }
         return false;
     }
@@ -537,14 +530,11 @@ final class ThreadRestorer {
      * JDI stack downward. We skip JDI frames that belong to ReplayState,
      * CountDownLatch, or other infrastructure.</p>
      *
-     * @param requireAllLocals if true, any local that cannot be set is a fatal
-     *        error. Should always be true in the single-pass architecture.
      */
     private static void setLocalsViaJdi(VirtualMachine vm, ThreadReference threadRef,
                                         ThreadSnapshot snapshot,
                                         Map<Long, Object> restoredHeap,
-                                        HeapRestorer heapRestorer,
-                                        boolean requireAllLocals) {
+                                        HeapRestorer heapRestorer) {
         try {
             List<StackFrame> jdiFrames = threadRef.frames();
             List<FrameSnapshot> snapshotFrames = snapshot.frames();
@@ -552,7 +542,6 @@ final class ThreadRestorer {
             // Match JDI frames to snapshot frames.
             // JDI is top-to-bottom, snapshot is bottom-to-top.
             int snapshotIdx = snapshotFrames.size() - 1; // start from top (deepest)
-            int topFrameIdx = snapshotIdx; // the deepest (top) frame index
 
             for (int jdiIdx = 0; jdiIdx < jdiFrames.size() && snapshotIdx >= 0; jdiIdx++) {
                 StackFrame jdiFrame = jdiFrames.get(jdiIdx);
@@ -573,7 +562,7 @@ final class ThreadRestorer {
                         // With the direct-jump architecture, all frames are in their
                     // original code sections, so all locals should be in scope.
                     setFrameLocals(vm, threadRef, jdiFrame, snapFrame,
-                            restoredHeap, heapRestorer, requireAllLocals);
+                            restoredHeap, heapRestorer);
                     snapshotIdx--;
                 }
                 // If no match, skip this JDI frame (it's infrastructure / reflection)
@@ -596,8 +585,7 @@ final class ThreadRestorer {
     private static void setFrameLocals(VirtualMachine vm, ThreadReference threadRef,
                                        StackFrame jdiFrame, FrameSnapshot snapFrame,
                                        Map<Long, Object> restoredHeap,
-                                       HeapRestorer heapRestorer,
-                                       boolean requireAllLocals) {
+                                       HeapRestorer heapRestorer) {
         Method method = jdiFrame.location().method();
 
         List<com.sun.jdi.LocalVariable> jdiLocals;
@@ -698,22 +686,18 @@ final class ThreadRestorer {
                             + method.declaringType().name() + "." + method.name()
                             + ": " + e.getMessage(), e);
                 } catch (IllegalArgumentException e) {
-                    if (requireAllLocals) {
-                        throw new RuntimeException(
-                                "Cannot set local '" + entry.jdiLocal().name() + "' in "
-                                + method.declaringType().name() + "." + method.name()
-                                + " — not in scope at current BCP. "
-                                + "Thread restore cannot proceed with incomplete state.",
-                                e);
-                    }
+                    throw new RuntimeException(
+                            "Cannot set local '" + entry.jdiLocal().name() + "' in "
+                            + method.declaringType().name() + "." + method.name()
+                            + " — not in scope at current BCP. "
+                            + "Thread restore cannot proceed with incomplete state.",
+                            e);
                 } catch (com.sun.jdi.InternalException e) {
                     // JDWP Error 35 (INVALID_SLOT): variable not in scope at current BCI.
-                    if (requireAllLocals) {
-                        throw new RuntimeException(
-                                "Failed to set local '" + entry.jdiLocal().name() + "' in "
-                                + method.declaringType().name() + "." + method.name()
-                                + ": " + e.getMessage(), e);
-                    }
+                    throw new RuntimeException(
+                            "Failed to set local '" + entry.jdiLocal().name() + "' in "
+                            + method.declaringType().name() + "." + method.name()
+                            + ": " + e.getMessage(), e);
                 } catch (Exception e) {
                     throw new RuntimeException(
                             "Failed to set local '" + entry.jdiLocal().name() + "' in "
