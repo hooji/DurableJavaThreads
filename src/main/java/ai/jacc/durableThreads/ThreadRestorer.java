@@ -114,7 +114,7 @@ final class ThreadRestorer {
 
             try {
                 FrameSnapshot bottomFrame = snapshot.bottomFrame();
-                invokeBottomFrame(bottomFrame, restoredHeap, heapRestorer, snapshot);
+                ReflectionHelpers.invokeBottomFrame(bottomFrame, restoredHeap, heapRestorer, snapshot);
             } catch (ai.jacc.durableThreads.exception.ThreadFrozenError e) {
                 // Expected — thread was re-frozen
             } catch (Exception e) {
@@ -281,32 +281,6 @@ final class ThreadRestorer {
                     + ": " + e.getMessage());
             return null;
         }
-    }
-
-    private static void invokeBottomFrame(FrameSnapshot bottomFrame,
-                                          Map<Long, Object> restoredHeap,
-                                          HeapRestorer heapRestorer,
-                                          ThreadSnapshot snapshot) throws Exception {
-        String className = bottomFrame.className().replace('/', '.');
-        Class<?> clazz = Class.forName(className);
-
-        java.lang.reflect.Method method = ReflectionHelpers.findMethod(clazz, bottomFrame.methodName(),
-                bottomFrame.methodSignature());
-        if (method == null) {
-            throw new RuntimeException("Cannot find method: " + className + "."
-                    + bottomFrame.methodName() + bottomFrame.methodSignature());
-        }
-
-        method.setAccessible(true);
-
-        Object[] args = ReflectionHelpers.createDummyArgs(method.getParameterTypes());
-        Object receiver = null;
-
-        if (!java.lang.reflect.Modifier.isStatic(method.getModifiers())) {
-            receiver = ReflectionHelpers.findOrCreateReceiver(clazz, bottomFrame, restoredHeap, heapRestorer);
-        }
-
-        method.invoke(receiver, args);
     }
 
     /**

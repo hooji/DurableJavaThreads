@@ -2,8 +2,10 @@ package ai.jacc.durableThreads;
 
 import ai.jacc.durableThreads.internal.HeapRestorer;
 import ai.jacc.durableThreads.snapshot.FrameSnapshot;
+import ai.jacc.durableThreads.snapshot.ThreadSnapshot;
 
 import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.util.Map;
 
 /**
@@ -14,6 +16,36 @@ import java.util.Map;
 final class ReflectionHelpers {
 
     private ReflectionHelpers() {}
+
+    /**
+     * Reflectively invoke the bottom (entry-point) frame's method to start
+     * the replay call chain. The instrumented prologue takes over immediately.
+     */
+    static void invokeBottomFrame(FrameSnapshot bottomFrame,
+                                  Map<Long, Object> restoredHeap,
+                                  HeapRestorer heapRestorer,
+                                  ThreadSnapshot snapshot) throws Exception {
+        String className = bottomFrame.className().replace('/', '.');
+        Class<?> clazz = Class.forName(className);
+
+        Method method = findMethod(clazz, bottomFrame.methodName(),
+                bottomFrame.methodSignature());
+        if (method == null) {
+            throw new RuntimeException("Cannot find method: " + className + "."
+                    + bottomFrame.methodName() + bottomFrame.methodSignature());
+        }
+
+        method.setAccessible(true);
+
+        Object[] args = createDummyArgs(method.getParameterTypes());
+        Object receiver = null;
+
+        if (!Modifier.isStatic(method.getModifiers())) {
+            receiver = findOrCreateReceiver(clazz, bottomFrame, restoredHeap, heapRestorer);
+        }
+
+        method.invoke(receiver, args);
+    }
 
     /**
      * Find a method by name and JVM descriptor, searching the class hierarchy.

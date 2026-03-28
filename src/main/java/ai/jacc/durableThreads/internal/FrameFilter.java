@@ -16,6 +16,7 @@ public final class FrameFilter {
     /** Specific library classes to exclude (not the whole package — user subpackages may exist). */
     private static final String[] EXCLUDED_FRAME_CLASSES = {
             "ai/jacc/durableThreads/Durable",
+            "ai/jacc/durableThreads/ReflectionHelpers",
             "ai/jacc/durableThreads/ThreadFreezer",
             "ai/jacc/durableThreads/ThreadRestorer",
             "ai/jacc/durableThreads/ReplayState",
