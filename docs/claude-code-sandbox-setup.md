@@ -1,6 +1,13 @@
-# Maven Proxy Configuration for Claude Code Sandbox
+# Claude Code Sandbox Setup — Maven and GitHub CLI
 
-## Problem
+This document covers proxy configuration needed to use Maven and
+the GitHub CLI (`gh`) inside the Claude Code remote sandbox environment.
+
+---
+
+## Maven Proxy Setup
+
+### Problem
 
 Maven builds fail with "Temporary failure in name resolution" or "407 Proxy Authentication Required" in the Claude Code remote sandbox environment. This is because:
 
@@ -8,11 +15,11 @@ Maven builds fail with "Temporary failure in name resolution" or "407 Proxy Auth
 2. Maven 3.9+ uses a native HTTP transport that doesn't properly handle proxy authentication from JVM system properties
 3. While `curl` works (it uses `HTTP_PROXY` env vars), Maven's Java process needs explicit proxy configuration
 
-## Solution
+### Solution
 
 Two things are needed:
 
-### 1. Create `~/.m2/settings.xml` with proxy credentials
+#### 1. Create `~/.m2/settings.xml` with proxy credentials
 
 Extract proxy details from environment variables and create a Maven settings file:
 
@@ -58,7 +65,7 @@ XMLEOF
 
 Note: The `${PROXY_HOST}` etc. in the heredoc are shell variables expanded at write time, not Maven property references.
 
-### 2. Force Maven to use the Wagon HTTP transport
+#### 2. Force Maven to use the Wagon HTTP transport
 
 Maven 3.9+ defaults to a native HTTP transport that has a bug with authenticated proxies (works for small POM downloads but fails with 407 on larger JAR downloads). Force the older Wagon transport:
 
@@ -70,7 +77,7 @@ EOF
 
 Alternatively, pass `-Dmaven.resolver.transport=wagon` on every `mvn` command.
 
-### Quick one-liner setup
+#### Quick one-liner setup
 
 ```bash
 # Extract proxy info and create both config files
@@ -83,18 +90,93 @@ echo 'MAVEN_OPTS="$MAVEN_OPTS -Dmaven.resolver.transport=wagon"' > ~/.mavenrc &&
 echo "Done — Maven proxy configured"
 ```
 
-## Verification
+### Verification
 
 After setup, all three should succeed:
 
 ```bash
 mvn compile          # compiles sources
-mvn test             # runs unit tests (~127 tests)
-mvn verify           # runs unit + E2E integration tests (~162 tests total)
+mvn test             # runs unit tests
+mvn verify           # runs unit + E2E integration tests
 ```
 
-## Notes
+### Notes
 
 - The proxy credentials are JWT tokens with expiration — they're set fresh in `JAVA_TOOL_OPTIONS` and `HTTP_PROXY` at sandbox start. If a long-running session expires them, a new sandbox session is needed.
 - The proxy host/port (`21.0.0.119:15004`) appear to be stable across sessions. The credentials change each session.
 - The `JAVA_TOOL_OPTIONS` environment variable already sets JVM-level proxy properties, but Maven's resolver doesn't use those for artifact downloads — it needs `settings.xml`.
+
+---
+
+## GitHub CLI (`gh`) Setup
+
+### Problem
+
+The `gh` CLI is pre-installed in the sandbox and `GITHUB_TOKEN` is set, but
+`gh` refuses to run with this error:
+
+```
+none of the git remotes configured for this repository point to a known GitHub host.
+```
+
+This happens because the sandbox proxies git traffic through a local proxy:
+```
+origin  http://local_proxy@127.0.0.1:PORT/git/OWNER/REPO (fetch)
+```
+
+`gh` doesn't recognize `127.0.0.1` as a GitHub host, so it refuses to infer
+the repository from git remotes.
+
+### Solution
+
+Use the `GH_REPO` environment variable to tell `gh` which repository to
+target, bypassing the remote-sniffing logic entirely:
+
+```bash
+GH_REPO=owner/repo gh <command>
+```
+
+For example:
+
+```bash
+# Create a release and upload an artifact
+GH_REPO=hooji/DurableJavaThreads gh release create v1.0.0 target/my-jar.jar \
+  --title "v1.0.0" --notes "Release notes here"
+
+# Upload to an existing release
+GH_REPO=hooji/DurableJavaThreads gh release upload v1.0.0 target/my-jar.jar --clobber
+
+# View a release
+GH_REPO=hooji/DurableJavaThreads gh release view v1.0.0
+
+# List PRs
+GH_REPO=hooji/DurableJavaThreads gh pr list
+
+# Any gh command works with GH_REPO
+GH_REPO=hooji/DurableJavaThreads gh issue list
+```
+
+### Why it works
+
+`gh` uses this precedence for determining the target repository:
+
+1. `GH_REPO` environment variable (explicit override)
+2. `--repo` / `-R` flag
+3. Git remote URL parsing
+
+By setting `GH_REPO`, we skip step 3 entirely. The `GITHUB_TOKEN` environment
+variable (already set in the sandbox) handles authentication. The proxy
+(`HTTP_PROXY`/`HTTPS_PROXY`) handles network routing. No additional `gh auth`
+configuration is needed.
+
+### Quick alias (optional)
+
+To avoid repeating `GH_REPO=...` on every command:
+
+```bash
+export GH_REPO=hooji/DurableJavaThreads
+gh release list
+gh pr list
+```
+
+Note: This persists only for the current shell session.
