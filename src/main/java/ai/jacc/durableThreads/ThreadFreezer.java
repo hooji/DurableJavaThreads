@@ -171,52 +171,33 @@ final class ThreadFreezer {
             ThreadReference threadRef = JdiHelper.findThread(vm, targetThread);
 
             // Suspend the target thread and capture its state.
-            // Retry on InvalidStackFrameException — this can happen when
-            // reusing a JDI connection from a prior freeze/restore cycle,
-            // because the previous cycle's pending resume events can race
-            // with our suspend.
             //
-            // Mitigations:
-            // 1. Drain pending events from the JDI event queue before each attempt
-            //    to clear stale resume-triggering events from prior cycles.
-            // 2. Double-suspend (suspend count = 2) so a single spurious resume
-            //    doesn't drop the count to 0.
-            // 3. Exponential backoff with up to 10 retries.
-            ThreadSnapshot snapshot = null;
-            int maxRetries = 10;
-            for (int attempt = 0; attempt < maxRetries; attempt++) {
-                // Drain any pending events that could trigger spurious resumes
-                drainPendingEvents(vm);
+            // EXPERIMENT: All three race condition mitigations have been removed:
+            //   1. Event draining (drainPendingEvents) — removed
+            //   2. Double-suspend (suspend count=2) — replaced with single suspend
+            //   3. Retry loop with backoff — replaced with hard crash
+            //
+            // If CI (especially stress tests) passes green, all three were
+            // unnecessary and can be permanently removed. If the race fires,
+            // we'll know exactly which mitigation(s) are needed.
+            ThreadSnapshot snapshot;
 
-                // Double suspend: suspend count = 2, so a single spurious
-                // resume (dropping count to 1) won't actually run the thread
-                threadRef.suspend();
-                threadRef.suspend();
-                try {
-                    snapshot = captureSnapshot(vm, threadRef, targetThread.getName(), namedObjects);
+            threadRef.suspend();
+            try {
+                snapshot = captureSnapshot(vm, threadRef, targetThread.getName(), namedObjects);
 
-                    // Call the handler while the thread is still suspended,
-                    // so it can safely write the snapshot without racing.
-                    handler.accept(snapshot);
-                    break; // success
-                } catch (com.sun.jdi.InvalidStackFrameException e) {
-                    // Thread was resumed between suspend and frame read —
-                    // retry after a brief pause with exponential backoff
-                    if (attempt == maxRetries - 1) {
-                        throw new RuntimeException(
-                                "Failed to capture snapshot after " + maxRetries
-                                + " attempts — thread keeps being resumed", e);
-                    }
-                    long backoff = 50L * (1L << Math.min(attempt, 4)); // 50, 100, 200, 400, 800ms
-                    try { Thread.sleep(backoff); } catch (InterruptedException ie) {
-                        Thread.currentThread().interrupt();
-                        throw new RuntimeException("Freeze interrupted during retry", ie);
-                    }
-                } finally {
-                    // Match the double suspend with double resume
-                    threadRef.resume();
-                    threadRef.resume();
-                }
+                // Call the handler while the thread is still suspended,
+                // so it can safely write the snapshot without racing.
+                handler.accept(snapshot);
+            } catch (com.sun.jdi.InvalidStackFrameException e) {
+                // EXPERIMENT: Hard crash instead of retry.
+                throw new RuntimeException(
+                        "[RACE CONDITION EXPERIMENT] InvalidStackFrameException "
+                        + "fired — the spurious resume race condition IS real. "
+                        + "One or more mitigations (event draining, double-suspend, "
+                        + "retry loop) must be restored.", e);
+            } finally {
+                threadRef.resume();
             }
 
         } finally {
