@@ -58,7 +58,7 @@ or placed in hash-based collections. It also makes debugging harder since
 ### C2. FreezeFlag Uses Thread ID Which Can Be Reused
 
 **File:** `ThreadFreezer.java:468-493`
-**Severity:** Medium-High
+**Severity:** Medium (low practical risk, but easy to fix)
 
 `FreezeFlag` stores frozen thread IDs in a `Set<Long>`. Thread IDs can be
 reused by the JVM after a thread terminates. If `clearFrozen()` is not called
@@ -67,8 +67,17 @@ by user code in a `catch (Throwable t)` block), the stale ID could match a new
 thread, causing it to falsely appear frozen.
 
 The code does clear the flag before throwing `ThreadFrozenError` (at three
-separate points: lines 87, 101, 115), but a user's `catch (Throwable)` could
-intercept the error and prevent proper cleanup.
+separate points: lines 87, 101, 115), so the practical risk is very low — a
+user would have to explicitly `catch (Throwable)` and swallow `ThreadFrozenError`
+to leak an entry.
+
+**Note:** `FreezeFlag` is purely local-side coordination between the caller
+thread (Thread A) and the freeze worker (Thread B). It has no JDI involvement —
+both `markFrozen(targetThread)` (line 171) and `isFrozen(Thread.currentThread())`
+(lines 86, 100, 113) operate on local Java `Thread` objects. The JDI side uses
+thread names (via `JdiHelper.findThread()`) and `ObjectReference.uniqueID()`
+(for heap objects), not thread IDs. There is no cross-JDI-boundary reason for
+the `Long` type.
 
 **Fix:** Replace `Set<Long>` with a `Set<Thread>` using
 `Collections.synchronizedSet(Collections.newSetFromMap(new IdentityHashMap<>()))`.
