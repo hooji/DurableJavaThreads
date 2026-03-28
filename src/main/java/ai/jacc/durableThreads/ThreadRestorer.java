@@ -3,7 +3,6 @@ package ai.jacc.durableThreads;
 import com.sun.jdi.*;
 import ai.jacc.durableThreads.internal.*;
 import ai.jacc.durableThreads.snapshot.*;
-import static ai.jacc.durableThreads.internal.FrameFilter.isInfrastructureFrame;
 
 import java.util.*;
 import java.util.concurrent.CountDownLatch;
