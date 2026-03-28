@@ -103,18 +103,22 @@ The instrumented bytecode has this structure:
 [Replay Prologue]
   - isReplayThread() check
   - tableswitch dispatch to resume stubs
-  - Resume Stub 0: advanceFrame() / resumePoint(), re-invoke, set __skip, goto originalCode
+  - Resume Stub 0: advanceFrame(), emitLocalDefaults(), pushSubStackDefaults(),
+                    pushDummyArguments(), GOTO BEFORE_INVOKE_0
   - Resume Stub 1: ...
   - ...
 [Original Code] (label: originalCode)
-  - Original method body with skip-checks inserted before each invoke
+  - Original method body with BEFORE_INVOKE_i / POST_INVOKE_i labels around invokes
 ```
 
-Resume stubs contain user-invoke instructions (the re-invocations), but these
-always appear *before* the original code section in the bytecode. Therefore:
+With the direct-jump architecture, resume stubs do NOT re-invoke methods — they
+jump (via `GOTO`) to `BEFORE_INVOKE` labels in the original code section. The
+only method calls in stubs are to `ReplayState` helpers (`advanceFrame()`,
+`deactivate()`, `isLastFrame()`, `resolveReceiver()`), which the scanner
+filters out. Therefore:
 
-- The scanner finds all user invokes across the entire method: stub invokes
-  first, then original-code invokes.
+- Resume stubs contribute **zero** user invokes to the scanner's list.
+- All entries in the scanner's list come from the original code section.
 - The last N entries in the scanner's list correspond exactly to the original-code
   invokes, in their original order.
 - `DurableTransformer` extracts `allOffsets.subList(allOffsets.size() - N, allOffsets.size())`.
@@ -123,12 +127,10 @@ This is correct because:
 
 1. Resume stubs are emitted before the `originalCode` label (verified in
    `PrologueInjector.visitEnd()`).
-2. Each resume stub contributes exactly one user invoke to the scanner's list
-   (the re-invocation), *except* for `INVOKEDYNAMIC` stubs which call
-   `resumePoint()` instead (a `ReplayState` call, filtered out). So
-   `INVOKEDYNAMIC` stubs contribute zero scanner entries.
-3. The original code section's invokes appear after all stub invokes in bytecode
-   order, so they occupy the last N positions in the scanner's list.
+2. Stubs contain only `GOTO` instructions and `ReplayState` calls (filtered by
+   the scanner), so they contribute zero entries to the scanner's list.
+3. The original code section's invokes are the only user invokes found by the
+   scanner, occupying all N positions in the list.
 
 ### Invariant 3: BCP-to-Index Lookup Is Unambiguous
 
@@ -137,10 +139,11 @@ through the registered offsets for the method. It returns the index of the
 *last* offset that is <= the given BCP.
 
 This is unambiguous because consecutive user invokes in the original code are
-always separated by at least 15 bytes of skip-check bytecode (the
-`emitInvokeWithSkipCheck` code: ILOAD, LDC/BIPUSH, IF_ICMPLT, pop args,
-ILOAD, LDC/BIPUSH, IF_ICMPNE, ICONST_M1, ISTORE, INVOKESTATIC localsReady,
-unbox, GOTO). No two user invoke BCPs can be adjacent.
+separated by at least the bytecode of the instructions between them (argument
+computation, control flow, etc.). Even in the minimal case of two adjacent
+invokes with no intervening instructions, their BCPs differ by the size of the
+invoke instruction (3 bytes for INVOKEVIRTUAL/INVOKESTATIC, 5 bytes for
+INVOKEINTERFACE/INVOKEDYNAMIC), so they always have distinct offsets.
 
 At freeze time, JDI reports the BCP of the `Durable.freeze()` call itself, which
 is the invoke instruction in the original code section. This BCP exactly matches
@@ -198,11 +201,12 @@ is independent of which path is taken at runtime.
 ### INVOKEDYNAMIC Resume Stubs
 
 `INVOKEDYNAMIC` instructions (used by the JVM for string concatenation,
-lambdas, etc.) cannot be re-invoked in resume stubs because they require
-bootstrap method resolution. Instead, the resume stub calls `resumePoint()`
-directly. Since `resumePoint()` is a `ReplayState` method (filtered by the
-scanner), `INVOKEDYNAMIC` stubs contribute zero entries to the scanner's list.
-This is correctly accounted for by the "last N" extraction.
+lambdas, etc.) are handled identically to regular invokes in the direct-jump
+architecture: the resume stub jumps to the `BEFORE_INVOKE` label, and the
+original `INVOKEDYNAMIC` instruction in the original code section re-executes.
+The JVM caches the `CallSite` from the bootstrap method's first resolution, so
+re-executing `INVOKEDYNAMIC` is safe and fast. Like all other stubs, the
+`INVOKEDYNAMIC` stub contributes zero user invokes to the scanner's list.
 
 ### Nested and Recursive Calls
 
@@ -214,24 +218,32 @@ correctly because each frame's index is computed independently from its BCP.
 ## Per-Frame Local Variable Restoration
 
 A related correctness concern is the restoration of local variables in
-intermediate (non-top) stack frames. The system uses a two-phase JDI restore:
+intermediate (non-top) stack frames. The system uses a single-pass JDI restore
+enabled by the direct-jump architecture:
 
-**Phase 1 (Resume Point)**: The replay thread rebuilds the call stack by
-executing instrumented prologues that dispatch to resume stubs. When the deepest
-frame reaches `resumePoint()`, the JDI worker deactivates replay mode and sets
-method parameters in all frames. The thread then wakes, and each frame's skip-check
-code re-executes the original code section, skipping all invoke instructions up
-to the target invoke.
+**How it works:** Each resume stub (for non-deepest frames) initializes local
+variable slots to type-appropriate defaults, then jumps via `GOTO` to the
+`BEFORE_INVOKE` label in the original code section. The original invoke
+instruction fires, calling the deeper method whose prologue continues the
+replay chain. This means every frame on the stack ends up positioned in its
+original code section, at the exact invoke instruction where the original call
+was made.
 
-**Phase 2 (Locals Ready)**: At each frame's target invoke, `localsReady()` is
-called, which blocks until the JDI worker sets ALL local variables (parameters
-and non-parameters) for that frame. The latch is recreated after each wake,
-so each successive frame blocks independently. Frames are processed in order
-from deepest (top of stack) to shallowest (bottom of stack).
+**Single-pass local setting:** The deepest frame's stub deactivates replay mode
+and jumps to `BEFORE_INVOKE`, causing the original `freeze()` call to fire.
+`freeze()` detects restore mode (via `restoreInProgress` flag) and blocks on a
+go-latch. At this point, ALL frames are in their original code sections with ALL
+local variables in scope. The JDI worker suspends the thread and sets every
+local variable in every frame in a single pass via `StackFrame.setValue()`.
 
-This ensures that every frame's local variables are fully restored before
-execution continues past the freeze point, preserving the exact semantics of the
-original thread.
+**Go-latch release:** After the JDI worker completes, the go-latch is captured
+into a `RestoredThread` handle. When `RestoredThread.resume()` is called, the
+go-latch is counted down, `freeze()` returns normally, and user code continues
+from the freeze point with all local variables correctly restored.
+
+This single-pass approach eliminates the per-frame synchronization overhead of
+earlier architectures and correctly handles re-freeze scenarios (where the
+restored thread calls `freeze()` again before returning through all frames).
 
 ## Defensive Measures
 

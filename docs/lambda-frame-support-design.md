@@ -1,15 +1,48 @@
 # Design: Lambda Frame Support
 
-**Status:** Future work
-**Prerequisite:** v1.2.0 single-pass restore architecture
+**Status:** Partially implemented (v1.3.x)
+**Prerequisite:** v1.2.0 single-pass restore architecture (implemented)
 
-## Problem
+## Current State
 
-When `Durable.freeze()` is called from within a lambda, or any frame on the frozen thread's call stack is a lambda-generated class (`$$Lambda`), the library throws `LambdaFrameException`. This is the most significant usability limitation — lambdas have been a core Java feature since Java 8 (2014), and every JDK version we support includes them.
+Lambda support has been partially implemented. The library no longer throws
+`LambdaFrameException` when a `$$Lambda` frame appears in the call stack.
+Instead, it uses a **lambda bridge proxy** approach:
 
-The restriction exists because lambda class names are JVM-generated and non-deterministic (e.g., `Foo$$Lambda$27/0x00000001234`). At restore time, a class with that exact name doesn't exist, so the replay prologue can't re-enter the method.
+- **Freeze:** `$$Lambda` frames are skipped (not captured). The functional
+  interface implemented by the lambda is detected and stored as
+  `lambdaBridgeInterface` in the next deeper frame's `FrameSnapshot`.
+- **Restore:** A `java.lang.reflect.Proxy` implementing the functional interface
+  is created. The proxy delegates to the synthetic method on the enclosing class,
+  whose replay prologue handles the rest.
 
-**Goal:** Support lambdas in normal user code — callbacks, event handlers, `Runnable`/`Callable` implementations, method references. We are NOT targeting stream pipelines (`stream().filter().map().collect()`) or other deeply-chained functional APIs.
+See `ThreadFreezer.isLambdaFrame()`, `ThreadFreezer.detectLambdaInterface()`,
+`ThreadRestorer.createLambdaBridgeProxy()`, and `ThreadRestorer.computeFrameReceivers()`.
+
+### What Works
+- Lambdas as `Runnable`, `Consumer`, `Function`, etc. passed to user methods
+- Lambdas capturing variables from the enclosing scope
+- Method references (`this::process`, `ClassName::method`)
+- Both static and instance synthetic methods
+
+### Known Limitations
+- Stream pipelines and deeply-chained functional APIs remain unsupported
+- The proxy receiver may not match the exact type expected by some frameworks
+- Captured variable values in static lambdas are passed as leading parameters
+  to the synthetic method — the proxy pads dummy args, relying on JDI to set
+  the correct values during the single-pass restore
+
+## Original Problem
+
+When `Durable.freeze()` is called from within a lambda, the call stack contains
+a `$$Lambda` frame whose class name is JVM-generated and non-deterministic.
+At restore time, a class with that exact name doesn't exist, so the replay
+prologue can't re-enter the method.
+
+**Goal:** Support lambdas in normal user code — callbacks, event handlers,
+`Runnable`/`Callable` implementations, method references. We are NOT targeting
+stream pipelines (`stream().filter().map().collect()`) or other deeply-chained
+functional APIs.
 
 ## Background: How Lambdas Work in the JVM
 
@@ -49,131 +82,90 @@ The frames, from the replay perspective:
 - `Foo$$Lambda$27.accept()` — lambda frame, currently rejected
 - `Foo.lambda$doWork$0()` — synthetic method, CAN be replayed (it's on `Foo.class`)
 
-## Proposed Design
+## Implemented Design: Lambda Bridge Proxy
 
-### Core Idea: Replace Lambda Frames with Synthetic Method Frames
+The implemented approach uses **lambda elision + dynamic proxy** — a variant of
+the "Hybrid Approach" originally discussed below.
 
-At freeze time, when we encounter a `$$Lambda` frame, instead of rejecting it:
+### Freeze Side (ThreadFreezer)
 
-1. **Identify the delegate:** The lambda class's interface method (e.g., `accept`) simply calls the synthetic method on the enclosing class. We can determine this by:
-   - Inspecting the lambda frame's callee (the next deeper frame) — it should be `Foo.lambda$doWork$0`
-   - Or: reading the lambda class's bytecode via JDI to find the delegation target
+1. When a `$$Lambda` frame is encountered, it is **skipped** (not captured).
+2. The functional interface implemented by the lambda class is detected via
+   `detectLambdaInterface()` — inspects `ClassType.interfaces()` to find the
+   first non-marker interface.
+3. The interface name is stored as `pendingLambdaBridgeInterface` and attached
+   to the **next captured frame** (the synthetic method on the enclosing class)
+   as `FrameSnapshot.lambdaBridgeInterface`.
 
-2. **Capture the synthetic method's frame** instead of the lambda's frame. The synthetic method is on a real, instrumented class with a deterministic name. Its locals are the lambda parameters plus captured variables.
+### Restore Side (ThreadRestorer)
 
-3. **Capture the captured variables** from the lambda instance's fields. These are the values that were closed over when the lambda was created.
+1. `computeFrameReceivers()` checks each frame for `lambdaBridgeInterface`.
+2. If present, `createLambdaBridgeProxy()` creates a `java.lang.reflect.Proxy`
+   that implements the functional interface and delegates to the synthetic method.
+3. The proxy handles both static and instance synthetic methods:
+   - **Static** (non-capturing or local-capturing lambda): invokes with padded
+     args (captured vars are leading parameters, set by JDI later).
+   - **Instance** (this-capturing lambda): invokes on a dummy receiver instance
+     (the real `this` is set by JDI).
+4. The proxy is used as the receiver for the caller frame's resume stub, which
+   pushes it via `resolveReceiver()` when jumping to `BEFORE_INVOKE`.
 
-4. **Store enough metadata** in the snapshot to reconstruct the call at restore time:
-   - The enclosing class name (`Foo`)
-   - The synthetic method name (`lambda$doWork$0`)
-   - The synthetic method signature
-   - The captured variable values (from the lambda instance's fields)
-   - The functional interface (`Consumer`)
+### Why This Works
 
-### Restore Strategy
+The caller frame's resume stub jumps to `BEFORE_INVOKE` for the original invoke
+(e.g., `forEach(consumer)`). The proxy satisfies the interface type expected by
+the invoke. When the JDK method calls the proxy's interface method, the proxy
+delegates to the synthetic method, whose replay prologue takes over. The
+synthetic method's locals (including captured variables) are set by JDI in the
+single-pass restore.
 
-At restore time, when we encounter a frame that was originally a lambda:
+### Original Design Alternatives Considered
 
-1. **Create a named wrapper class** via ASM that:
-   - Implements the same functional interface (e.g., `Consumer<Item>`)
-   - Has fields for all captured variables
-   - Delegates to the same synthetic method on the enclosing class
-   - Has a deterministic name: e.g., `Foo$$DurableLambda$doWork$0$<uuid>`
+Three approaches were evaluated during design:
 
-2. **Define the class** using `Unsafe.defineClass()` or a custom ClassLoader.
-
-3. **Instantiate it** with the restored captured variables via Objenesis + field setting.
-
-4. **Use it as the receiver** when replaying the frame above the lambda (e.g., `ArrayList.forEach` passes our wrapper to its iteration, which calls our wrapper's `accept`, which calls `Foo.lambda$doWork$0`).
-
-Actually, this may be overcomplicating it. Since we filter JDK infrastructure frames, and the synthetic method IS on the enclosing class, we might be able to skip the lambda frame entirely:
-
-### Simpler Alternative: Transparent Lambda Elision
-
-The call stack has:
-```
-Foo.doWork()                     ← invoke: forEach(lambda)
-  [JDK frames: forEach, etc.]   ← filtered
-  [$$Lambda.accept()]            ← the lambda dispatch
-  Foo.lambda$doWork$0()          ← the actual code
-```
-
-If we treat `$$Lambda.accept()` the same as JDK infrastructure (filter it out), the snapshot would contain:
-```
-Frame 0 (bottom): Foo.doWork()         — invoke index points to forEach() call
-Frame 1 (top):    Foo.lambda$doWork$0  — invoke index points to freeze() call
-```
-
-At restore time:
-- Replay enters `Foo.doWork()` via its prologue
-- The resume stub for `doWork` jumps to `BEFORE_INVOKE` for the `forEach()` call
-- `forEach()` needs a `Consumer` argument — the stub pushes a dummy/null
-- `forEach(null)` would NPE
-
-This is the problem: the JDK frame (`forEach`) calls the lambda, and we need a live lambda instance for it to work. We can't just skip it.
-
-### Hybrid Approach: Synthetic Method Direct Entry
-
-Instead of replaying through the JDK frame (which requires a live lambda), we can enter the synthetic method directly:
-
-1. At restore time, the bottom-most frame that needs the lambda is `Foo.doWork()` at its `forEach()` invoke.
-
-2. Instead of letting `forEach()` call the lambda, the resume stub for `Foo.doWork()` could bypass the `forEach()` entirely and directly call `Foo.lambda$doWork$0()` via reflection, similar to how `invokeBottomFrame()` works.
-
-3. This means the resume stub doesn't jump to `BEFORE_INVOKE` for the `forEach()` call. Instead, it directly invokes the synthetic method, which has its own replay prologue that handles the deeper frames.
-
-**Changes needed:**
-- `PrologueInjector`: for invoke indices where the callee is a lambda frame, the resume stub would use `INVOKESTATIC` to call the synthetic method directly instead of jumping to `BEFORE_INVOKE`
-- `ThreadRestorer`: would need to know which invoke indices have lambda intermediaries and set up the direct-call path
-- `FrameSnapshot`: would need a flag or metadata indicating "this frame was entered via lambda — use direct entry"
-
-### What Needs Capturing from the Lambda Instance
-
-A lambda instance has:
-- **Captured variables** as instance fields (named `arg$1`, `arg$2`, etc.)
-- These can include the enclosing `this`, local variables from the enclosing scope, and effectively-final values
-
-At freeze time, we already capture these through the heap walker (the lambda instance is reachable from `doWork()`'s locals). At restore time, we need them to reconstruct the lambda — or, with the direct-entry approach, we need them as arguments to the synthetic method (captured values are passed as parameters to static synthetic methods, or available via the enclosing `this`).
-
-## Complexity Assessment
-
-| Approach | Complexity | Reliability |
+| Approach | Complexity | Outcome |
 |---|---|---|
-| Named wrapper class (ASM-generated) | High — must replicate LambdaMetafactory behavior | Medium — edge cases with method handles, serializable lambdas |
-| Transparent lambda elision | Low — just filter the frame | Won't work — JDK frame needs live lambda |
-| Direct synthetic method entry | Medium — modify resume stubs for lambda cases | High — synthetic method is real, instrumented code |
-
-**Recommendation:** The direct synthetic method entry approach is the best balance. It avoids generating new classes at restore time, leverages the existing prologue infrastructure (the synthetic method is already instrumented), and only requires changes to how resume stubs handle lambda-intermediary invokes.
+| Named wrapper class (ASM-generated) | High | Rejected — too complex |
+| Transparent lambda elision (skip + null) | Low | Rejected — NPE on JDK frame |
+| **Dynamic proxy bridge (implemented)** | Medium | Chosen — reliable, no class generation |
 
 ## Scope and Limitations
 
-### In scope (normal lambda usage):
-- `Runnable` / `Callable` lambdas passed to thread constructors or executors
-- `Consumer` / `Function` callbacks passed to user methods
-- Method references (`this::process`, `String::valueOf`)
+### Supported (implemented):
+- `Runnable` / `Callable` lambdas passed to user methods
+- `Consumer` / `Function` callbacks
+- Method references (`this::process`, `ClassName::method`)
 - Lambdas capturing local variables from enclosing scope
-- Lambdas used as event handlers or callbacks
+- Both static and instance synthetic methods
 
-### Out of scope (stream pipelines and chained functional APIs):
+### Not supported:
 - `stream().filter().map().collect()` — deep JDK frame chains
 - `CompletableFuture.thenApply().thenCompose()` — async chains
-- These patterns create deeply nested JDK infrastructure frames that are impractical to replay
+- These patterns create deeply nested JDK infrastructure frames that are
+  impractical to replay
 
-### Edge cases to investigate:
-- Lambda capturing mutable state (reference to enclosing array/object)
-- Nested lambdas (lambda inside lambda)
-- Lambdas in constructors or static initializers
-- Method references to private methods (accessibility)
-- Serializable lambdas (`(Serializable & Runnable) () -> ...`)
+### Known edge cases and potential issues:
+- **Nested lambdas** (lambda inside lambda) — should work if each level has a
+  separate synthetic method, but not comprehensively tested.
+- **Proxy type mismatch** — if the caller's invoke expects an exact class type
+  rather than the interface, the Proxy may fail. In practice, functional
+  interfaces are always invoked via the interface type.
+- **Static lambda arg padding** — `createLambdaBridgeProxy()` pads args for
+  static synthetic methods (captured vars are leading params). If the arg count
+  calculation is wrong, the invoke fails at replay time.
+- **Lambda in the bottom frame** — if the bottom-most user frame is a synthetic
+  lambda method, `invokeBottomFrame()` calls it directly via reflection. The
+  lambda bridge proxy is only used for caller→callee transitions.
+- **Serializable lambdas** (`(Serializable & Runnable) () -> ...`) — the
+  `detectLambdaInterface()` method skips `Serializable`, so it should find the
+  functional interface correctly. Not explicitly tested.
 
-## Implementation Order
+## Future Work
 
-1. **Freeze-side changes:** Stop rejecting `$$Lambda` frames. Instead, identify the synthetic method and capture the frame pair (lambda frame → synthetic method frame) with metadata.
-
-2. **Snapshot model changes:** Add lambda metadata to `FrameSnapshot` (synthetic method name, captured variable mapping, functional interface).
-
-3. **Restore-side changes:** Implement direct synthetic method entry in the resume stub. The stub calls the synthetic method directly instead of going through the JDK frame + lambda dispatch.
-
-4. **Testing:** E2E tests with lambdas as `Runnable`, `Consumer`, `Function`, captured variables, method references.
-
-5. **Documentation:** Update the limitations section in README.
+1. **Comprehensive lambda E2E tests** — nested lambdas, method references to
+   private methods, lambdas capturing mutable objects.
+2. **Stream pipeline support** — would require a fundamentally different
+   approach (e.g., capturing the stream's spliterator state). Low priority.
+3. **Proxy robustness** — investigate whether some JDK methods perform
+   `instanceof` checks against the concrete lambda class rather than the
+   functional interface, which would break the proxy approach.
