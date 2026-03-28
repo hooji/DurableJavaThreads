@@ -23,20 +23,16 @@ public final class JdiHelper {
     private JdiHelper() {}
 
     /**
-     * Cached JDI connection discovered during port scanning.
-     * Once we find and verify the JDWP port, we keep the connection open
-     * so it can be reused for freeze/restore without reconnecting.
+     * The single JDI connection to this JVM. Set once (either during port
+     * discovery or on first call to {@link #getConnection()}) and never
+     * replaced. The connection stays alive for the lifetime of the JVM.
+     *
+     * <p>Holding a strong static reference prevents GC from closing the
+     * underlying socket. Without this, GC during shutdown closes the socket,
+     * JDWP sees a disconnect, re-listens, and prints a confusing
+     * "Listening for transport..." message on stderr.</p>
      */
-    private static volatile VirtualMachine cachedVm;
-
-    /**
-     * Permanent strong reference to the last JDI connection returned by
-     * {@link #connect(int)}. This prevents the VirtualMachine (and its
-     * underlying socket) from being garbage-collected during JVM shutdown.
-     * Without this, GC closes the socket, JDWP sees a disconnect, re-listens,
-     * and prints a confusing "Listening for transport..." message on stderr.
-     */
-    private static volatile VirtualMachine keepAliveVm;
+    private static volatile VirtualMachine connection;
 
     /**
      * Default JDWP port. When no explicit port is detected from command-line
@@ -61,7 +57,7 @@ public final class JdiHelper {
      *
      * @return the JDWP port (always positive)
      */
-    public static int detectJdwpPort() {
+    private static int detectJdwpPort() {
         // Check the agent's cached port first (detected eagerly at startup)
         int cached = ai.jacc.durableThreads.DurableAgent.getCachedJdwpPort();
         if (cached > 0) {
@@ -447,7 +443,7 @@ public final class JdiHelper {
 
             VirtualMachine vm = future.get(PROBE_TIMEOUT_MS + 500, TimeUnit.MILLISECONDS);
             if (vm != null) {
-                cachedVm = vm;
+                connection = vm;
                 return true;
             }
             return false;
@@ -461,52 +457,47 @@ public final class JdiHelper {
         }
     }
 
-    /**
-     * Connect to the local JVM via JDI socket attach.
-     *
-     * <p>Resolution order:</p>
-     * <ol>
-     *   <li>Reuse the existing {@code keepAliveVm} connection (from a prior
-     *       freeze or restore in the same JVM)</li>
-     *   <li>Return a cached connection from port auto-discovery</li>
-     *   <li>Establish a new connection</li>
-     * </ol>
-     *
-     * @param port the JDWP port
-     * @return the VirtualMachine connection
-     */
     private static final Object JDI_CONNECT_LOCK = new Object();
 
-    public static VirtualMachine connect(int port) {
+    /**
+     * Get the JDI connection to this JVM, creating it on first call.
+     *
+     * <p>The connection is established once and reused for all subsequent
+     * freeze/restore operations. It is never replaced or reconnected —
+     * the JDI connection to our own JVM stays alive for the lifetime of
+     * the process.</p>
+     *
+     * <p>If port discovery ({@link #connectAndVerifyNonce}) already
+     * established a connection, that connection is used directly without
+     * creating a second one.</p>
+     *
+     * @return the VirtualMachine connection (never null)
+     * @throws RuntimeException if JDWP is not enabled or connection fails
+     */
+    public static VirtualMachine getConnection() {
+        VirtualMachine vm = connection;
+        if (vm != null) return vm;
+
         synchronized (JDI_CONNECT_LOCK) {
-            VirtualMachine vm;
+            // Double-check under lock
+            vm = connection;
+            if (vm != null) return vm;
 
-            // Reuse existing keep-alive connection (from prior freeze/restore)
-            VirtualMachine alive = keepAliveVm;
-            if (alive != null) {
-                try {
-                    // Verify the connection is still usable by calling a lightweight method
-                    alive.allThreads();
-                    return alive;
-                } catch (Exception e) {
-                    // Connection is dead — fall through to reconnect
-                    keepAliveVm = null;
-                }
+            // Detect the JDWP port. Port discovery may establish a connection
+            // as a side-effect (connectAndVerifyNonce sets 'connection' when
+            // it finds and verifies the port via a JDI probe). Check again
+            // after detection before attempting a redundant connect.
+            int port = detectJdwpPort();
+            vm = connection;
+            if (vm != null) return vm;
+
+            if (port < 0) {
+                throw new RuntimeException(
+                        "JDWP not enabled. Start with: "
+                        + "-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005");
             }
-
-            // Return cached connection from discovery if available
-            VirtualMachine cached = cachedVm;
-            if (cached != null) {
-                cachedVm = null;
-                vm = cached;
-            } else {
-                vm = jdiConnect(port, 0);
-            }
-
-            // Keep a strong static reference so the VM (and its socket) is never
-            // GC'd. Without this, GC during shutdown closes the socket, JDWP
-            // re-listens, and prints a spurious "Listening..." message on stderr.
-            keepAliveVm = vm;
+            vm = jdiConnect(port, 0);
+            connection = vm;
             return vm;
         }
     }

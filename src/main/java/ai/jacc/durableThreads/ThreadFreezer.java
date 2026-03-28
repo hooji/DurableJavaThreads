@@ -124,35 +124,22 @@ final class ThreadFreezer {
 
     private static void performFreeze(Thread targetThread, Consumer<ThreadSnapshot> handler,
                                        Map<String, Object> namedObjects) {
-        // Connect to this JVM via JDI
-        int port = JdiHelper.detectJdwpPort();
-        if (port < 0) {
-            throw new RuntimeException(
-                    "JDWP not enabled. Start with: -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005");
-        }
+        VirtualMachine vm = JdiHelper.getConnection();
 
-        VirtualMachine vm = JdiHelper.connect(port);
+        // Find the target thread in JDI
+        ThreadReference threadRef = JdiHelper.findThread(vm, targetThread);
+
+        // Suspend the target thread and capture its state.
+        ThreadSnapshot snapshot;
+        threadRef.suspend();
         try {
-            // Find the target thread in JDI
-            ThreadReference threadRef = JdiHelper.findThread(vm, targetThread);
+            snapshot = captureSnapshot(vm, threadRef, targetThread.getName(), namedObjects);
 
-            // Suspend the target thread and capture its state.
-            ThreadSnapshot snapshot;
-            threadRef.suspend();
-            try {
-                snapshot = captureSnapshot(vm, threadRef, targetThread.getName(), namedObjects);
-
-                // Call the handler while the thread is still suspended,
-                // so it can safely write the snapshot without racing.
-                handler.accept(snapshot);
-            } finally {
-                threadRef.resume();
-            }
-
+            // Call the handler while the thread is still suspended,
+            // so it can safely write the snapshot without racing.
+            handler.accept(snapshot);
         } finally {
-            // Do NOT call vm.dispose() — disconnecting causes JDWP to re-listen
-            // and print a confusing "Listening for transport..." message on stderr.
-            // The connection is cleaned up automatically when the JVM exits.
+            threadRef.resume();
         }
 
         // Terminate the target thread AFTER all JDI housekeeping is complete.

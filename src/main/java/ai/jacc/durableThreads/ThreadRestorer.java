@@ -393,53 +393,43 @@ final class ThreadRestorer {
                                       Map<Long, Object> restoredHeap,
                                       HeapRestorer heapRestorer) {
         try {
-            int port = JdiHelper.detectJdwpPort();
-            if (port < 0) {
+            VirtualMachine vm = JdiHelper.getConnection();
+
+            // Wait for thread to reach awaitGoLatch() inside freeze().
+            // The deepest frame's resume stub deactivated replay and jumped
+            // to BEFORE_INVOKE, which called freeze(). freeze() detected
+            // restoreInProgress and is now blocked on the go-latch.
+            ThreadReference tr = waitForThreadAtMethod(vm, threadName,
+                    "awaitGoLatch", "ReplayState", 30_000);
+            if (tr == null) {
                 throw new RuntimeException(
-                        "JDWP not available for restore. "
-                        + "Start with: -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005");
+                        "Timeout waiting for replay thread '" + threadName
+                        + "' to reach awaitGoLatch(). The thread may have failed "
+                        + "during replay prologue execution.");
             }
 
-            VirtualMachine vm = JdiHelper.connect(port);
+            // Pre-load all classes referenced by snapshot locals
+            tr.suspend();
             try {
-                // Wait for thread to reach awaitGoLatch() inside freeze().
-                // The deepest frame's resume stub deactivated replay and jumped
-                // to BEFORE_INVOKE, which called freeze(). freeze() detected
-                // restoreInProgress and is now blocked on the go-latch.
-                ThreadReference tr = waitForThreadAtMethod(vm, threadName,
-                        "awaitGoLatch", "ReplayState", 30_000);
-                if (tr == null) {
-                    throw new RuntimeException(
-                            "Timeout waiting for replay thread '" + threadName
-                            + "' to reach awaitGoLatch(). The thread may have failed "
-                            + "during replay prologue execution.");
-                }
-
-                // Pre-load all classes referenced by snapshot locals
-                tr.suspend();
-                try {
-                    preloadSnapshotClasses(vm, tr, snapshot);
-                } finally {
-                    tr.resume();
-                }
-
-                // Set ALL locals in ALL frames in a single pass.
-                // All frames are in their original code sections (resume stubs
-                // jumped to BEFORE_INVOKE labels), so all locals are in scope.
-                tr.suspend();
-                tr.suspend();
-                try {
-                    setLocalsViaJdi(vm, tr, snapshot, restoredHeap, heapRestorer, true);
-                } finally {
-                    tr.resume();
-                    tr.resume();
-                }
-
-                // Clean up the heap bridge
-                HeapObjectBridge.clear();
+                preloadSnapshotClasses(vm, tr, snapshot);
             } finally {
-                // Do NOT call vm.dispose()
+                tr.resume();
             }
+
+            // Set ALL locals in ALL frames in a single pass.
+            // All frames are in their original code sections (resume stubs
+            // jumped to BEFORE_INVOKE labels), so all locals are in scope.
+            tr.suspend();
+            tr.suspend();
+            try {
+                setLocalsViaJdi(vm, tr, snapshot, restoredHeap, heapRestorer, true);
+            } finally {
+                tr.resume();
+                tr.resume();
+            }
+
+            // Clean up the heap bridge
+            HeapObjectBridge.clear();
         } catch (Exception e) {
             System.err.println("[DurableThreads] JDI restore failed: " + e.getMessage());
             e.printStackTrace(System.err);
