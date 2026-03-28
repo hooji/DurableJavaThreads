@@ -81,4 +81,16 @@ final class ReflectionHelpers {
         if (type == double.class) return 0.0d;
         return null;
     }
+
+    /**
+     * Check if a throwable's cause chain contains an instance of the given type.
+     */
+    static boolean hasCause(Throwable t, Class<? extends Throwable> type) {
+        for (Throwable cause = t; cause != null; cause = cause.getCause()) {
+            if (type.isInstance(cause)) {
+                return true;
+            }
+        }
+        return false;
+    }
 }
