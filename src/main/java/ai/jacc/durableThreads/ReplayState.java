@@ -9,6 +9,27 @@ import java.util.concurrent.TimeUnit;
  * <p>During normal execution, {@link #isReplayThread()} returns false and the prologue
  * is a single not-taken branch. During replay, it provides the resume index for each
  * frame so the prologue can dispatch to the correct resume stub.</p>
+ *
+ * <h3>Why goLatch, restoreError, and restoreInProgress are static</h3>
+ *
+ * <p>During restore, the replay thread re-enters the user's original
+ * {@code freeze()} call site. That call was compiled by the user — it has
+ * no reference to any internal session or restore context object. The call
+ * chain is: user code → {@code Durable.freeze()} → {@code ThreadFreezer.freeze()}
+ * → {@code ReplayState.awaitGoLatch()}. There is no place to inject an
+ * instance reference through this path, so these fields must be static
+ * (or accessed via ThreadLocal).</p>
+ *
+ * <p><b>Thread safety:</b> This is safe because all freeze and restore
+ * operations are serialized via {@code synchronized(Durable.class)}.
+ * The entire {@code ThreadRestorer.restore()} call — including JDI worker
+ * completion — runs under that monitor. By the time the monitor is released
+ * and a second restore could begin, the first restore's JDI worker has
+ * finished and the go-latch has been captured by value into the
+ * {@link RestoredThread} instance. The replay thread's
+ * {@code awaitGoLatch()} reads the latch into a local variable before
+ * calling {@code await()}, so it is unaffected by any subsequent overwrite
+ * of the static field by a later restore.</p>
  */
 public final class ReplayState {
 
