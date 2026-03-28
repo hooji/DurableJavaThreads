@@ -463,32 +463,35 @@ final class ThreadFreezer {
     }
 
     /**
-     * Thread-local flag to signal that a thread has been frozen and should terminate.
+     * Thread-identity flag to signal that a thread has been frozen and should terminate.
+     *
+     * <p>Uses {@code Thread} references with identity semantics (not thread IDs)
+     * to avoid false positives from JVM thread ID reuse. Stale entries are
+     * automatically eligible for GC when the thread is collected.</p>
      */
     static final class FreezeFlag {
-        private static final Set<Long> frozenThreads = Collections.synchronizedSet(new HashSet<>());
+        private static final Set<Thread> frozenThreads =
+                Collections.synchronizedSet(Collections.newSetFromMap(new IdentityHashMap<>()));
 
         static void markFrozen(Thread t) {
-            frozenThreads.add(t.getId());
+            frozenThreads.add(t);
         }
 
         /**
          * Check if a thread has been marked as frozen. Non-destructive — the flag
-         * remains set so multiple checks (e.g., in blockForever's retry loop) all
-         * see the frozen state. Call {@link #clearFrozen(Thread)} when the thread
-         * is about to terminate.
+         * remains set so multiple checks all see the frozen state. Call
+         * {@link #clearFrozen(Thread)} when the thread is about to terminate.
          */
         static boolean isFrozen(Thread t) {
-            return frozenThreads.contains(t.getId());
+            return frozenThreads.contains(t);
         }
 
         /**
          * Remove the frozen flag for a thread. Called just before throwing
-         * {@link ThreadFrozenError} to prevent stale entries from accumulating
-         * (thread IDs can be reused after termination).
+         * {@link ThreadFrozenError} to prevent stale entries from accumulating.
          */
         static void clearFrozen(Thread t) {
-            frozenThreads.remove(t.getId());
+            frozenThreads.remove(t);
         }
     }
 }
