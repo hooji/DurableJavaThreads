@@ -299,7 +299,7 @@ final class ThreadRestorer {
 
         method.setAccessible(true);
 
-        Object[] args = createDummyArgs(method.getParameterTypes());
+        Object[] args = ReflectionHelpers.createDummyArgs(method.getParameterTypes());
         Object receiver = null;
 
         if (!java.lang.reflect.Modifier.isStatic(method.getModifiers())) {
@@ -854,28 +854,6 @@ final class ThreadRestorer {
         if (value instanceof Float) return vm.mirrorOf((Float) value);
         if (value instanceof Double) return vm.mirrorOf((Double) value);
         if (value instanceof String) return vm.mirrorOf((String) value);
-        return null;
-    }
-
-    // --- Reflection helpers ---
-
-    private static Object[] createDummyArgs(Class<?>[] paramTypes) {
-        Object[] args = new Object[paramTypes.length];
-        for (int i = 0; i < paramTypes.length; i++) {
-            args[i] = defaultValue(paramTypes[i]);
-        }
-        return args;
-    }
-
-    private static Object defaultValue(Class<?> type) {
-        if (type == boolean.class) return false;
-        if (type == byte.class) return (byte) 0;
-        if (type == char.class) return (char) 0;
-        if (type == short.class) return (short) 0;
-        if (type == int.class) return 0;
-        if (type == long.class) return 0L;
-        if (type == float.class) return 0.0f;
-        if (type == double.class) return 0.0d;
         return null;
     }
 
