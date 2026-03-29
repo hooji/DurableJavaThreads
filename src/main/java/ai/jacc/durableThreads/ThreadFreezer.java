@@ -438,17 +438,13 @@ final class ThreadFreezer {
         // JDI's method.variables() doesn't include the implicit "this" parameter.
         // Explicitly capture "this" for instance methods.
         if (!method.isStatic()) {
-            try {
-                ObjectReference thisRef = frame.thisObject();
-                if (thisRef != null) {
-                    ObjectRef thisObjRef = heapWalker.capture(thisRef);
-                    result.add(new ai.jacc.durableThreads.snapshot.LocalVariable(
-                            0, "this",
-                            "L" + method.declaringType().name().replace('.', '/') + ";",
-                            thisObjRef));
-                }
-            } catch (Exception ignored) {
-                // Can't get this — might be native frame
+            ObjectReference thisRef = frame.thisObject();
+            if (thisRef != null) {
+                ObjectRef thisObjRef = heapWalker.capture(thisRef);
+                result.add(new ai.jacc.durableThreads.snapshot.LocalVariable(
+                        0, "this",
+                        "L" + method.declaringType().name().replace('.', '/') + ";",
+                        thisObjRef));
             }
         }
 
