@@ -154,17 +154,20 @@ final class ThreadFreezer {
         threadRef.suspend();
         try {
             snapshot = captureSnapshot(vm, threadRef, targetThread.getName(), namedObjects);
-
-            // Call the handler while the thread is still suspended,
-            // so it can safely write the snapshot without racing.
-            handler.accept(snapshot);
         } finally {
             threadRef.resume();
         }
 
-        // Terminate the target thread AFTER all JDI housekeeping is complete.
+        // The target thread is now resumed but blocked in lock.wait() inside
+        // freeze(). The snapshot is an immutable copy — Thread A running
+        // doesn't affect it. Call the handler with no JDI suspension held,
+        // eliminating the risk of deadlock if the handler acquires locks
+        // that Thread A holds.
+        handler.accept(snapshot);
+
+        // Terminate the target thread AFTER the handler has finished.
         // This is critical: if the target is the main thread, killing it may
-        // terminate the JVM. We must ensure the handler has finished before
+        // terminate the JVM. We must ensure the handler has completed before
         // that can happen.
         //
         // Install a per-thread handler to silently swallow the ThreadFrozenError
