@@ -15,7 +15,7 @@ Durable Threads is a pure-Java library that captures the full execution state of
 
 ### Download
 
-Download [`durable-threads-1.3.1.jar`](https://github.com/hooji/DurableJavaThreads/releases/download/v1.3.1/durable-threads-1.3.1.jar) from the [latest release](https://github.com/hooji/DurableJavaThreads/releases/latest). This is a shaded jar that bundles all dependencies (ASM and Objenesis).
+Download [`durable-threads-1.3.5.jar`](https://github.com/hooji/DurableJavaThreads/releases/download/v1.3.5/durable-threads-1.3.5.jar) from the [latest release](https://github.com/hooji/DurableJavaThreads/releases/latest). This is a shaded jar that bundles all dependencies (ASM and Objenesis).
 
 ### Hello World
 
@@ -59,12 +59,12 @@ public class RestoreDemo {
 Both JVMs must be started with the agent and JDWP enabled:
 
 ```bash
-% javac -g -cp durable-threads-1.3.1.jar FreezeDemo.java RestoreDemo.java
+% javac -g -cp durable-threads-1.3.5.jar FreezeDemo.java RestoreDemo.java
 
-% java -javaagent:durable-threads-1.3.1.jar \
+% java -javaagent:durable-threads-1.3.5.jar \
        -agentlib:jdwp=transport=dt_socket,server=y,suspend=n \
        --add-modules jdk.jdi \
-       -cp .:durable-threads-1.3.1.jar \
+       -cp .:durable-threads-1.3.5.jar \
        FreezeDemo
 i=0
 i=1
@@ -74,10 +74,10 @@ i=4
 i=5
 About to freeze!
 
-% java -javaagent:durable-threads-1.3.1.jar \
+% java -javaagent:durable-threads-1.3.5.jar \
        -agentlib:jdwp=transport=dt_socket,server=y,suspend=n \
        --add-modules jdk.jdi \
-       -cp .:durable-threads-1.3.1.jar \
+       -cp .:durable-threads-1.3.5.jar \
        RestoreDemo
 Resumed!
 i=6
@@ -260,7 +260,7 @@ cd DurableJavaThreads
 mvn clean package -DskipTests
 ```
 
-This produces `target/durable-threads-1.3.1.jar` — a shaded jar that bundles ASM and Objenesis.
+This produces `target/durable-threads-1.3.5.jar` — a shaded jar that bundles ASM and Objenesis.
 
 ### Running Tests
 
@@ -289,14 +289,14 @@ mvn package -DskipTests && mvn failsafe:integration-test -Dit.test=PerformanceBe
 <dependency>
     <groupId>ai.jacc</groupId>
     <artifactId>durable-threads</artifactId>
-    <version>1.3.1</version>
+    <version>1.3.5</version>
 </dependency>
 ```
 
 ### Gradle
 
 ```groovy
-implementation 'ai.jacc:durable-threads:1.3.1'
+implementation 'ai.jacc:durable-threads:1.3.5'
 ```
 
 > **Note:** Durable Threads is not yet published to Maven Central. For now, download the jar from the [releases page](https://github.com/hooji/DurableJavaThreads/releases) or build from source.
@@ -310,11 +310,17 @@ src/main/java/ai/jacc/durableThreads/
 ├── DurableTransformer.java    # ClassFileTransformer
 ├── SnapshotFileWriter.java    # Consumer that serializes snapshots to a file
 ├── PrologueInjector.java      # ASM ClassVisitor — injects replay prologues
+├── PrologueEmitter.java       # Emits replay prologue bytecode (resume stubs + original code)
+├── OperandStackSimulator.java # Simulates JVM operand stack for type tracking
+├── PrologueTypes.java         # Data types shared between injector and emitter
+├── ReflectionHelpers.java     # Method lookup, descriptor matching, bottom frame invocation
 ├── ReplayState.java           # Thread-local replay coordination and go-latch
 ├── RestoredThread.java        # Handle to a restored thread (go-latch control)
+├── SnapshotValidator.java     # Bytecode/structure hash validation at restore time
 ├── ThreadFreezer.java         # Freeze implementation (JDI stack walk)
-├── ThreadRestorer.java        # Restore implementation (single-pass JDI local setting)
-├── Version.java               # Version string
+├── ThreadRestorer.java        # Restore orchestration (heap rebuild, replay, JDI)
+├── JdiValueConverter.java     # Snapshot ObjectRef → JDI Value conversion
+├── JdiLocalSetter.java        # JDI local variable setting (frame matching, GC pinning)
 ├── exception/                 # ThreadFrozenError, AgentNotLoadedException, etc.
 ├── internal/                  # InvokeRegistry, BytecodeHasher, HeapRestorer, etc.
 └── snapshot/                  # ThreadSnapshot, FrameSnapshot, ObjectSnapshot, etc.

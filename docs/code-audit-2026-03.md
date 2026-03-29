@@ -2,7 +2,7 @@
 
 **Date:** 2026-03-29 (updated)
 **Scope:** Full codebase review for reliability, correctness, race conditions, dead code, and code quality.
-**Codebase Version:** 1.3.1 (post Stage 1–4 refactoring + audit fixes)
+**Codebase Version:** 1.3.5
 
 ---
 
@@ -44,6 +44,7 @@ cleanup and is in good shape for enterprise use.
 | captureLocals slot reflection | `f7d6b77` | **Removed entirely** — the reflection always failed (`getMethod` on a package-private method), silently defaulting every slot to 0. Restore matches by name, not slot. The reflection was broken dead code masking a latent bug. |
 | CI: ubuntu JDK 10 | `ae9807f` | Removed from build + stress matrix (intermittent Zulu failures unrelated to our code) |
 | CI: Node.js 24 | `6b1989e` | Bumped actions/checkout, actions/setup-java, actions/cache from v4 to v5 |
+| Snapshot handler deadlock risk | `514c157` | Moved handler.accept() after threadRef.resume() — eliminates deadlock if handler acquires locks held by the frozen thread |
 
 ---
 
@@ -54,24 +55,6 @@ cleanup and is in good shape for enterprise use.
 **None.** All critical issues have been resolved.
 
 ### Medium — Worth Addressing
-
-#### C3. Snapshot Handler Called While Thread Is Suspended (Deadlock Risk)
-
-**File:** `ThreadFreezer.java:135-143`
-**Severity:** Medium-High (design constraint, not a bug)
-
-The user's snapshot handler is called while the target thread is JDI-suspended.
-If the handler acquires any lock that the frozen thread holds, this creates a
-deadlock. The handler runs on Thread B (the worker), but Thread A is suspended
-mid-execution and may hold arbitrary monitors.
-
-**Mitigation:** Documented in `Durable.freeze()` javadoc (line 93-94). No
-runtime guard exists. This is inherent to the architecture — the handler must
-run while the thread is suspended to prevent the thread from mutating state
-between capture and handler execution.
-
-**Recommendation:** Add a prominent `@apiNote` warning to the
-`Consumer<ThreadSnapshot>` parameter documentation on `Durable.freeze()`.
 
 #### C4. Thread Name Collision in JdiHelper.findThread()
 
