@@ -372,24 +372,22 @@ final class ThreadRestorer {
     private static boolean isAtMethod(ThreadReference tr, String targetMethodName,
                                        String targetClassName) {
         try {
-            tr.suspend();
-            try {
-                List<StackFrame> frames = tr.frames(0, Math.min(10, tr.frameCount()));
-                // Look for the target method in the stack. It may have
-                // CountDownLatch.await / AbstractQueuedSynchronizer frames above it.
-                for (StackFrame frame : frames) {
-                    String methodName = frame.location().method().name();
-                    String className = frame.location().declaringType().name();
-                    if (methodName.equals(targetMethodName)
-                            && className.contains(targetClassName)) {
-                        return true;
-                    }
+            // No suspend/resume needed: by the time we check, the thread is
+            // already WAITING on CountDownLatch.await() inside awaitGoLatch().
+            // A WAITING thread is not going anywhere, so reading its frames is
+            // safe. If the thread hasn't reached the latch yet, frames() throws
+            // IncompatibleThreadStateException, which we catch and retry.
+            List<StackFrame> frames = tr.frames(0, Math.min(10, tr.frameCount()));
+            for (StackFrame frame : frames) {
+                String methodName = frame.location().method().name();
+                String className = frame.location().declaringType().name();
+                if (methodName.equals(targetMethodName)
+                        && className.contains(targetClassName)) {
+                    return true;
                 }
-            } finally {
-                tr.resume();
             }
         } catch (IncompatibleThreadStateException e) {
-            // Can't read frames — not yet in proper state
+            // Thread not yet in a state where frames can be read — retry later
         }
         return false;
     }
