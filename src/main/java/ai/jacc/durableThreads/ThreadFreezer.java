@@ -358,13 +358,9 @@ final class ThreadFreezer {
             Method method = frame.location().method();
             if (method.isStatic()) return; // no "this" in static methods
 
-            try {
-                ObjectReference thisRef = frame.thisObject();
-                if (thisRef != null) {
-                    heapWalker.registerNamedObject(thisRef.uniqueID(), "this");
-                }
-            } catch (Exception ignored) {
-                // Can't get "this" — might be native or optimized away
+            ObjectReference thisRef = frame.thisObject();
+            if (thisRef != null) {
+                heapWalker.registerNamedObject(thisRef.uniqueID(), "this");
             }
             return;
         }
