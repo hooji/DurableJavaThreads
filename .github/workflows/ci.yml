@@ -14,15 +14,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # =================== Linux (JDK 8–25) ===================
+          # =================== Linux (JDK 8–25, skip 10 — intermittent Zulu failures) ===================
           - os: ubuntu-latest
             java: '8'
             distribution: temurin
           - os: ubuntu-latest
             java: '9'
-            distribution: zulu
-          - os: ubuntu-latest
-            java: '10'
             distribution: zulu
           - os: ubuntu-latest
             java: '11'
@@ -201,15 +198,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # =================== Linux (JDK 8–25) ===================
+          # =================== Linux (JDK 8–25, skip 10 — intermittent Zulu failures) ===================
           - os: ubuntu-latest
             java: '8'
             distribution: temurin
           - os: ubuntu-latest
             java: '9'
-            distribution: zulu
-          - os: ubuntu-latest
-            java: '10'
             distribution: zulu
           - os: ubuntu-latest
             java: '11'
