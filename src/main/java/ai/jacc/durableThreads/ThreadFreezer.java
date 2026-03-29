@@ -453,16 +453,8 @@ final class ThreadFreezer {
 
             Value value = frame.getValue(jdiLocal);
             ObjectRef ref = heapWalker.capture(value);
-            // JDI LocalVariable doesn't expose slot index directly;
-            // use hashCode as a proxy, or get it from the variable table
-            int slot = 0;
-            try {
-                // Attempt to get the slot via reflection on JDI impl
-                java.lang.reflect.Method slotMethod = jdiLocal.getClass().getMethod("slot");
-                slot = (int) slotMethod.invoke(jdiLocal);
-            } catch (Exception ignored) {}
             result.add(new ai.jacc.durableThreads.snapshot.LocalVariable(
-                    slot,
+                    0, // slot index unused — restore matches by name, not slot
                     jdiLocal.name(),
                     jdiLocal.signature(),
                     ref));
