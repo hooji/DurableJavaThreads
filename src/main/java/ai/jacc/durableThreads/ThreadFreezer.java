@@ -208,22 +208,18 @@ final class ThreadFreezer {
      * that isn't a well-known marker.
      */
     private static String detectLambdaInterface(ReferenceType lambdaType) {
-        try {
-            List<InterfaceType> interfaces = null;
-            if (lambdaType instanceof com.sun.jdi.ClassType) {
-                interfaces = ((com.sun.jdi.ClassType) lambdaType).interfaces();
+        List<InterfaceType> interfaces = null;
+        if (lambdaType instanceof com.sun.jdi.ClassType) {
+            interfaces = ((com.sun.jdi.ClassType) lambdaType).interfaces();
+        }
+        if (interfaces != null) {
+            for (InterfaceType iface : interfaces) {
+                String name = iface.name();
+                // Skip marker interfaces
+                if ("java.io.Serializable".equals(name)) continue;
+                if ("java.lang.Comparable".equals(name)) continue;
+                return name; // first functional interface
             }
-            if (interfaces != null) {
-                for (InterfaceType iface : interfaces) {
-                    String name = iface.name();
-                    // Skip marker interfaces
-                    if ("java.io.Serializable".equals(name)) continue;
-                    if ("java.lang.Comparable".equals(name)) continue;
-                    return name; // first functional interface
-                }
-            }
-        } catch (Exception e) {
-            // If we can't detect the interface, fall through
         }
         return null;
     }
