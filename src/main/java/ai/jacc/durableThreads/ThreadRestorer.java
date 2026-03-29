@@ -47,7 +47,7 @@ final class ThreadRestorer {
     }
 
     static RestoredThread restore(ThreadSnapshot snapshot, Map<String, Object> namedReplacements) {
-        // Step 0: Sanity-check the snapshot
+        // Step 1: Sanity-check the snapshot
         if (snapshot.frameCount() == 0) {
             throw new IllegalArgumentException(
                     "Cannot restore a snapshot with 0 frames. "
@@ -55,7 +55,7 @@ final class ThreadRestorer {
                     + "(see JdiHelper.findThread).");
         }
 
-        // Step 1: Force-load all classes and validate hashes
+        // Step 2: Force-load all classes and validate hashes
         SnapshotValidator.ensureClassesLoaded(snapshot);
         SnapshotValidator.validateBytecodeHashes(snapshot);
         SnapshotValidator.validateClassStructureHashes(snapshot);
@@ -64,19 +64,19 @@ final class ThreadRestorer {
         HeapRestorer heapRestorer = new HeapRestorer();
         Map<Long, Object> restoredHeap = heapRestorer.restoreAll(snapshot.heap(), namedReplacements);
 
-        // Step 3b: Populate the heap object bridge for JDI access
+        // Step 4: Populate the heap object bridge for JDI access
         HeapObjectBridge.clear();
         for (Map.Entry<Long, Object> entry : restoredHeap.entrySet()) {
             HeapObjectBridge.put(entry.getKey(), entry.getValue());
         }
 
-        // Step 4: Build replay state (now InvokeRegistry has the data)
+        // Step 5: Build replay state
         int[] resumeIndices = computeResumeIndices(snapshot);
 
-        // Step 4b: Pre-resolve receiver ("this") for each frame
+        // Step 6: Pre-resolve receiver ("this") for each frame
         Object[] frameReceivers = computeFrameReceivers(snapshot, heapRestorer);
 
-        // Step 5: Create the replay thread.
+        // Step 7: Create the replay thread.
         // Use the original thread's base name (strip any prior "-restored-*" suffix)
         // with a short unique ID to avoid name accumulation across freeze/restore cycles.
         String baseName = snapshot.threadName();
@@ -107,7 +107,7 @@ final class ThreadRestorer {
             }
         }, threadName);
 
-        // Step 6: Start the replay thread and run JDI restore synchronously.
+        // Step 8: Start the replay thread and run JDI restore synchronously.
         // The replay thread ends up blocked inside freeze() on the go-latch.
         // The JDI worker sets locals in all frames. The go-latch is captured
         // into RestoredThread for the caller to release.

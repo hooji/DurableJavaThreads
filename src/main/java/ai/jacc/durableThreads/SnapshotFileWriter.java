@@ -36,10 +36,8 @@ public final class SnapshotFileWriter implements Consumer<ThreadSnapshot> {
     }
 
     /**
-     * Create a writer that serializes snapshots to the given file path.
-     * If path is null, the writer is a no-op (see String constructor).
-     *
      * @param path the file path, or null for a no-op writer
+     * @see #SnapshotFileWriter(String)
      */
     public SnapshotFileWriter(Path path) {
         this.path = path;
