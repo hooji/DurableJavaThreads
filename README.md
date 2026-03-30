@@ -15,7 +15,7 @@ Durable Threads is a pure-Java library that captures the full execution state of
 
 ### Download
 
-Download [`durable-threads-1.3.5.jar`](https://github.com/hooji/DurableJavaThreads/releases/download/v1.3.5/durable-threads-1.3.5.jar) from the [latest release](https://github.com/hooji/DurableJavaThreads/releases/latest). This is a shaded jar that bundles all dependencies (ASM and Objenesis).
+Download [`durable-threads-1.4.0.jar`](https://github.com/hooji/DurableJavaThreads/releases/download/v1.4.0/durable-threads-1.4.0.jar) from the [latest release](https://github.com/hooji/DurableJavaThreads/releases/latest). This is a shaded jar that bundles all dependencies (ASM and Objenesis).
 
 ### Hello World
 
@@ -59,12 +59,12 @@ public class RestoreDemo {
 Both JVMs must be started with the agent and JDWP enabled:
 
 ```bash
-% javac -g -cp durable-threads-1.3.5.jar FreezeDemo.java RestoreDemo.java
+% javac -g -cp durable-threads-1.4.0.jar FreezeDemo.java RestoreDemo.java
 
-% java -javaagent:durable-threads-1.3.5.jar \
+% java -javaagent:durable-threads-1.4.0.jar \
        -agentlib:jdwp=transport=dt_socket,server=y,suspend=n \
        --add-modules jdk.jdi \
-       -cp .:durable-threads-1.3.5.jar \
+       -cp .:durable-threads-1.4.0.jar \
        FreezeDemo
 i=0
 i=1
@@ -74,10 +74,10 @@ i=4
 i=5
 About to freeze!
 
-% java -javaagent:durable-threads-1.3.5.jar \
+% java -javaagent:durable-threads-1.4.0.jar \
        -agentlib:jdwp=transport=dt_socket,server=y,suspend=n \
        --add-modules jdk.jdi \
-       -cp .:durable-threads-1.3.5.jar \
+       -cp .:durable-threads-1.4.0.jar \
        RestoreDemo
 Resumed!
 i=6
@@ -260,7 +260,7 @@ cd DurableJavaThreads
 mvn clean package -DskipTests
 ```
 
-This produces `target/durable-threads-1.3.5.jar` — a shaded jar that bundles ASM and Objenesis.
+This produces `target/durable-threads-1.4.0.jar` — a shaded jar that bundles ASM and Objenesis.
 
 ### Running Tests
 
@@ -289,14 +289,14 @@ mvn package -DskipTests && mvn failsafe:integration-test -Dit.test=PerformanceBe
 <dependency>
     <groupId>ai.jacc</groupId>
     <artifactId>durable-threads</artifactId>
-    <version>1.3.5</version>
+    <version>1.4.0</version>
 </dependency>
 ```
 
 ### Gradle
 
 ```groovy
-implementation 'ai.jacc:durable-threads:1.3.5'
+implementation 'ai.jacc:durable-threads:1.4.0'
 ```
 
 > **Note:** Durable Threads is not yet published to Maven Central. For now, download the jar from the [releases page](https://github.com/hooji/DurableJavaThreads/releases) or build from source.
