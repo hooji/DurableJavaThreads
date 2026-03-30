@@ -15,6 +15,11 @@ import java.util.*;
  */
 final class JdiLocalSetter {
 
+    /** Maximum attempts to pin an object reference via disableCollection()
+     *  before giving up. Each failed attempt means GC collected the object
+     *  in the narrow window between JDI resolve and the pin call. */
+    private static final int MAX_PIN_ATTEMPTS = 5;
+
     private JdiLocalSetter() {}
 
     /** Pre-resolved local variable entry for batch setValue. */
@@ -176,19 +181,34 @@ final class JdiLocalSetter {
             boolean isNull = snapLocal.value() instanceof NullRef;
 
             if (jdiValue instanceof ObjectReference) {
-                ObjectReference objRef = (ObjectReference) jdiValue;
-                try {
-                    objRef.disableCollection();
-                    pinnedRefs.add(objRef);
-                } catch (ObjectCollectedException alreadyGone) {
-                    // Object was collected before we could pin it — re-resolve
-                    jdiValue = JdiValueConverter.convertToJdiValue(vm, snapLocal.value(),
-                            restoredHeap, heapRestorer);
-                    if (jdiValue instanceof ObjectReference) {
-                        ObjectReference retryRef = (ObjectReference) jdiValue;
-                        retryRef.disableCollection();
-                        pinnedRefs.add(retryRef);
+                // Pin the object to prevent GC between resolve and setValue().
+                // The window between resolve and disableCollection() is tiny
+                // (microseconds), but under extreme GC pressure (e.g., ZGC with
+                // small regions) the object can be collected before we pin it.
+                // Retry up to MAX_PIN_ATTEMPTS times before giving up.
+                boolean pinned = false;
+                for (int attempt = 0; attempt < MAX_PIN_ATTEMPTS; attempt++) {
+                    ObjectReference objRef = (ObjectReference) jdiValue;
+                    try {
+                        objRef.disableCollection();
+                        pinnedRefs.add(objRef);
+                        pinned = true;
+                        break;
+                    } catch (ObjectCollectedException alreadyGone) {
+                        // Re-resolve from HeapObjectBridge for next attempt
+                        jdiValue = JdiValueConverter.convertToJdiValue(vm, snapLocal.value(),
+                                restoredHeap, heapRestorer);
+                        if (!(jdiValue instanceof ObjectReference)) {
+                            break; // resolved to non-object (shouldn't happen) — give up
+                        }
                     }
+                }
+                if (!pinned && jdiValue instanceof ObjectReference) {
+                    throw new RuntimeException(
+                            "Failed to pin object reference for local '"
+                            + snapLocal.name() + "' after " + MAX_PIN_ATTEMPTS
+                            + " attempts — GC collected the object each time. "
+                            + "This indicates extreme GC pressure during thread restore.");
                 }
             }
 
