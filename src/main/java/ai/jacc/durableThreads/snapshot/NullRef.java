@@ -3,13 +3,21 @@ package ai.jacc.durableThreads.snapshot;
 import java.util.Objects;
 
 /**
- * Null reference.
+ * Null reference. Use {@link #INSTANCE} instead of creating new instances.
  */
 public final class NullRef implements ObjectRef {
 
     private static final long serialVersionUID = 1L;
 
+    /** Shared singleton instance. */
+    public static final NullRef INSTANCE = new NullRef();
+
     public NullRef() {
+    }
+
+    /** Preserve singleton identity after deserialization. */
+    private Object readResolve() {
+        return INSTANCE;
     }
 
     @Override

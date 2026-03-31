@@ -49,7 +49,7 @@ public final class JdiHeapWalker {
      */
     public ObjectRef capture(Value value) {
         if (value == null) {
-            return new NullRef();
+            return NullRef.INSTANCE;
         }
 
         if (value instanceof PrimitiveValue) {
@@ -64,7 +64,7 @@ public final class JdiHeapWalker {
             return captureObject((ObjectReference) value);
         }
 
-        return new NullRef();
+        return NullRef.INSTANCE;
     }
 
     /**
