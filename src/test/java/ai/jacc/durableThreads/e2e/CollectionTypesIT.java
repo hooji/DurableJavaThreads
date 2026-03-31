@@ -114,4 +114,47 @@ class CollectionTypesIT {
             Files.deleteIfExists(snapshotFile);
         }
     }
+
+    @Test
+    void enumSetAndEnumMapSurviveFreezeRestore() throws Exception {
+        Path snapshotFile = Files.createTempFile("enum-collections-", ".dat");
+        try {
+            int port = ChildJvm.findFreePort();
+            ChildJvm.Result result = ChildJvm.run(
+                    "ai.jacc.durableThreads.e2e.EnumCollectionFreezeProgram",
+                    classpath, port,
+                    new String[]{snapshotFile.toString()}, 60);
+
+            assertEquals(0, result.exitCode(),
+                    "Child JVM should exit cleanly. Stderr:\n" + result.stderr());
+
+            assertTrue(result.stdout().contains("RESTORE_COMPLETE"),
+                    "Restore should complete. Stdout:\n" + result.stdout()
+                    + "\nStderr:\n" + result.stderr());
+
+            // EnumSet
+            assertTrue(result.stdout().contains("EnumSet.size=2"),
+                    "EnumSet should have 2 elements. Stdout:\n" + result.stdout());
+            assertTrue(result.stdout().contains("EnumSet.contains.SPRING=true"),
+                    "EnumSet should contain SPRING. Stdout:\n" + result.stdout());
+            assertTrue(result.stdout().contains("EnumSet.contains.SUMMER=true"),
+                    "EnumSet should contain SUMMER. Stdout:\n" + result.stdout());
+            assertTrue(result.stdout().contains("EnumSet.contains.AUTUMN=false"),
+                    "EnumSet should not contain AUTUMN. Stdout:\n" + result.stdout());
+
+            // EnumMap
+            assertTrue(result.stdout().contains("EnumMap.size=3"),
+                    "EnumMap should have 3 entries. Stdout:\n" + result.stdout());
+            assertTrue(result.stdout().contains("EnumMap.SPRING=Spring Time"),
+                    "EnumMap should contain SPRING entry. Stdout:\n" + result.stdout());
+            assertTrue(result.stdout().contains("EnumMap.SUMMER=Summer Days"),
+                    "EnumMap should contain SUMMER entry. Stdout:\n" + result.stdout());
+            assertTrue(result.stdout().contains("EnumMap.WINTER=Winter Nights"),
+                    "EnumMap should contain WINTER entry. Stdout:\n" + result.stdout());
+            assertTrue(result.stdout().contains("EnumMap.AUTUMN=null"),
+                    "EnumMap should not contain AUTUMN entry. Stdout:\n" + result.stdout());
+        } finally {
+            Files.deleteIfExists(snapshotFile);
+        }
+    }
 }

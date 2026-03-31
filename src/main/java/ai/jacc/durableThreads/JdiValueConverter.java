@@ -1,7 +1,8 @@
 package ai.jacc.durableThreads;
 
 import com.sun.jdi.*;
-import ai.jacc.durableThreads.internal.*;
+import ai.jacc.durableThreads.internal.HeapObjectBridge;
+import ai.jacc.durableThreads.internal.JdiHelper;
 import ai.jacc.durableThreads.snapshot.*;
 
 import java.util.List;
@@ -19,9 +20,7 @@ final class JdiValueConverter {
     /**
      * Convert a snapshot ObjectRef to a JDI Value.
      */
-    static Value convertToJdiValue(VirtualMachine vm, ObjectRef ref,
-                                   java.util.Map<Long, Object> restoredHeap,
-                                   HeapRestorer heapRestorer) {
+    static Value convertToJdiValue(VirtualMachine vm, ObjectRef ref) {
         if (ref instanceof NullRef) {
             return null;
         } else if (ref instanceof PrimitiveRef) {

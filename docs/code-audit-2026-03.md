@@ -2,7 +2,7 @@
 
 **Date:** 2026-03-29 (updated)
 **Scope:** Full codebase review for reliability, correctness, race conditions, dead code, and code quality.
-**Codebase Version:** 1.3.5
+**Codebase Version:** 1.4.1
 
 ---
 
@@ -55,20 +55,6 @@ cleanup and is in good shape for enterprise use.
 **None.** All critical issues have been resolved.
 
 ### Medium — Worth Addressing
-
-#### C4. Thread Name Collision in JdiHelper.findThread()
-
-**File:** `JdiHelper.java:539-546`
-**Severity:** Medium
-
-Thread matching is done by name only. If two threads have the same name,
-the wrong thread could be frozen or restored. The code acknowledges this in
-comments (lines 532-537) but provides no mitigation.
-
-**Recommendation:** After finding a thread by name, validate that it is in the
-expected state (e.g., stack contains `freeze()` for freeze, or `WAITING` in
-`awaitGoLatch` for restore). This won't prevent collision entirely but will
-detect most mismatches.
 
 #### B3. Lambda Bridge Proxy Method Lookup by Name Only
 

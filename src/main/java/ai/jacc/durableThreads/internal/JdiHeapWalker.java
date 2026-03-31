@@ -49,7 +49,7 @@ public final class JdiHeapWalker {
      */
     public ObjectRef capture(Value value) {
         if (value == null) {
-            return new NullRef();
+            return NullRef.INSTANCE;
         }
 
         if (value instanceof PrimitiveValue) {
@@ -64,7 +64,7 @@ public final class JdiHeapWalker {
             return captureObject((ObjectReference) value);
         }
 
-        return new NullRef();
+        return NullRef.INSTANCE;
     }
 
     /**
@@ -205,8 +205,16 @@ public final class JdiHeapWalker {
             "java.util.LinkedHashMap",
             "java.util.TreeMap",
             "java.util.concurrent.ConcurrentHashMap",
-            "java.util.ArrayDeque"
+            "java.util.ArrayDeque",
+            "java.util.EnumMap"
     ));
+
+    /** EnumSet subtypes (JDK uses RegularEnumSet/JumboEnumSet internally). */
+    private static boolean isEnumSet(String className) {
+        return className.equals("java.util.EnumSet")
+                || className.equals("java.util.RegularEnumSet")
+                || className.equals("java.util.JumboEnumSet");
+    }
 
     /** JDK types whose content can be captured via toString(). */
     private static final Set<String> TOSTRING_CAPTURABLE = new HashSet<>(Arrays.asList(
@@ -216,7 +224,7 @@ public final class JdiHeapWalker {
     private void captureRegularObject(long snapId, ObjectReference objRef,
                                        ReferenceType refType, String className, String name) {
         // Known JDK collections: capture elements by walking internal storage
-        if (CAPTURABLE_COLLECTIONS.contains(className)) {
+        if (CAPTURABLE_COLLECTIONS.contains(className) || isEnumSet(className)) {
             captureCollection(snapId, objRef, refType, className, name);
             return;
         }
@@ -788,11 +796,32 @@ public final class JdiHeapWalker {
                     + "in the frozen thread instead.";
         }
 
-        // Thread, ClassLoader, etc. — fundamentally non-serializable
+        // Threading and concurrency types — fundamentally non-serializable
         if (className.equals("java.lang.Thread")
-                || className.equals("java.lang.ThreadGroup")) {
-            return "Thread objects cannot be frozen. Remove Thread references "
-                    + "from local variables reachable by the frozen thread.";
+                || className.equals("java.lang.ThreadGroup")
+                || className.equals("java.lang.ThreadLocal")
+                || className.equals("java.lang.InheritableThreadLocal")) {
+            return "Thread/ThreadLocal objects cannot be frozen. Remove references "
+                    + "to these types from local variables reachable by the frozen thread.";
+        }
+        if (className.startsWith("java.util.concurrent.locks.")
+                || className.startsWith("java.util.concurrent.atomic.")
+                || className.equals("java.util.concurrent.CountDownLatch")
+                || className.equals("java.util.concurrent.CyclicBarrier")
+                || className.equals("java.util.concurrent.Semaphore")
+                || className.equals("java.util.concurrent.Phaser")
+                || className.equals("java.util.concurrent.Exchanger")) {
+            return "Concurrency primitives (locks, latches, barriers, atomics) cannot "
+                    + "be frozen because they hold thread-specific state. Remove these "
+                    + "references from local variables reachable by the frozen thread.";
+        }
+        if (className.contains("ExecutorService")
+                || className.contains("ThreadPool")
+                || className.contains("ForkJoinPool")
+                || className.equals("java.util.concurrent.ScheduledThreadPoolExecutor")) {
+            return "Thread pool / executor types cannot be frozen. Remove executor "
+                    + "references from local variables reachable by the frozen thread, "
+                    + "or use named objects to substitute a fresh executor at restore time.";
         }
         if (className.contains("ClassLoader")) {
             return "ClassLoader objects cannot be frozen. Remove ClassLoader "
@@ -833,11 +862,122 @@ public final class JdiHeapWalker {
      */
     private void captureCollection(long snapId, ObjectReference objRef,
                                     ReferenceType refType, String className, String name) {
-        if (className.contains("Map")) {
+        if (isEnumSet(className)) {
+            captureEnumSet(snapId, objRef, refType, className, name);
+        } else if ("java.util.EnumMap".equals(className)) {
+            captureEnumMap(snapId, objRef, refType, className, name);
+        } else if (className.contains("Map")) {
             captureMap(snapId, objRef, refType, className, name);
         } else {
             captureListOrSet(snapId, objRef, refType, className, name);
         }
+    }
+
+    /**
+     * Capture an EnumSet by reading its element type and contained constants.
+     * RegularEnumSet uses a single long bitmask; JumboEnumSet uses long[].
+     * We store the element type name in fields["elementType"] and the enum
+     * constant names as elements (captured as enums via the normal path).
+     */
+    private void captureEnumSet(long snapId, ObjectReference objRef,
+                                 ReferenceType refType, String className, String name) {
+        List<ObjectRef> elements = new ArrayList<>();
+        String elementTypeName = "";
+
+        // Read the elementType class to record which enum this set holds
+        com.sun.jdi.Field elementTypeField = findField(refType, "elementType");
+        if (elementTypeField != null) {
+            Value etVal = objRef.getValue(elementTypeField);
+            if (etVal instanceof ClassObjectReference) {
+                elementTypeName = ((ClassObjectReference) etVal).reflectedType().name();
+            }
+        }
+
+        // Read the universe array (all constants of the enum)
+        com.sun.jdi.Field universeField = findField(refType, "universe");
+        if (universeField != null) {
+            Value uniVal = objRef.getValue(universeField);
+            if (uniVal instanceof ArrayReference) {
+                ArrayReference universe = (ArrayReference) uniVal;
+
+                // Read the bitmask(s) to know which constants are present
+                com.sun.jdi.Field elementsField = findField(refType, "elements");
+                if (elementsField != null) {
+                    Value elemsVal = objRef.getValue(elementsField);
+                    if (elemsVal instanceof LongValue) {
+                        // RegularEnumSet: single long bitmask
+                        long bits = ((LongValue) elemsVal).value();
+                        for (int i = 0; i < universe.length() && i < 64; i++) {
+                            if ((bits & (1L << i)) != 0) {
+                                elements.add(capture(universe.getValue(i)));
+                            }
+                        }
+                    } else if (elemsVal instanceof ArrayReference) {
+                        // JumboEnumSet: long[] bitmask array
+                        ArrayReference bitsArr = (ArrayReference) elemsVal;
+                        for (int wordIdx = 0; wordIdx < bitsArr.length(); wordIdx++) {
+                            Value wordVal = bitsArr.getValue(wordIdx);
+                            long bits = (wordVal instanceof LongValue) ? ((LongValue) wordVal).value() : 0;
+                            for (int bit = 0; bit < 64; bit++) {
+                                int enumIdx = wordIdx * 64 + bit;
+                                if (enumIdx >= universe.length()) break;
+                                if ((bits & (1L << bit)) != 0) {
+                                    elements.add(capture(universe.getValue(enumIdx)));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Map<String, ObjectRef> fields = new LinkedHashMap<>();
+        fields.put("elementType", new PrimitiveRef(elementTypeName));
+        snapshots.add(new ObjectSnapshot(snapId, "java.util.EnumSet",
+                ObjectKind.COLLECTION, fields, elements.toArray(new ObjectRef[0]), null, name));
+    }
+
+    /**
+     * Capture an EnumMap by reading keyUniverse and vals arrays.
+     * vals[i] holds the value for keyUniverse[i]; null means absent.
+     * Elements stored as interleaved key/value pairs like other maps.
+     */
+    private void captureEnumMap(long snapId, ObjectReference objRef,
+                                 ReferenceType refType, String className, String name) {
+        List<ObjectRef> pairs = new ArrayList<>();
+        String keyTypeName = "";
+
+        com.sun.jdi.Field keyTypeField = findField(refType, "keyType");
+        if (keyTypeField != null) {
+            Value ktVal = objRef.getValue(keyTypeField);
+            if (ktVal instanceof ClassObjectReference) {
+                keyTypeName = ((ClassObjectReference) ktVal).reflectedType().name();
+            }
+        }
+
+        com.sun.jdi.Field keyUniField = findField(refType, "keyUniverse");
+        com.sun.jdi.Field valsField = findField(refType, "vals");
+        if (keyUniField != null && valsField != null) {
+            Value kuVal = objRef.getValue(keyUniField);
+            Value vsVal = objRef.getValue(valsField);
+            if (kuVal instanceof ArrayReference && vsVal instanceof ArrayReference) {
+                ArrayReference keys = (ArrayReference) kuVal;
+                ArrayReference vals = (ArrayReference) vsVal;
+                int len = Math.min(keys.length(), vals.length());
+                for (int i = 0; i < len; i++) {
+                    Value v = vals.getValue(i);
+                    if (v != null) {
+                        pairs.add(capture(keys.getValue(i)));
+                        pairs.add(capture(v));
+                    }
+                }
+            }
+        }
+
+        Map<String, ObjectRef> fields = new LinkedHashMap<>();
+        fields.put("keyType", new PrimitiveRef(keyTypeName));
+        snapshots.add(new ObjectSnapshot(snapId, "java.util.EnumMap",
+                ObjectKind.COLLECTION, fields, pairs.toArray(new ObjectRef[0]), null, name));
     }
 
     private void captureListOrSet(long snapId, ObjectReference objRef,

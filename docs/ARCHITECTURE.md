@@ -1,6 +1,6 @@
 # Durable Java Threads -- Architecture Document
 
-> Generated from code analysis of v1.3.5. This document describes the library's
+> Generated from code analysis of v1.4.1. This document describes the library's
 > internal architecture, data flow, and design rationale purely from the source
 > code.
 
@@ -113,6 +113,7 @@ ai.jacc.durableThreads.internal
   |-- JdiHeapWalker             Captures object graph via JDI mirrors
   |-- HeapObjectBridge          Static map for passing objects to JDI
   |-- HeapRestorer              Rebuilds object graph from snapshot
+  |-- ObjenesisHolder           Shared ObjenesisStd instance
   |-- FrameFilter               Classifies frames as infrastructure vs. user
 
 ai.jacc.durableThreads.snapshot
@@ -142,7 +143,9 @@ ai.jacc.durableThreads.exception
 
 At class load time, `DurableTransformer` (registered by `DurableAgent.premain()`)
 intercepts every class except JDK internals, ASM/Objenesis (shaded), and the
-library's own infrastructure classes.
+library's own package (`ai/jacc/durableThreads/` and all subpackages). Specific
+subpackages can be whitelisted back in for instrumentation (e.g. `e2e/` for
+E2E test programs).
 
 For each eligible method (non-abstract, non-native, non-`<init>`, non-`<clinit>`),
 `PrologueInjector` performs a **single buffering pass**:
@@ -242,7 +245,7 @@ variables, handling:
 - **Primitives**: stored as `PrimitiveRef`
 - **Strings**: stored directly as `PrimitiveRef` with string value
 - **Arrays**: element-by-element capture
-- **Collections** (ArrayList, HashMap, etc.): internal storage walked via JDI
+- **Collections** (ArrayList, HashMap, EnumSet, EnumMap, etc.): internal storage walked via JDI
 - **Boxed primitives**: `value` field extracted
 - **Immutable JDK types** (BigDecimal, UUID, java.time.*): captured via JDI
   field access, stored as string representation
@@ -351,6 +354,22 @@ Within a single operation, thread coordination uses:
 - `CountDownLatch` for the restore go-latch
 - `volatile` fields for cross-thread visibility of JDI connection, JDWP port,
   and agent load state
+
+The `FreezeFlag` uses an `IdentityHashMap`-backed `synchronizedSet` of `Thread`
+references, avoiding thread ID reuse issues and ensuring GC eligibility once
+the frozen thread terminates.
+
+---
+
+## 8.1 Configurable Timeouts
+
+All key timeouts are configurable via system properties:
+
+| Property | Default | Location | Purpose |
+|----------|---------|----------|---------|
+| `durable.freeze.timeout.ms` | 30,000 ms | ThreadFreezer | Caller thread wait for freeze worker |
+| `durable.jdi.wait.timeout.ms` | 30,000 ms | ThreadRestorer | JDI worker wait for replay thread |
+| `durable.restore.timeout.seconds` | 300 s | ReplayState | Go-latch wait for `RestoredThread.resume()` |
 
 ---
 

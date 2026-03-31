@@ -84,9 +84,7 @@ final class JdiLocalSetter {
      *
      */
     static void setLocalsViaJdi(VirtualMachine vm, ThreadReference threadRef,
-                                ThreadSnapshot snapshot,
-                                Map<Long, Object> restoredHeap,
-                                HeapRestorer heapRestorer) {
+                                ThreadSnapshot snapshot) {
         try {
             List<StackFrame> jdiFrames = threadRef.frames();
             List<FrameSnapshot> snapshotFrames = snapshot.frames();
@@ -113,8 +111,7 @@ final class JdiLocalSetter {
                         && jdiMethodName.equals(snapFrame.methodName())) {
                         // With the direct-jump architecture, all frames are in their
                     // original code sections, so all locals should be in scope.
-                    setFrameLocals(vm, threadRef, jdiFrame, snapFrame,
-                            restoredHeap, heapRestorer);
+                    setFrameLocals(vm, threadRef, jdiFrame, snapFrame);
                     snapshotIdx--;
                 }
                 // If no match, skip this JDI frame (it's infrastructure / reflection)
@@ -135,9 +132,7 @@ final class JdiLocalSetter {
      * {@code ObjectCollectedException}.</p>
      */
     private static void setFrameLocals(VirtualMachine vm, ThreadReference threadRef,
-                                       StackFrame jdiFrame, FrameSnapshot snapFrame,
-                                       Map<Long, Object> restoredHeap,
-                                       HeapRestorer heapRestorer) {
+                                       StackFrame jdiFrame, FrameSnapshot snapFrame) {
         Method method = jdiFrame.location().method();
 
         List<com.sun.jdi.LocalVariable> jdiLocals;
@@ -176,8 +171,7 @@ final class JdiLocalSetter {
             com.sun.jdi.LocalVariable jdiLocal = jdiLocalsByName.get(snapLocal.name());
             if (jdiLocal == null) continue;
 
-            Value jdiValue = JdiValueConverter.convertToJdiValue(vm, snapLocal.value(),
-                    restoredHeap, heapRestorer);
+            Value jdiValue = JdiValueConverter.convertToJdiValue(vm, snapLocal.value());
             boolean isNull = snapLocal.value() instanceof NullRef;
 
             if (jdiValue instanceof ObjectReference) {
@@ -196,8 +190,7 @@ final class JdiLocalSetter {
                         break;
                     } catch (ObjectCollectedException alreadyGone) {
                         // Re-resolve from HeapObjectBridge for next attempt
-                        jdiValue = JdiValueConverter.convertToJdiValue(vm, snapLocal.value(),
-                                restoredHeap, heapRestorer);
+                        jdiValue = JdiValueConverter.convertToJdiValue(vm, snapLocal.value());
                         if (!(jdiValue instanceof ObjectReference)) {
                             break; // resolved to non-object (shouldn't happen) — give up
                         }

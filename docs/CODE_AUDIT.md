@@ -1,6 +1,7 @@
 # Durable Java Threads -- Code Audit
 
-> Audit performed against v1.3.5 source code. Focus: enterprise hardening,
+> Audit originally performed against v1.3.5 source code. Updated 2026-03-31 to
+> reflect fixes applied through v1.4.1. Focus: enterprise hardening,
 > bug detection, simplification opportunities, and robustness improvements.
 
 ---
@@ -492,24 +493,25 @@ for debugging and tooling.
 
 ## Summary Table
 
-| ID | Severity | Category | Description |
-|----|----------|----------|-------------|
-| C2 | Critical | Dead code | Unused parameters in `convertToJdiValue()` |
-| C3 | Critical | Cleanup | `HeapObjectBridge.clear()` not in finally block |
-| C5 | Critical | Performance | Aggressive JDI suspend/resume polling |
-| H1 | High | Robustness | `ReplayState` static fields lack cleanup guarantees |
-| H3 | High | API design | `BytecodeMismatchException` reused for class structure |
-| H4 | High | Maintainability | Fragile excluded-class list in transformer |
-| H5 | High | Correctness | UncaughtExceptionHandler replacement is permanent |
-| M1 | Medium | Simplification | Duplicate fields in InvokeInfo/InvokeMarker |
-| M2 | Medium | Simplification | Duplicate class file parsing in two scanners |
-| M3 | Medium | Simplification | Redundant `tryCreateBoxedPrimitive()` call |
-| M5 | Medium | Memory | NullRef should be singleton |
-| M6 | Medium | Memory | ObjenesisStd created per-call |
-| L1 | Low | Enterprise | Raw System.out/err instead of logging framework |
-| L2 | Low | Immutability | Mutable byte[] exposed via getters |
-| L3 | Low | Immutability | Mutable Lists exposed via getters |
-| L4 | Low | Resilience | Transformer throws instead of returning null |
-| L5 | Low | Performance | ExecutorService created per port probe |
-| L7 | Low | Completeness | Missing collection types in HeapRestorer |
-| L8 | Low | Data quality | Slot index always 0 for non-this locals |
+| ID | Severity | Category | Description | Status |
+|----|----------|----------|-------------|--------|
+| C2 | Critical | Dead code | Unused parameters in `convertToJdiValue()` | **Fixed** — `restoredHeap` and `heapRestorer` params removed |
+| C3 | Critical | Cleanup | `HeapObjectBridge.clear()` not in finally block | **Analyzed — safe** (see code-audit-2026-03.md) |
+| C4 | Critical | Correctness | `FreezeFlag` thread ID reuse | **Fixed** — uses `Set<Thread>` with IdentityHashMap |
+| C5 | Critical | Performance | Aggressive JDI suspend/resume polling | **Fixed** — polling interval reduced to 1ms |
+| H1 | High | Robustness | `ReplayState` static fields lack cleanup guarantees | **Mitigated** — old multi-phase latches removed; remaining fields protected by `synchronized(Durable.class)` |
+| H3 | High | API design | `BytecodeMismatchException` reused for class structure | Open |
+| H4 | High | Maintainability | Fragile excluded-class list in transformer | **Fixed** — replaced with `ai/jacc/durableThreads/` prefix + whitelist |
+| H5 | High | Correctness | UncaughtExceptionHandler replacement is permanent | Open |
+| M1 | Medium | Simplification | Duplicate fields in InvokeInfo/InvokeMarker | Open |
+| M2 | Medium | Simplification | Duplicate class file parsing in two scanners | Open |
+| M3 | Medium | Simplification | Redundant `tryCreateBoxedPrimitive()` call | Open |
+| M5 | Medium | Memory | NullRef should be singleton | **Fixed** — `NullRef.INSTANCE` with `readResolve()` |
+| M6 | Medium | Memory | ObjenesisStd created per-call | **Fixed** — shared `ObjenesisHolder` singleton |
+| L1 | Low | Enterprise | Raw System.out/err instead of logging framework | Open |
+| L2 | Low | Immutability | Mutable byte[] exposed via getters | Open |
+| L3 | Low | Immutability | Mutable Lists exposed via getters | Open |
+| L4 | Low | Resilience | Transformer throws instead of returning null | Open |
+| L5 | Low | Performance | ExecutorService created per port probe | Open |
+| L7 | Low | Completeness | Missing collection types in HeapRestorer | **Fixed** — EnumSet and EnumMap support added |
+| L8 | Low | Data quality | Slot index always 0 for non-this locals | **Fixed** — broken slot reflection removed; restore matches by name |

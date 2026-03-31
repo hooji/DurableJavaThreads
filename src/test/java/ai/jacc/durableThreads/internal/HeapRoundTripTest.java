@@ -423,6 +423,129 @@ class HeapRoundTripTest {
         assertEquals("Charlie", alice.friend.name);
     }
 
+    // ===================================================================
+    // EnumSet and EnumMap tests
+    // ===================================================================
+
+    enum Color { RED, GREEN, BLUE }
+
+    @Test
+    void restoreEnumSet() {
+        // EnumSet with two enum elements captured as enum snapshots
+        // The enum elements are stored as ObjectKind.STRING with value=constantName
+        Map<String, ObjectRef> redFields = new LinkedHashMap<>();
+        redFields.put("value", new PrimitiveRef("RED"));
+        Map<String, ObjectRef> blueFields = new LinkedHashMap<>();
+        blueFields.put("value", new PrimitiveRef("BLUE"));
+
+        Map<String, ObjectRef> enumSetFields = new LinkedHashMap<>();
+        enumSetFields.put("elementType", new PrimitiveRef(Color.class.getName()));
+
+        List<ObjectSnapshot> heap = Arrays.asList(
+                new ObjectSnapshot(1L, "java.util.EnumSet", ObjectKind.COLLECTION,
+                        enumSetFields,
+                        new ObjectRef[]{new HeapRef(2L), new HeapRef(3L)}),
+                new ObjectSnapshot(2L, Color.class.getName(), ObjectKind.STRING,
+                        redFields, null),
+                new ObjectSnapshot(3L, Color.class.getName(), ObjectKind.STRING,
+                        blueFields, null)
+        );
+
+        HeapRestorer restorer = new HeapRestorer();
+        Map<Long, Object> restored = restorer.restoreAll(heap);
+
+        Object obj = restored.get(1L);
+        assertInstanceOf(java.util.EnumSet.class, obj);
+        @SuppressWarnings("unchecked")
+        java.util.EnumSet<Color> set = (java.util.EnumSet<Color>) obj;
+        assertEquals(2, set.size());
+        assertTrue(set.contains(Color.RED));
+        assertTrue(set.contains(Color.BLUE));
+        assertFalse(set.contains(Color.GREEN));
+    }
+
+    @Test
+    void restoreEmptyEnumSet() {
+        Map<String, ObjectRef> enumSetFields = new LinkedHashMap<>();
+        enumSetFields.put("elementType", new PrimitiveRef(Color.class.getName()));
+
+        List<ObjectSnapshot> heap = Arrays.asList(
+                new ObjectSnapshot(1L, "java.util.EnumSet", ObjectKind.COLLECTION,
+                        enumSetFields, new ObjectRef[0])
+        );
+
+        HeapRestorer restorer = new HeapRestorer();
+        Map<Long, Object> restored = restorer.restoreAll(heap);
+
+        Object obj = restored.get(1L);
+        assertInstanceOf(java.util.EnumSet.class, obj);
+        @SuppressWarnings("unchecked")
+        java.util.EnumSet<Color> set = (java.util.EnumSet<Color>) obj;
+        assertTrue(set.isEmpty());
+    }
+
+    @Test
+    void restoreEnumMap() {
+        // EnumMap with two entries: RED -> "stop", BLUE -> "go"
+        Map<String, ObjectRef> redFields = new LinkedHashMap<>();
+        redFields.put("value", new PrimitiveRef("RED"));
+        Map<String, ObjectRef> blueFields = new LinkedHashMap<>();
+        blueFields.put("value", new PrimitiveRef("BLUE"));
+        Map<String, ObjectRef> stopFields = new LinkedHashMap<>();
+        stopFields.put("value", new PrimitiveRef("stop"));
+        Map<String, ObjectRef> goFields = new LinkedHashMap<>();
+        goFields.put("value", new PrimitiveRef("go"));
+
+        Map<String, ObjectRef> enumMapFields = new LinkedHashMap<>();
+        enumMapFields.put("keyType", new PrimitiveRef(Color.class.getName()));
+
+        List<ObjectSnapshot> heap = Arrays.asList(
+                new ObjectSnapshot(1L, "java.util.EnumMap", ObjectKind.COLLECTION,
+                        enumMapFields,
+                        new ObjectRef[]{new HeapRef(2L), new HeapRef(4L), new HeapRef(3L), new HeapRef(5L)}),
+                new ObjectSnapshot(2L, Color.class.getName(), ObjectKind.STRING,
+                        redFields, null),
+                new ObjectSnapshot(3L, Color.class.getName(), ObjectKind.STRING,
+                        blueFields, null),
+                new ObjectSnapshot(4L, "java.lang.String", ObjectKind.STRING,
+                        stopFields, null),
+                new ObjectSnapshot(5L, "java.lang.String", ObjectKind.STRING,
+                        goFields, null)
+        );
+
+        HeapRestorer restorer = new HeapRestorer();
+        Map<Long, Object> restored = restorer.restoreAll(heap);
+
+        Object obj = restored.get(1L);
+        assertInstanceOf(java.util.EnumMap.class, obj);
+        @SuppressWarnings("unchecked")
+        java.util.EnumMap<Color, String> map = (java.util.EnumMap<Color, String>) obj;
+        assertEquals(2, map.size());
+        assertEquals("stop", map.get(Color.RED));
+        assertEquals("go", map.get(Color.BLUE));
+        assertNull(map.get(Color.GREEN));
+    }
+
+    @Test
+    void restoreEmptyEnumMap() {
+        Map<String, ObjectRef> enumMapFields = new LinkedHashMap<>();
+        enumMapFields.put("keyType", new PrimitiveRef(Color.class.getName()));
+
+        List<ObjectSnapshot> heap = Arrays.asList(
+                new ObjectSnapshot(1L, "java.util.EnumMap", ObjectKind.COLLECTION,
+                        enumMapFields, new ObjectRef[0])
+        );
+
+        HeapRestorer restorer = new HeapRestorer();
+        Map<Long, Object> restored = restorer.restoreAll(heap);
+
+        Object obj = restored.get(1L);
+        assertInstanceOf(java.util.EnumMap.class, obj);
+        @SuppressWarnings("unchecked")
+        java.util.EnumMap<Color, String> map = (java.util.EnumMap<Color, String>) obj;
+        assertTrue(map.isEmpty());
+    }
+
     @Test
     void selfReferentialObjectPreservesIdentity() {
         // A Person whose friend is itself

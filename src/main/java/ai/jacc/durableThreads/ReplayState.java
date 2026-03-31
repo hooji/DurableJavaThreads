@@ -283,7 +283,7 @@ public final class ReplayState {
     public static Object dummyInstance(String className) {
         try {
             Class<?> clazz = Class.forName(className);
-            return new org.objenesis.ObjenesisStd(true).newInstance(clazz);
+            return ai.jacc.durableThreads.internal.ObjenesisHolder.get().newInstance(clazz);
         } catch (Exception e) {
             throw new RuntimeException(
                     "Failed to create dummy receiver instance for replay of class '"
