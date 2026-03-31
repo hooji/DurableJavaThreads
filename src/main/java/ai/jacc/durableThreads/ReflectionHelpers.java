@@ -136,8 +136,7 @@ final class ReflectionHelpers {
         // Fall back to creating an uninitialized instance via Objenesis —
         // the actual field values will be set later by the JDI worker.
         try {
-            org.objenesis.ObjenesisStd objenesis = new org.objenesis.ObjenesisStd(true);
-            return objenesis.newInstance(clazz);
+            return ai.jacc.durableThreads.internal.ObjenesisHolder.get().newInstance(clazz);
         } catch (Exception e) {
             throw new RuntimeException("Cannot create receiver instance of " + clazz.getName()
                     + ". The 'this' reference was not captured in the snapshot and Objenesis"

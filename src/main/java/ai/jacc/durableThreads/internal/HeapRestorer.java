@@ -1,7 +1,6 @@
 package ai.jacc.durableThreads.internal;
 
 import ai.jacc.durableThreads.snapshot.*;
-import org.objenesis.ObjenesisStd;
 
 import java.lang.reflect.Array;
 import java.lang.reflect.Field;
@@ -15,8 +14,6 @@ import java.util.Map;
  * Uses Objenesis to instantiate objects without calling constructors.
  */
 public final class HeapRestorer {
-
-    private static final ObjenesisStd OBJENESIS = new ObjenesisStd(true);
 
     private final Map<Long, Object> restored = new HashMap<>();
     private final Map<Long, ObjectSnapshot> snapshotMap = new HashMap<>();
@@ -175,7 +172,7 @@ public final class HeapRestorer {
                 }
                 try {
                     Class<?> clazz = Class.forName(snap.className());
-                    obj = OBJENESIS.newInstance(clazz);
+                    obj = ObjenesisHolder.get().newInstance(clazz);
                 } catch (ClassNotFoundException e) {
                     // Lambda/hidden classes ($$Lambda) can't be found by name.
                     // Use a placeholder — the lambda instance is not needed for
@@ -265,7 +262,7 @@ public final class HeapRestorer {
         if ("java.util.ArrayDeque".equals(className)) return new java.util.ArrayDeque<>();
         try {
             Class<?> clazz = Class.forName(className);
-            return OBJENESIS.newInstance(clazz);
+            return ObjenesisHolder.get().newInstance(clazz);
         } catch (ClassNotFoundException e) {
             throw new RuntimeException("Cannot create collection: " + className, e);
         }
