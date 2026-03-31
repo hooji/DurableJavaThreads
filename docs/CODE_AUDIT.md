@@ -1,7 +1,7 @@
 # Durable Java Threads -- Code Audit
 
 > Audit originally performed against v1.3.5 source code. Updated 2026-03-31 to
-> reflect fixes applied through v1.4.0. Focus: enterprise hardening,
+> reflect fixes applied through v1.4.1. Focus: enterprise hardening,
 > bug detection, simplification opportunities, and robustness improvements.
 
 ---

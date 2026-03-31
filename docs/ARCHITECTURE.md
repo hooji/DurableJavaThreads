@@ -1,6 +1,6 @@
 # Durable Java Threads -- Architecture Document
 
-> Generated from code analysis of v1.4.0. This document describes the library's
+> Generated from code analysis of v1.4.1. This document describes the library's
 > internal architecture, data flow, and design rationale purely from the source
 > code.
 

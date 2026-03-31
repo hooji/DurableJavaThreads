@@ -1,6 +1,6 @@
 # Durable Java Threads — Architecture Deep Dive
 
-**Version:** 1.4.0
+**Version:** 1.4.1
 **Date:** 2026-03-31
 
 ## 1. Overview
