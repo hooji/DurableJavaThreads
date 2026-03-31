@@ -76,7 +76,9 @@ The agent also caches the detected JDWP port so that repeated freeze/restore ope
 
 A `ClassFileTransformer` that instruments every loaded class except:
 - JDK classes (`java/`, `javax/`, `jdk/`, `sun/`, `com/sun/`)
-- The library's own infrastructure classes (to avoid recursion)
+- The library's own package (`ai/jacc/durableThreads/` and all subpackages) — excluded
+  via a single prefix check to avoid recursion. Specific subpackages can be whitelisted
+  back in via `WHITELISTED_PREFIXES` (e.g. `e2e/` for E2E test programs)
 - Shaded dependencies (ASM, Objenesis)
 
 For each eligible class:

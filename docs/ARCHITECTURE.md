@@ -142,7 +142,9 @@ ai.jacc.durableThreads.exception
 
 At class load time, `DurableTransformer` (registered by `DurableAgent.premain()`)
 intercepts every class except JDK internals, ASM/Objenesis (shaded), and the
-library's own infrastructure classes.
+library's own package (`ai/jacc/durableThreads/` and all subpackages). Specific
+subpackages can be whitelisted back in for instrumentation (e.g. `e2e/` for
+E2E test programs).
 
 For each eligible method (non-abstract, non-native, non-`<init>`, non-`<clinit>`),
 `PrologueInjector` performs a **single buffering pass**:

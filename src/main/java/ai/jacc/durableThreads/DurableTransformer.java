@@ -21,6 +21,11 @@ public final class DurableTransformer implements ClassFileTransformer {
             "org/objectweb/asm/",
             "org/objenesis/",
             "ai/jacc/durableThreads/shaded/",
+            // The library's own package — instrumenting these causes recursion.
+            // New classes added to this package are automatically excluded.
+            // Subpackages that contain user test code (e.g. e2e/) are whitelisted
+            // below in WHITELISTED_PREFIXES.
+            "ai/jacc/durableThreads/",
             // JDK internals — COMPUTE_FRAMES can't resolve bootstrap class hierarchies,
             // and instrumenting JDK classes would cause stability issues
             "java/",
@@ -32,24 +37,9 @@ public final class DurableTransformer implements ClassFileTransformer {
             "com/intellij/",
     };
 
-    /** Specific library classes that must NOT be instrumented (to avoid recursion). */
-    private static final String[] EXCLUDED_CLASSES = {
-            "ai/jacc/durableThreads/Durable",
-            "ai/jacc/durableThreads/DurableAgent",
-            "ai/jacc/durableThreads/DurableTransformer",
-            "ai/jacc/durableThreads/OperandStackSimulator",
-            "ai/jacc/durableThreads/PrologueEmitter",
-            "ai/jacc/durableThreads/PrologueInjector",
-            "ai/jacc/durableThreads/PrologueTypes",
-            "ai/jacc/durableThreads/ReflectionHelpers",
-            "ai/jacc/durableThreads/ReplayState",
-            "ai/jacc/durableThreads/RestoredThread",
-            "ai/jacc/durableThreads/SnapshotFileWriter",
-            "ai/jacc/durableThreads/SnapshotValidator",
-            "ai/jacc/durableThreads/JdiLocalSetter",
-            "ai/jacc/durableThreads/JdiValueConverter",
-            "ai/jacc/durableThreads/ThreadFreezer",
-            "ai/jacc/durableThreads/ThreadRestorer",
+    /** Subpackages under an excluded prefix that SHOULD be instrumented (user test code). */
+    private static final String[] WHITELISTED_PREFIXES = {
+            "ai/jacc/durableThreads/e2e/",
     };
 
     @Override
@@ -57,25 +47,23 @@ public final class DurableTransformer implements ClassFileTransformer {
                             ProtectionDomain protectionDomain, byte[] classfileBuffer) {
         if (className == null) return null;
 
-        // Don't instrument excluded prefixes (JDK, shaded deps)
-        for (String prefix : EXCLUDED_PREFIXES) {
+        // Whitelist check: some subpackages under excluded prefixes contain
+        // user code that must be instrumented (e.g. E2E test programs).
+        boolean whitelisted = false;
+        for (String prefix : WHITELISTED_PREFIXES) {
             if (className.startsWith(prefix)) {
-                return null;
+                whitelisted = true;
+                break;
             }
         }
 
-        // Don't instrument specific library classes (to avoid recursion)
-        for (String excluded : EXCLUDED_CLASSES) {
-            if (className.equals(excluded) || className.startsWith(excluded + "$")) {
-                return null;
+        // Don't instrument excluded prefixes (unless whitelisted)
+        if (!whitelisted) {
+            for (String prefix : EXCLUDED_PREFIXES) {
+                if (className.startsWith(prefix)) {
+                    return null;
+                }
             }
-        }
-
-        // Don't instrument internal subpackages
-        if (className.startsWith("ai/jacc/durableThreads/internal/")
-                || className.startsWith("ai/jacc/durableThreads/snapshot/")
-                || className.startsWith("ai/jacc/durableThreads/exception/")) {
-            return null;
         }
 
         try {

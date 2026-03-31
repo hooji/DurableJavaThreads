@@ -501,7 +501,7 @@ for debugging and tooling.
 | C5 | Critical | Performance | Aggressive JDI suspend/resume polling | **Fixed** — polling interval reduced to 1ms |
 | H1 | High | Robustness | `ReplayState` static fields lack cleanup guarantees | **Mitigated** — old multi-phase latches removed; remaining fields protected by `synchronized(Durable.class)` |
 | H3 | High | API design | `BytecodeMismatchException` reused for class structure | Open |
-| H4 | High | Maintainability | Fragile excluded-class list in transformer | Open |
+| H4 | High | Maintainability | Fragile excluded-class list in transformer | **Fixed** — replaced with `ai/jacc/durableThreads/` prefix + whitelist |
 | H5 | High | Correctness | UncaughtExceptionHandler replacement is permanent | Open |
 | M1 | Medium | Simplification | Duplicate fields in InvokeInfo/InvokeMarker | Open |
 | M2 | Medium | Simplification | Duplicate class file parsing in two scanners | Open |
