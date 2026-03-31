@@ -1,7 +1,7 @@
 # Durable Java Threads — Architecture Deep Dive
 
-**Version:** 1.3.1
-**Date:** 2026-03-28
+**Version:** 1.4.0
+**Date:** 2026-03-31
 
 ## 1. Overview
 
@@ -152,11 +152,9 @@ A thread-local state machine that controls replay behavior:
 - **`isReplayThread()`** — checked at the top of every instrumented method's prologue. Returns false during normal execution (single not-taken branch).
 - **`currentResumeIndex()`** — returns the invoke index for the current frame's tableswitch dispatch.
 - **`advanceFrame()`** / **`isLastFrame()`** — frame depth tracking.
-- **`resumePoint()`** — blocking point in the deepest frame (unused in the current single-pass architecture but retained for the latch protocol).
-- **`localsReady()`** — armed/disarmed gate for post-invoke synchronization.
 - **Go-latch** — the final blocking point; `RestoredThread.resume()` counts it down.
 - **`restoreInProgress`** — flag so `freeze()` knows to block instead of actually freezing.
-- **Boxing/unboxing helpers** — must live here so `RawBytecodeScanner` filters them out (preventing invoke index corruption).
+- **`resolveReceiver(String)`** — retrieves the pre-resolved "this" for the current frame, or creates a dummy instance via Objenesis.
 
 ### 3.5 ThreadFreezer (Freeze Operation)
 
@@ -165,20 +163,19 @@ A thread-local state machine that controls replay behavior:
 The freeze sequence:
 
 1. **Caller (Thread A)** calls `Durable.freeze()` which calls `ThreadFreezer.freeze()`.
-2. A **worker thread (Thread B)** is spawned. Thread A waits on a lock with a 30-second timeout.
-3. Thread B connects to the JVM via JDI (`JdiHelper.connect()`).
+2. A **worker thread (Thread B)** is spawned. Thread A waits on a lock with a configurable timeout (default 30s, `durable.freeze.timeout.ms`).
+3. Thread B connects to the JVM via JDI (`JdiHelper.getConnection()`).
 4. Thread B finds Thread A in JDI (`JdiHelper.findThread()`).
-5. Thread B **double-suspends** Thread A (suspend count = 2, resilient against spurious resumes).
-6. Pending JDI events are drained to prevent stale resume events from prior cycles.
-7. Thread B captures the snapshot via `captureSnapshot()`:
+5. Thread B suspends Thread A via JDI.
+6. Thread B captures the snapshot via `captureSnapshot()`:
    - Walks JDI stack frames bottom-to-top (filtering out infrastructure frames).
    - Skips lambda frames (`$$Lambda`), capturing their functional interface for proxy creation.
    - For each user frame: computes invoke index, validates operand stack, captures locals.
    - Walks the object graph via `JdiHeapWalker`.
-8. Thread B calls the user's handler with the snapshot.
-9. Thread B **double-resumes** Thread A.
-10. Thread B marks Thread A as frozen via `FreezeFlag` and interrupts it.
-11. Thread A wakes up, detects the freeze flag, and throws `ThreadFrozenError` to terminate.
+7. Thread B resumes Thread A (from JDI suspension).
+8. Thread B calls the user's handler with the snapshot — **outside** JDI suspension, eliminating deadlock risk if the handler acquires locks held by the frozen thread.
+9. Thread B marks Thread A as frozen via `FreezeFlag` and interrupts it.
+10. Thread A wakes up, detects the freeze flag, and throws `ThreadFrozenError` to terminate.
 
 #### Thread Termination Safety
 
@@ -190,21 +187,21 @@ The `blockForever()` method is a safety net: if the interrupt/flag mechanism som
 
 The restore sequence:
 
-1. **Validate** the snapshot: bytecode hashes, class structure hashes.
+1. **Validate** the snapshot: bytecode hashes, class structure hashes (`SnapshotValidator`).
 2. **Load** all classes referenced in the snapshot (triggers instrumentation).
 3. **Rebuild the heap** via `HeapRestorer` (Objenesis for constructor-less instantiation).
 4. **Populate `HeapObjectBridge`** with restored objects for JDI access.
 5. **Compute resume indices** from the snapshot's stored invoke indices.
-6. **Pre-resolve frame receivers** ("this" for each frame).
+6. **Pre-resolve frame receivers** ("this" for each frame), including lambda bridge proxies.
 7. **Create replay thread** with `ReplayState.activateWithLatch()` and `restoreInProgress = true`.
 8. **Start the replay thread** — it replays the call stack via the instrumented prologues.
-9. **Start JDI worker thread** which:
-   - Waits for the replay thread to reach `awaitGoLatch()` inside `freeze()`.
-   - Pre-loads all classes referenced by snapshot locals.
-   - Double-suspends the replay thread.
-   - Sets ALL local variables in ALL frames in a single pass via JDI.
-   - Double-resumes the replay thread.
-10. **Return `RestoredThread`** — the thread is blocked on the go-latch with all state restored.
+9. **Start JDI worker thread** (`runJdiRestore`) which:
+   - Waits for the replay thread to reach `awaitGoLatch()` inside `freeze()` (configurable timeout via `durable.jdi.wait.timeout.ms`, default 30s).
+   - Pre-loads all classes referenced by snapshot locals (`JdiLocalSetter.preloadSnapshotClasses()`).
+   - Suspends the replay thread.
+   - Sets ALL local variables in ALL frames in a single pass via JDI (`JdiLocalSetter.setLocalsViaJdi()`).
+   - Resumes the replay thread.
+10. **Return `RestoredThread`** — the thread is blocked on the go-latch with all state restored (go-latch timeout configurable via `durable.restore.timeout.seconds`, default 300s).
 
 ### 3.7 Snapshot Model
 
@@ -289,17 +286,13 @@ Resume stubs jump to `BEFORE_INVOKE` labels in the original code rather than re-
 - All frames end up in their original code sections.
 - All local variables are naturally in scope.
 - JDI can set ALL locals in ALL frames in one pass.
-- No multi-phase latch protocol needed (though the infrastructure remains).
+- No multi-phase latch protocol needed.
 
 ### 4.4 Invoke Index (Not BCI)
 
 The snapshot stores invoke indices (0, 1, 2, ...) rather than raw bytecode indices. This decouples the snapshot from exact bytecode layout, making it resilient to minor recompilation changes that don't alter the method's invoke sequence.
 
-### 4.5 Double-Suspend Pattern
-
-JDI suspend/resume use a reference count. The library double-suspends (count = 2) so that a single spurious resume event (from stale JDI events in multi-cycle scenarios) doesn't actually run the thread.
-
-### 4.6 Fail-Fast on Uncapturable Types
+### 4.5 Fail-Fast on Uncapturable Types
 
 Rather than silently producing incorrect snapshots, `JdiHeapWalker` throws `UncapturableTypeException` for JDK types it can't handle (Optional, Pattern, unmodifiable collections, I/O types, etc.) with specific advice for each type.
 
@@ -318,9 +311,9 @@ Snapshots use standard Java serialization (`ObjectOutputStream`/`ObjectInputStre
 ## 7. Thread Safety Model
 
 - `Durable.freeze()` and `Durable.restore()` are serialized via `synchronized(Durable.class)`.
-- `ReplayState` uses volatile fields and `CountDownLatch` instances guarded by `LATCH_LOCK`.
+- `ReplayState` uses a volatile `CountDownLatch` (go-latch) and volatile `restoreInProgress`/`restoreError` fields, all protected by the `Durable.class` serialization.
 - `InvokeRegistry` and `HeapObjectBridge` use `ConcurrentHashMap`.
-- The `FreezeFlag` in `ThreadFreezer` uses a `Collections.synchronizedSet`.
+- The `FreezeFlag` in `ThreadFreezer` uses an `IdentityHashMap`-backed `synchronizedSet` of `Thread` references (avoids thread ID reuse issues).
 
 ## 8. Error Handling Hierarchy
 
@@ -329,7 +322,6 @@ Snapshots use standard Java serialization (`ObjectOutputStream`/`ObjectInputStre
 | `AgentNotLoadedException` | `freeze()`/`restore()` called without `-javaagent` |
 | `ThreadFrozenError` (Error) | Internal: terminates the frozen thread |
 | `NonEmptyStackException` | Operand stack non-empty at a frame's call site |
-| `LambdaFrameException` | Lambda frame in call stack (declaration only; lambda dispatch is handled via bridge proxies) |
 | `BytecodeMismatchException` | Method bytecode or class structure changed between freeze and restore |
 | `UncapturableTypeException` | Object graph contains a type that can't be captured/restored correctly |
 
@@ -341,16 +333,21 @@ ai.jacc.durableThreads/
 ├── DurableAgent.java         — Java agent entry point
 ├── DurableTransformer.java   — ClassFileTransformer
 ├── PrologueInjector.java     — ASM bytecode injection
+├── PrologueEmitter.java      — Emits replay prologue bytecode
+├── PrologueTypes.java        — Shared data types for injection pipeline
+├── OperandStackSimulator.java — Operand stack type tracking
 ├── ReplayState.java          — Thread-local replay state machine
 ├── ThreadFreezer.java        — Freeze implementation
-├── ThreadRestorer.java       — Restore implementation
+├── ThreadRestorer.java       — Restore orchestration
+├── JdiLocalSetter.java       — JDI local variable setting (frame matching, GC pinning)
+├── JdiValueConverter.java    — Snapshot ObjectRef → JDI Value conversion
+├── ReflectionHelpers.java    — Method lookup, dummy args, receiver creation
+├── SnapshotValidator.java    — Bytecode/structure hash validation
 ├── RestoredThread.java       — Handle to a restored thread
 ├── SnapshotFileWriter.java   — File-based snapshot persistence
-├── Version.java              — Version constant
 ├── exception/
 │   ├── AgentNotLoadedException.java
 │   ├── BytecodeMismatchException.java
-│   ├── LambdaFrameException.java
 │   ├── NonEmptyStackException.java
 │   ├── ThreadFrozenError.java
 │   └── UncapturableTypeException.java
@@ -360,7 +357,6 @@ ai.jacc.durableThreads/
 │   ├── FrameFilter.java
 │   ├── HeapObjectBridge.java
 │   ├── HeapRestorer.java
-│   ├── HeapWalker.java
 │   ├── InvokeRegistry.java
 │   ├── JdiHeapWalker.java
 │   ├── JdiHelper.java

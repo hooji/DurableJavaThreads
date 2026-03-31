@@ -1,7 +1,11 @@
 # Dead Code and Legacy Code Candidates
 
-**Date:** 2026-03-28
-**Purpose:** Inventory of code that appears to be dead or left over from previous architectures, with recommendations for each item.
+**Date:** 2026-03-28 (updated 2026-03-31)
+**Purpose:** Inventory of code that appeared to be dead or left over from previous architectures, with recommendations for each item.
+
+> **Status as of v1.4.0:** Items 1–6, 8–9 have been **removed**. Item 7 (HeapWalker)
+> has been **moved to test sources**. Items 10–12 are resolved. See individual
+> status annotations below.
 
 ---
 
@@ -12,10 +16,11 @@
 
 ---
 
-## 1. ReplayState: Multi-Phase Latch Infrastructure
+## 1. ReplayState: Multi-Phase Latch Infrastructure — ✅ REMOVED
 
 **Files:** `ReplayState.java:18-24, 52-63, 195-275, 284-285`
 **Confidence:** 99%+ remove
+**Status:** **Removed in v1.4.0.** All multi-phase latch infrastructure has been deleted.
 
 The following are remnants of the old two-phase restore protocol, which was replaced by the single-pass direct-jump architecture:
 
@@ -49,10 +54,11 @@ These tests exercise `resumePoint()`, `releaseResumePoint()`, and `signalRestore
 
 ---
 
-## 2. ReplayState: Boxing/Unboxing Helpers
+## 2. ReplayState: Boxing/Unboxing Helpers — ✅ REMOVED
 
 **File:** `ReplayState.java:395-411`
 **Confidence:** 99%+ remove
+**Status:** **Removed in v1.4.0.**
 
 16 static methods (`boxBoolean`, `boxByte`, ..., `unboxBoolean`, `unboxByte`, ...) that were used by the old resume stubs to box return values into `__retVal` and unbox them after the post-invoke jump. The direct-jump architecture doesn't box/unbox return values — stubs jump to BEFORE_INVOKE, not POST_INVOKE.
 
@@ -62,10 +68,11 @@ The comment says "These MUST live in ReplayState so that RawBytecodeScanner filt
 
 ---
 
-## 3. PrologueInjector: Dead Methods
+## 3. PrologueInjector: Dead Methods — ✅ REMOVED
 
 **File:** `PrologueInjector.java`
 **Confidence:** 99%+ remove
+**Status:** **Removed in v1.4.0.** All dead methods (`boxReturnValue`, `unboxReturnValue`, `pushDummyReturnValue`, `getInvokeDynamicIndices`, `indyIndicesByMethod`) have been deleted.
 
 | Method | Lines | Reason |
 |--------|-------|--------|
@@ -78,10 +85,11 @@ The comment says "These MUST live in ReplayState so that RawBytecodeScanner filt
 
 ---
 
-## 4. ThreadRestorer: Dead Methods
+## 4. ThreadRestorer: Dead Methods — ✅ REMOVED
 
 **File:** `ThreadRestorer.java`
 **Confidence:** 99%+ remove
+**Status:** **Removed in v1.4.0.** Dead methods (`isCorrectFrame`, `setLocalsForSingleFrame`) have been deleted.
 
 | Method | Lines | Reason |
 |--------|-------|--------|
@@ -90,10 +98,11 @@ The comment says "These MUST live in ReplayState so that RawBytecodeScanner filt
 
 ---
 
-## 5. InvokeRegistry: STUB_OFFSETS Infrastructure
+## 5. InvokeRegistry: STUB_OFFSETS Infrastructure — ✅ REMOVED
 
 **File:** `InvokeRegistry.java:27, 52-54, 72`
 **Confidence:** 99%+ remove
+**Status:** **Removed in v1.4.0.**
 
 | Item | Lines | Reason |
 |------|-------|--------|
@@ -105,10 +114,11 @@ This was infrastructure for re-freezing a restored thread (where BCP might point
 
 ---
 
-## 6. InvokeRegistry: Unused Public Methods
+## 6. InvokeRegistry: Unused Public Methods — ✅ REMOVED
 
 **File:** `InvokeRegistry.java`
 **Confidence:** 99%+ remove
+**Status:** **Removed in v1.4.0.**
 
 | Method | Lines | Reason |
 |--------|-------|--------|
@@ -119,34 +129,27 @@ These are public API methods with no production callers. They exist only for tes
 
 ---
 
-## 7. HeapWalker (Reflection-Based)
+## 7. HeapWalker (Reflection-Based) — ✅ MOVED TO TEST SOURCES
 
-**File:** `internal/HeapWalker.java` (entire class, 124 lines)
+**File:** formerly `internal/HeapWalker.java` (entire class, 124 lines)
 **Confidence:** Experiment needed
-
-`HeapWalker` operates on live Java objects via reflection. It is NOT used in the production freeze/restore path — `JdiHeapWalker` is used instead. The only usage is in `HeapRoundTripTest` (18 tests).
-
-`HeapWalker` is a simpler, in-process heap walker that doesn't handle collections, enums, immutables, or opaque types. It serves as a test utility for verifying that `HeapRestorer` can round-trip objects that `HeapWalker` captures.
-
-**Recommendation:** Keep as a test utility if the round-trip tests are valuable, but consider renaming to `TestHeapWalker` or moving to test sources. Alternatively, rewrite `HeapRoundTripTest` to use `JdiHeapWalker` (which would require a JDI connection in tests — higher friction).
+**Status:** **Moved to test sources in v1.4.0.** Now lives at `src/test/java/ai/jacc/durableThreads/internal/HeapWalker.java` where it serves as a test utility for `HeapRoundTripTest`.
 
 ---
 
-## 8. LambdaFrameException
+## 8. LambdaFrameException — ✅ REMOVED
 
 **File:** `exception/LambdaFrameException.java` (entire class)
 **Confidence:** 99%+ remove
-
-Never thrown anywhere in the codebase. Was thrown before lambda bridge proxy support was implemented. Now lambda frames are handled transparently. Referenced only in test comments that describe the old behavior.
+**Status:** **Removed in v1.4.0.** Lambda frames are now handled transparently via the bridge proxy approach.
 
 ---
 
-## 9. Version.java
+## 9. Version.java — ✅ REMOVED
 
 **File:** `Version.java` (entire class)
 **Confidence:** 99%+ remove
-
-`public static String version = "v1.3.1"` — Never referenced from any production or test code. Mutable public field (not `final`). The version is already in `pom.xml`.
+**Status:** **Removed in v1.4.0.** The version is maintained in `pom.xml`.
 
 ---
 
@@ -179,37 +182,29 @@ The method has two phases: a sleep loop (100 iterations checking FreezeFlag) and
 
 ---
 
-## 12. ThreadRestorer: Javadoc and Comments Referencing Phase 2
+## 12. ThreadRestorer: Javadoc and Comments Referencing Phase 2 — ✅ CLEANED UP
 
 **File:** `ThreadRestorer.java` (various locations)
 **Confidence:** 99%+ update
-
-Several comments and javadoc blocks reference the old Phase 1/Phase 2 architecture:
-- Line 463: `"resumePoint", "localsReady"` in parameter docs
-- Lines 495-496: "detect when the replay thread is still in a previous frame's localsReady()"
-- Lines 559-567: Stack layout comment references `localsReady()` at frame 0
-- Lines 573-577: `@param requireAllLocals` javadoc references Phase 1 vs Phase 2
-- Lines 799: "Phase 1: non-parameter locals may not be in scope yet"
-
-These should be updated to reflect the single-pass architecture, even if the code they describe is functionally correct.
+**Status:** **Fixed in v1.4.0.** Stale Phase 2 comments have been removed as part of the ThreadRestorer decomposition into JdiLocalSetter, JdiValueConverter, SnapshotValidator, and ReflectionHelpers.
 
 ---
 
 ## Summary
 
-| # | Item | Size | Confidence | Action |
+| # | Item | Size | Confidence | Status |
 |---|------|------|-----------|--------|
-| 1 | ReplayState multi-phase latches | ~100 lines | 99%+ | Remove (except verify resumePoint reachability) |
-| 2 | ReplayState box/unbox helpers | 16 methods | 99%+ | Remove |
-| 3 | PrologueInjector dead methods | ~120 lines | 99%+ | Remove |
-| 4 | ThreadRestorer dead methods | ~50 lines | 99%+ | Remove |
-| 5 | InvokeRegistry STUB_OFFSETS | ~10 lines | 99%+ | Remove |
-| 6 | InvokeRegistry unused public methods | 2 methods | 99%+ | Remove or make package-private |
-| 7 | HeapWalker class | 124 lines | Experiment | Keep as test utility or move to test sources |
-| 8 | LambdaFrameException | 1 class | 99%+ | Remove |
-| 9 | Version.java | 1 class | 99%+ | Remove |
-| 10 | SnapshotFileWriter null path | ~5 lines | 99%+ | Remove null handling |
-| 11 | blockForever() | ~25 lines | Experiment | Keep as defensive code, simplify |
-| 12 | Stale Phase 2 comments | ~15 lines | 99%+ | Update comments |
+| 1 | ReplayState multi-phase latches | ~100 lines | 99%+ | ✅ Removed |
+| 2 | ReplayState box/unbox helpers | 16 methods | 99%+ | ✅ Removed |
+| 3 | PrologueInjector dead methods | ~120 lines | 99%+ | ✅ Removed |
+| 4 | ThreadRestorer dead methods | ~50 lines | 99%+ | ✅ Removed |
+| 5 | InvokeRegistry STUB_OFFSETS | ~10 lines | 99%+ | ✅ Removed |
+| 6 | InvokeRegistry unused public methods | 2 methods | 99%+ | ✅ Removed |
+| 7 | HeapWalker class | 124 lines | Experiment | ✅ Moved to test sources |
+| 8 | LambdaFrameException | 1 class | 99%+ | ✅ Removed |
+| 9 | Version.java | 1 class | 99%+ | ✅ Removed |
+| 10 | SnapshotFileWriter null path | ~5 lines | — | ✅ Kept (NOT dead code) |
+| 11 | blockForever() | ~25 lines | Experiment | ✅ Kept as defensive code |
+| 12 | Stale Phase 2 comments | ~15 lines | 99%+ | ✅ Cleaned up |
 
-**Estimated total dead code:** ~450 lines of production code + 10 unit tests + 1 exception class
+**All items resolved as of v1.4.0.** ~450 lines of dead production code removed.

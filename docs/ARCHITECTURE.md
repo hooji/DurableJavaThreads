@@ -1,6 +1,6 @@
 # Durable Java Threads -- Architecture Document
 
-> Generated from code analysis of v1.3.5. This document describes the library's
+> Generated from code analysis of v1.4.0. This document describes the library's
 > internal architecture, data flow, and design rationale purely from the source
 > code.
 
@@ -351,6 +351,22 @@ Within a single operation, thread coordination uses:
 - `CountDownLatch` for the restore go-latch
 - `volatile` fields for cross-thread visibility of JDI connection, JDWP port,
   and agent load state
+
+The `FreezeFlag` uses an `IdentityHashMap`-backed `synchronizedSet` of `Thread`
+references, avoiding thread ID reuse issues and ensuring GC eligibility once
+the frozen thread terminates.
+
+---
+
+## 8.1 Configurable Timeouts
+
+All key timeouts are configurable via system properties:
+
+| Property | Default | Location | Purpose |
+|----------|---------|----------|---------|
+| `durable.freeze.timeout.ms` | 30,000 ms | ThreadFreezer | Caller thread wait for freeze worker |
+| `durable.jdi.wait.timeout.ms` | 30,000 ms | ThreadRestorer | JDI worker wait for replay thread |
+| `durable.restore.timeout.seconds` | 300 s | ReplayState | Go-latch wait for `RestoredThread.resume()` |
 
 ---
 

@@ -1,20 +1,21 @@
 # ThreadRestorer Decomposition — Stages 3 and 4
 
-**Date:** 2026-03-28
-**Branch:** `claude/document-java-threads-XGpM7`
-**Current state:** Stages 1, 2a-2e complete. All 258 tests pass (215 unit + 43 E2E).
+**Date:** 2026-03-28 (updated 2026-03-31)
+**Status:** ✅ **ALL STAGES COMPLETE.** All 258 tests pass (215 unit + 43 E2E).
 
 ## What's Been Done
 
-ThreadRestorer has been partially decomposed:
+ThreadRestorer has been fully decomposed:
 
-- **Stage 1:** `SnapshotValidator` — validates bytecode/structure hashes, loads classes
+- **Stage 1:** `SnapshotValidator` — validates bytecode/structure hashes, loads classes ✅
 - **Stage 2:** `ReflectionHelpers` — method lookup, descriptor matching, type conversion,
-  dummy args, receiver creation, bottom frame invocation, cause chain search
+  dummy args, receiver creation, bottom frame invocation, cause chain search ✅
+- **Stage 3:** `JdiValueConverter` — stateless JDI value conversion methods ✅
+- **Stage 4:** `JdiLocalSetter` — JDI local variable manipulation logic ✅
 
-## What Remains
+## Original Plan (for reference)
 
-ThreadRestorer is now ~850 lines. Two more extractions are planned:
+The following describes the original extraction plan that has now been completed:
 
 ### Stage 3: Extract `JdiValueConverter`
 
@@ -110,13 +111,17 @@ mvn failsafe:integration-test failsafe:verify  # E2E tests (43)
 
 ## What Stays in ThreadRestorer After Stages 3-4
 
-After all extractions, ThreadRestorer should contain only:
+After all extractions, ThreadRestorer contains:
 
-- `restore()` — the main orchestration method (~60 lines)
-- `runJdiRestore()` — JDI worker thread body, delegates to JdiLocalSetter (~30 lines)
-- `computeResumeIndices()` — reads invoke indices from snapshot (~10 lines)
-- `computeFrameReceivers()` — pre-resolves "this" for each frame (~25 lines)
-- `createLambdaBridgeProxy()` — creates dynamic proxy for lambda frames (~50 lines)
-- `waitForThreadAtMethod()` / `isAtMethod()` — JDI thread polling (~40 lines)
+- `restore()` — the main orchestration method
+- `runJdiRestore()` — JDI worker thread body, delegates to JdiLocalSetter
+- `computeResumeIndices()` — reads invoke indices from snapshot
+- `computeFrameReceivers()` — pre-resolves "this" for each frame
+- `createLambdaBridgeProxy()` — creates dynamic proxy for lambda frames
+- `waitForThreadAtMethod()` / `isAtMethod()` — JDI thread polling
 
-Estimated: ~215 lines, down from ~1150 at the start of refactoring.
+The extracted classes live in the `ai.jacc.durableThreads` package alongside ThreadRestorer:
+- `JdiValueConverter.java` — stateless ObjectRef → JDI Value conversion
+- `JdiLocalSetter.java` — frame matching, class preloading, GC pinning, setValue with exception handling
+- `SnapshotValidator.java` — bytecode/structure hash validation
+- `ReflectionHelpers.java` — method lookup, descriptor matching, receiver creation

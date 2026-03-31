@@ -2,7 +2,7 @@
 
 **Date:** 2026-03-29 (updated)
 **Scope:** Full codebase review for reliability, correctness, race conditions, dead code, and code quality.
-**Codebase Version:** 1.3.5
+**Codebase Version:** 1.4.0
 
 ---
 

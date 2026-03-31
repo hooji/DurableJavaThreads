@@ -1,13 +1,12 @@
 # Design: Lambda Frame Support
 
-**Status:** Partially implemented (v1.3.x)
-**Prerequisite:** v1.2.0 single-pass restore architecture (implemented)
+**Status:** Implemented (v1.4.0)
+**Prerequisite:** Single-pass restore architecture (implemented)
 
 ## Current State
 
-Lambda support has been partially implemented. The library no longer throws
-`LambdaFrameException` when a `$$Lambda` frame appears in the call stack.
-Instead, it uses a **lambda bridge proxy** approach:
+Lambda support is implemented. The library uses a **lambda bridge proxy**
+approach when a `$$Lambda` frame appears in the call stack:
 
 - **Freeze:** `$$Lambda` frames are skipped (not captured). The functional
   interface implemented by the lambda is detected and stored as
@@ -160,10 +159,20 @@ Three approaches were evaluated during design:
   `detectLambdaInterface()` method skips `Serializable`, so it should find the
   functional interface correctly. Not explicitly tested.
 
+## E2E Test Coverage (v1.4.0)
+
+Lambda support is exercised by multiple E2E integration tests:
+
+- `LambdaFreezeIT` — comprehensive lambda freeze/restore integration test
+- `LambdaCallbackFreezeProgram` — lambda callbacks (Consumer, Function)
+- `LambdaRunnableFreezeProgram` — Runnable lambdas
+- `LambdaCapturedVarsFreezeProgram` — lambdas capturing local variables
+- `MethodRefFreezeProgram` — method references (`this::method`, `ClassName::method`)
+
 ## Future Work
 
-1. **Comprehensive lambda E2E tests** — nested lambdas, method references to
-   private methods, lambdas capturing mutable objects.
+1. **Nested lambda testing** — nested lambdas (lambda inside lambda) should work
+   but are not comprehensively tested in isolation.
 2. **Stream pipeline support** — would require a fundamentally different
    approach (e.g., capturing the stream's spliterator state). Low priority.
 3. **Proxy robustness** — investigate whether some JDK methods perform
