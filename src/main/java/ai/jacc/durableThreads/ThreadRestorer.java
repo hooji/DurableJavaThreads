@@ -355,7 +355,7 @@ final class ThreadRestorer {
                 }
             }
             try {
-                Thread.sleep(10); // poll every 10ms
+                Thread.sleep(1); // poll every 1ms
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 return null;

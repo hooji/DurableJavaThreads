@@ -498,7 +498,7 @@ for debugging and tooling.
 | C2 | Critical | Dead code | Unused parameters in `convertToJdiValue()` | **Fixed** — `restoredHeap` and `heapRestorer` params removed |
 | C3 | Critical | Cleanup | `HeapObjectBridge.clear()` not in finally block | **Analyzed — safe** (see code-audit-2026-03.md) |
 | C4 | Critical | Correctness | `FreezeFlag` thread ID reuse | **Fixed** — uses `Set<Thread>` with IdentityHashMap |
-| C5 | Critical | Performance | Aggressive JDI suspend/resume polling | Open |
+| C5 | Critical | Performance | Aggressive JDI suspend/resume polling | **Fixed** — polling interval reduced to 1ms |
 | H1 | High | Robustness | `ReplayState` static fields lack cleanup guarantees | **Mitigated** — old multi-phase latches removed; remaining fields protected by `synchronized(Durable.class)` |
 | H3 | High | API design | `BytecodeMismatchException` reused for class structure | Open |
 | H4 | High | Maintainability | Fragile excluded-class list in transformer | Open |
