@@ -158,7 +158,7 @@ public final class HeapRestorer {
             }
             case COLLECTION: {
                 // Collections are rebuilt by adding elements in the populate pass
-                obj = createEmptyCollection(snap.className());
+                obj = createEmptyCollection(snap);
                 break;
             }
             case REGULAR: {
@@ -249,7 +249,9 @@ public final class HeapRestorer {
         }
     }
 
-    private static Object createEmptyCollection(String className) {
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static Object createEmptyCollection(ObjectSnapshot snap) {
+        String className = snap.className();
         if ("java.util.ArrayList".equals(className)) return new java.util.ArrayList<>();
         if ("java.util.LinkedList".equals(className)) return new java.util.LinkedList<>();
         if ("java.util.HashSet".equals(className)) return new java.util.HashSet<>();
@@ -260,6 +262,30 @@ public final class HeapRestorer {
         if ("java.util.TreeMap".equals(className)) return new java.util.TreeMap<>();
         if ("java.util.concurrent.ConcurrentHashMap".equals(className)) return new java.util.concurrent.ConcurrentHashMap<>();
         if ("java.util.ArrayDeque".equals(className)) return new java.util.ArrayDeque<>();
+        if ("java.util.EnumSet".equals(className)) {
+            ObjectRef etRef = snap.fields().get("elementType");
+            if (etRef instanceof PrimitiveRef) {
+                String enumTypeName = (String) ((PrimitiveRef) etRef).value();
+                try {
+                    Class enumClass = Class.forName(enumTypeName);
+                    return java.util.EnumSet.noneOf(enumClass);
+                } catch (ClassNotFoundException e) {
+                    throw new RuntimeException("Cannot load enum type for EnumSet: " + enumTypeName, e);
+                }
+            }
+        }
+        if ("java.util.EnumMap".equals(className)) {
+            ObjectRef ktRef = snap.fields().get("keyType");
+            if (ktRef instanceof PrimitiveRef) {
+                String keyTypeName = (String) ((PrimitiveRef) ktRef).value();
+                try {
+                    Class enumClass = Class.forName(keyTypeName);
+                    return new java.util.EnumMap(enumClass);
+                } catch (ClassNotFoundException e) {
+                    throw new RuntimeException("Cannot load enum type for EnumMap: " + keyTypeName, e);
+                }
+            }
+        }
         try {
             Class<?> clazz = Class.forName(className);
             return ObjenesisHolder.get().newInstance(clazz);
