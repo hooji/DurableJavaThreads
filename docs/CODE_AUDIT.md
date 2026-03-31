@@ -495,7 +495,7 @@ for debugging and tooling.
 
 | ID | Severity | Category | Description | Status |
 |----|----------|----------|-------------|--------|
-| C2 | Critical | Dead code | Unused parameters in `convertToJdiValue()` | Open |
+| C2 | Critical | Dead code | Unused parameters in `convertToJdiValue()` | **Fixed** — `restoredHeap` and `heapRestorer` params removed |
 | C3 | Critical | Cleanup | `HeapObjectBridge.clear()` not in finally block | **Analyzed — safe** (see code-audit-2026-03.md) |
 | C4 | Critical | Correctness | `FreezeFlag` thread ID reuse | **Fixed** — uses `Set<Thread>` with IdentityHashMap |
 | C5 | Critical | Performance | Aggressive JDI suspend/resume polling | Open |

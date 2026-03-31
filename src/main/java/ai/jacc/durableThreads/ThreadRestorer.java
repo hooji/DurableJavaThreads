@@ -307,7 +307,7 @@ final class ThreadRestorer {
             // jumped to BEFORE_INVOKE labels), so all locals are in scope.
             tr.suspend();
             try {
-                JdiLocalSetter.setLocalsViaJdi(vm, tr, snapshot, restoredHeap, heapRestorer);
+                JdiLocalSetter.setLocalsViaJdi(vm, tr, snapshot);
             } finally {
                 tr.resume();
             }
