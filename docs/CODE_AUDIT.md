@@ -506,12 +506,12 @@ for debugging and tooling.
 | M1 | Medium | Simplification | Duplicate fields in InvokeInfo/InvokeMarker | Open |
 | M2 | Medium | Simplification | Duplicate class file parsing in two scanners | Open |
 | M3 | Medium | Simplification | Redundant `tryCreateBoxedPrimitive()` call | Open |
-| M5 | Medium | Memory | NullRef should be singleton | Open |
-| M6 | Medium | Memory | ObjenesisStd created per-call | Open |
+| M5 | Medium | Memory | NullRef should be singleton | **Fixed** — `NullRef.INSTANCE` with `readResolve()` |
+| M6 | Medium | Memory | ObjenesisStd created per-call | **Fixed** — shared `ObjenesisHolder` singleton |
 | L1 | Low | Enterprise | Raw System.out/err instead of logging framework | Open |
 | L2 | Low | Immutability | Mutable byte[] exposed via getters | Open |
 | L3 | Low | Immutability | Mutable Lists exposed via getters | Open |
 | L4 | Low | Resilience | Transformer throws instead of returning null | Open |
 | L5 | Low | Performance | ExecutorService created per port probe | Open |
-| L7 | Low | Completeness | Missing collection types in HeapRestorer | Open |
+| L7 | Low | Completeness | Missing collection types in HeapRestorer | **Fixed** — EnumSet and EnumMap support added |
 | L8 | Low | Data quality | Slot index always 0 for non-this locals | **Fixed** — broken slot reflection removed; restore matches by name |

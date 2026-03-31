@@ -227,7 +227,7 @@ All snapshot types implement `Serializable`:
 - Object identity tracking (JDI uniqueID → snapshot ID)
 - Boxed primitives (extract `value` field)
 - Immutable JDK types (BigDecimal, UUID, java.time.*) via field reading
-- Collections (ArrayList, HashMap, etc.) via internal structure walking
+- Collections (ArrayList, HashMap, EnumSet, EnumMap, etc.) via internal structure walking
 - Enums via constant name
 - StringBuilder/StringBuffer via internal char/byte array reading
 - Named objects for identity-preserving freeze/restore
@@ -266,6 +266,7 @@ Handles JDI connection management:
 | `BytecodeHasher` | SHA-256 hash of method bytecode for integrity checking between freeze and restore. |
 | `ClassStructureHasher` | SHA-256 hash of class field layout (names, types, hierarchy) to detect incompatible class changes. Dual implementations for JDI (freeze) and reflection (restore). |
 | `FrameFilter` | Classifies stack frames as infrastructure (JDK, library) or user code. Shared between freeze and restore. |
+| `ObjenesisHolder` | Shared `ObjenesisStd` singleton for constructor-less object creation. Used by HeapRestorer, ReflectionHelpers, and ReplayState. |
 
 ## 4. Key Design Decisions
 
@@ -362,6 +363,7 @@ ai.jacc.durableThreads/
 │   ├── InvokeRegistry.java
 │   ├── JdiHeapWalker.java
 │   ├── JdiHelper.java
+│   ├── ObjenesisHolder.java
 │   ├── OperandStackChecker.java
 │   └── RawBytecodeScanner.java
 └── snapshot/

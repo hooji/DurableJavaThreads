@@ -113,6 +113,7 @@ ai.jacc.durableThreads.internal
   |-- JdiHeapWalker             Captures object graph via JDI mirrors
   |-- HeapObjectBridge          Static map for passing objects to JDI
   |-- HeapRestorer              Rebuilds object graph from snapshot
+  |-- ObjenesisHolder           Shared ObjenesisStd instance
   |-- FrameFilter               Classifies frames as infrastructure vs. user
 
 ai.jacc.durableThreads.snapshot
@@ -244,7 +245,7 @@ variables, handling:
 - **Primitives**: stored as `PrimitiveRef`
 - **Strings**: stored directly as `PrimitiveRef` with string value
 - **Arrays**: element-by-element capture
-- **Collections** (ArrayList, HashMap, etc.): internal storage walked via JDI
+- **Collections** (ArrayList, HashMap, EnumSet, EnumMap, etc.): internal storage walked via JDI
 - **Boxed primitives**: `value` field extracted
 - **Immutable JDK types** (BigDecimal, UUID, java.time.*): captured via JDI
   field access, stored as string representation
