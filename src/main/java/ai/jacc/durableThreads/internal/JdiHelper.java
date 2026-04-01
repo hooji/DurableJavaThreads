@@ -318,46 +318,63 @@ public final class JdiHelper {
         return -1;
     }
 
-    // --- JDWP port discovery via ephemeral port scanning ---
+    // --- JDWP port discovery via parallel probing ---
 
     /** Socket connect/handshake timeout for JDI port probes (ms). */
     private static final int PROBE_TIMEOUT_MS = 200;
-
-    /** Maximum threads for parallel port probing. */
-    private static final int MAX_PARALLEL_PROBES = 100;
 
     /**
      * Probe a list of candidate ports in parallel for a JDWP connection
      * belonging to this JVM (verified via nonce).
      *
-     * <p>All candidates are probed concurrently. The correct JDWP port responds
-     * in microseconds on localhost, so this returns almost instantly once the
-     * right port is in the candidate list. Failed probes (closed ports, non-JDWP
-     * services) time out harmlessly in the background.</p>
+     * <p>One thread is created per candidate — every probe starts immediately
+     * with no queuing. The correct JDWP port responds in microseconds on
+     * localhost, so this returns almost instantly. Failed probes (closed ports,
+     * non-JDWP services) time out harmlessly in the background.</p>
      *
-     * <p>The total wall-clock time is bounded by {@code PROBE_TIMEOUT_MS + 500ms}
-     * regardless of candidate count — all probes run in parallel.</p>
+     * <p>Each probe wraps its {@code jdiConnect} call in a hard timeout via
+     * {@code Future.get()} to handle non-JDWP ports that accept TCP but never
+     * complete the JDWP handshake (where JDI's built-in timeout is unreliable).</p>
      *
-     * @param candidates list of port numbers to probe
+     * @param candidates list of port numbers to probe (must not contain duplicates)
      * @param expectedNonce the nonce to verify
      * @return the verified JDWP port, or -1 if none matched
      */
     private static int probePortsInParallel(List<Integer> candidates, String expectedNonce) {
         if (candidates.isEmpty()) return -1;
 
-        int poolSize = Math.min(candidates.size(), MAX_PARALLEL_PROBES);
-        ExecutorService executor = Executors.newFixedThreadPool(poolSize, r -> {
+        // One thread per candidate — no queuing, no starvation.
+        ExecutorService probePool = Executors.newFixedThreadPool(candidates.size(), r -> {
             Thread t = new Thread(r, "jdwp-probe");
             t.setDaemon(true);
             return t;
         });
-        CompletionService<Integer> cs = new ExecutorCompletionService<>(executor);
+        // Separate single-thread pool for per-probe hard timeouts. Each probe
+        // submits its jdiConnect to this pool and waits with Future.get(timeout),
+        // ensuring hung JDWP handshakes on non-JDWP ports are killed reliably.
+        ExecutorService connectPool = Executors.newCachedThreadPool(r -> {
+            Thread t = new Thread(r, "jdwp-connect");
+            t.setDaemon(true);
+            return t;
+        });
+        CompletionService<Integer> cs = new ExecutorCompletionService<>(probePool);
 
         try {
             for (int port : candidates) {
                 cs.submit(() -> {
                     try {
-                        VirtualMachine vm = jdiConnect(port, PROBE_TIMEOUT_MS);
+                        // Hard timeout via Future — JDI's built-in timeout doesn't
+                        // reliably abort when a non-JDWP port accepts TCP but never
+                        // sends the JDWP handshake.
+                        Future<VirtualMachine> connectFuture = connectPool.submit(
+                                () -> jdiConnect(port, PROBE_TIMEOUT_MS));
+                        VirtualMachine vm;
+                        try {
+                            vm = connectFuture.get(PROBE_TIMEOUT_MS + 500, TimeUnit.MILLISECONDS);
+                        } catch (TimeoutException e) {
+                            connectFuture.cancel(true);
+                            return -1;
+                        }
                         List<ReferenceType> types = vm.classesByName(
                                 "ai.jacc.durableThreads.DurableAgent");
                         if (types.isEmpty()) { vm.dispose(); return -1; }
@@ -366,7 +383,6 @@ public final class JdiHelper {
                         Value val = types.get(0).getValue(nonceField);
                         if (val instanceof StringReference
                                 && expectedNonce.equals(((StringReference) val).value())) {
-                            // Nonce matches — cache and return
                             connection = vm;
                             return port;
                         }
@@ -379,14 +395,14 @@ public final class JdiHelper {
             }
 
             // Collect results with a total deadline. The correct port responds
-            // almost instantly; we only wait for the timeout if no port matches.
+            // almost instantly; we only wait for the full timeout if no port matches.
             long deadline = System.currentTimeMillis() + PROBE_TIMEOUT_MS + 500;
             for (int i = 0; i < candidates.size(); i++) {
                 long remaining = deadline - System.currentTimeMillis();
                 if (remaining <= 0) break;
                 try {
                     Future<Integer> future = cs.poll(remaining, TimeUnit.MILLISECONDS);
-                    if (future == null) break; // deadline reached
+                    if (future == null) break;
                     int port = future.get();
                     if (port > 0) return port;
                 } catch (ExecutionException | InterruptedException e) {
@@ -395,7 +411,8 @@ public final class JdiHelper {
             }
             return -1;
         } finally {
-            executor.shutdownNow();
+            probePool.shutdownNow();
+            connectPool.shutdownNow();
         }
     }
 
@@ -416,10 +433,11 @@ public final class JdiHelper {
      * @return the discovered JDWP port, or -1 if not found
      */
     /**
-     * Maximum number of ports to scan in each direction from the probe port.
-     * This is a last-resort fallback after the Attach API fails.
+     * Number of ports to scan in each direction from the probe port.
+     * With one thread per candidate, all 2*SCAN_RANGE+1 ports are probed
+     * simultaneously — the correct port responds in microseconds.
      */
-    private static final int SCAN_RANGE = 200;
+    private static final int SCAN_RANGE = 50;
 
     private static int discoverJdwpPort() {
         // Only scan if JDWP is actually on the command line
