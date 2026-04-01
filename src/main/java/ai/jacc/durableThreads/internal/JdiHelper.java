@@ -154,12 +154,7 @@ public final class JdiHelper {
         }
 
         List<Integer> listeningPorts = getListeningPorts();
-        for (int port : listeningPorts) {
-            if (connectAndVerifyNonce(port, expectedNonce)) {
-                return port;
-            }
-        }
-        return -1;
+        return probePortsInParallel(listeningPorts, expectedNonce);
     }
 
     // --- Platform-specific listening port enumeration ---
@@ -328,6 +323,82 @@ public final class JdiHelper {
     /** Socket connect/handshake timeout for JDI port probes (ms). */
     private static final int PROBE_TIMEOUT_MS = 200;
 
+    /** Maximum threads for parallel port probing. */
+    private static final int MAX_PARALLEL_PROBES = 100;
+
+    /**
+     * Probe a list of candidate ports in parallel for a JDWP connection
+     * belonging to this JVM (verified via nonce).
+     *
+     * <p>All candidates are probed concurrently. The correct JDWP port responds
+     * in microseconds on localhost, so this returns almost instantly once the
+     * right port is in the candidate list. Failed probes (closed ports, non-JDWP
+     * services) time out harmlessly in the background.</p>
+     *
+     * <p>The total wall-clock time is bounded by {@code PROBE_TIMEOUT_MS + 500ms}
+     * regardless of candidate count — all probes run in parallel.</p>
+     *
+     * @param candidates list of port numbers to probe
+     * @param expectedNonce the nonce to verify
+     * @return the verified JDWP port, or -1 if none matched
+     */
+    private static int probePortsInParallel(List<Integer> candidates, String expectedNonce) {
+        if (candidates.isEmpty()) return -1;
+
+        int poolSize = Math.min(candidates.size(), MAX_PARALLEL_PROBES);
+        ExecutorService executor = Executors.newFixedThreadPool(poolSize, r -> {
+            Thread t = new Thread(r, "jdwp-probe");
+            t.setDaemon(true);
+            return t;
+        });
+        CompletionService<Integer> cs = new ExecutorCompletionService<>(executor);
+
+        try {
+            for (int port : candidates) {
+                cs.submit(() -> {
+                    try {
+                        VirtualMachine vm = jdiConnect(port, PROBE_TIMEOUT_MS);
+                        List<ReferenceType> types = vm.classesByName(
+                                "ai.jacc.durableThreads.DurableAgent");
+                        if (types.isEmpty()) { vm.dispose(); return -1; }
+                        Field nonceField = types.get(0).fieldByName("jdwpDiscoveryNonce");
+                        if (nonceField == null) { vm.dispose(); return -1; }
+                        Value val = types.get(0).getValue(nonceField);
+                        if (val instanceof StringReference
+                                && expectedNonce.equals(((StringReference) val).value())) {
+                            // Nonce matches — cache and return
+                            connection = vm;
+                            return port;
+                        }
+                        vm.dispose();
+                    } catch (Exception e) {
+                        // Connection failed, not JDWP, etc. — expected for most ports
+                    }
+                    return -1;
+                });
+            }
+
+            // Collect results with a total deadline. The correct port responds
+            // almost instantly; we only wait for the timeout if no port matches.
+            long deadline = System.currentTimeMillis() + PROBE_TIMEOUT_MS + 500;
+            for (int i = 0; i < candidates.size(); i++) {
+                long remaining = deadline - System.currentTimeMillis();
+                if (remaining <= 0) break;
+                try {
+                    Future<Integer> future = cs.poll(remaining, TimeUnit.MILLISECONDS);
+                    if (future == null) break; // deadline reached
+                    int port = future.get();
+                    if (port > 0) return port;
+                } catch (ExecutionException | InterruptedException e) {
+                    // continue collecting
+                }
+            }
+            return -1;
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
     /**
      * Discover the JDWP port by scanning nearby ephemeral ports.
      *
@@ -369,25 +440,18 @@ public final class JdiHelper {
             return -1;
         }
 
-        // Scan nearby ports via JDI connect + nonce verification.
-        // Closed ports fail instantly. Open non-JDWP ports time out after PROBE_TIMEOUT_MS.
-        // Our JDWP port: handshake succeeds, nonce matches, connection CACHED.
-        //
+        // Build candidate list: ports below the probe (most likely), then above.
         // NOTE: Do NOT pre-probe with raw TCP or JDWP handshake — JDWP re-listens on
         // a NEW port after each debugger disconnect, so probes "consume" the port.
-
+        List<Integer> candidates = new ArrayList<>();
         for (int port = probePort - 1; port >= Math.max(1, probePort - SCAN_RANGE); port--) {
-            if (connectAndVerifyNonce(port, expectedNonce)) {
-                return port;
-            }
+            candidates.add(port);
         }
         for (int port = probePort; port <= Math.min(65535, probePort + SCAN_RANGE); port++) {
-            if (connectAndVerifyNonce(port, expectedNonce)) {
-                return port;
-            }
+            candidates.add(port);
         }
 
-        return -1;
+        return probePortsInParallel(candidates, expectedNonce);
     }
 
     /**
@@ -410,53 +474,6 @@ public final class JdiHelper {
         return false;
     }
 
-    /**
-     * Connect to a port via JDI and verify that it belongs to THIS JVM by reading
-     * the nonce from {@code DurableAgent.jdwpDiscoveryNonce}.
-     *
-     * <p>If verified, the JDI connection is cached for later reuse by {@link #connect(int)}
-     * — this avoids reconnecting and eliminates the double-connection problem with JDWP's
-     * single-debugger-at-a-time constraint.</p>
-     */
-    private static boolean connectAndVerifyNonce(int port, String expectedNonce) {
-        // Use a hard timeout via Future — JDI's built-in timeout doesn't reliably
-        // abort when a non-JDWP port accepts TCP but never sends the handshake.
-        ExecutorService executor = Executors.newSingleThreadExecutor(r -> {
-            Thread t = new Thread(r, "jdwp-probe-" + port);
-            t.setDaemon(true);
-            return t;
-        });
-        try {
-            Future<VirtualMachine> future = executor.submit(() -> {
-                VirtualMachine vm = jdiConnect(port, PROBE_TIMEOUT_MS);
-                List<ReferenceType> types = vm.classesByName("ai.jacc.durableThreads.DurableAgent");
-                if (types.isEmpty()) { vm.dispose(); return null; }
-                Field nonceField = types.get(0).fieldByName("jdwpDiscoveryNonce");
-                if (nonceField == null) { vm.dispose(); return null; }
-                Value val = types.get(0).getValue(nonceField);
-                if (val instanceof StringReference && expectedNonce.equals(((StringReference) val).value())) {
-                    return vm; // Nonce matches — return the connection
-                }
-                vm.dispose();
-                return null;
-            });
-
-            VirtualMachine vm = future.get(PROBE_TIMEOUT_MS + 500, TimeUnit.MILLISECONDS);
-            if (vm != null) {
-                connection = vm;
-                return true;
-            }
-            return false;
-        } catch (TimeoutException e) {
-            // Hard timeout — JDI connect hung on a non-JDWP port
-            return false;
-        } catch (Exception e) {
-            return false;
-        } finally {
-            executor.shutdownNow();
-        }
-    }
-
     private static final Object JDI_CONNECT_LOCK = new Object();
 
     /**
@@ -467,7 +484,7 @@ public final class JdiHelper {
      * the JDI connection to our own JVM stays alive for the lifetime of
      * the process.</p>
      *
-     * <p>If port discovery ({@link #connectAndVerifyNonce}) already
+     * <p>If parallel port discovery ({@link #probePortsInParallel}) already
      * established a connection, that connection is used directly without
      * creating a second one.</p>
      *
@@ -484,7 +501,7 @@ public final class JdiHelper {
             if (vm != null) return vm;
 
             // Detect the JDWP port. Port discovery may establish a connection
-            // as a side-effect (connectAndVerifyNonce sets 'connection' when
+            // as a side-effect (probePortsInParallel sets 'connection' when
             // it finds and verifies the port via a JDI probe). Check again
             // after detection before attempting a redundant connect.
             int port = detectJdwpPort();
