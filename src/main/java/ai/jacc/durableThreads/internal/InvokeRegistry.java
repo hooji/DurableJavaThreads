@@ -21,9 +21,16 @@ public final class InvokeRegistry {
 
     /**
      * Instrumented bytecode for each class, keyed by internal class name.
-     * Used for bytecode hash computation.
+     * Used for operand stack checking (which operates on instrumented BCPs).
      */
     private static final Map<String, byte[]> INSTRUMENTED_BYTECODE = new ConcurrentHashMap<>();
+
+    /**
+     * Original (pre-instrumentation) bytecode for each class, keyed by internal class name.
+     * Used for bytecode hash computation (hashing originals decouples validation
+     * from instrumentation changes) and for future snapshot embedding (tier 2).
+     */
+    private static final Map<String, byte[]> ORIGINAL_BYTECODE = new ConcurrentHashMap<>();
 
     private InvokeRegistry() {}
 
@@ -72,8 +79,24 @@ public final class InvokeRegistry {
 
     /**
      * Get stored instrumented bytecode for a class.
+     * Used by OperandStackChecker (which needs instrumented BCPs).
      */
     public static byte[] getInstrumentedBytecode(String className) {
         return INSTRUMENTED_BYTECODE.get(className);
+    }
+
+    /**
+     * Store original (pre-instrumentation) bytecode for a class.
+     */
+    public static void storeOriginalBytecode(String className, byte[] bytecode) {
+        ORIGINAL_BYTECODE.put(className, bytecode);
+    }
+
+    /**
+     * Get stored original (pre-instrumentation) bytecode for a class.
+     * Used by BytecodeHasher for validation and for future snapshot embedding.
+     */
+    public static byte[] getOriginalBytecode(String className) {
+        return ORIGINAL_BYTECODE.get(className);
     }
 }

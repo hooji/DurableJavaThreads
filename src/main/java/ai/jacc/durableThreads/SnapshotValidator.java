@@ -16,9 +16,12 @@ import java.util.List;
  *
  * <p>Two kinds of validation are performed:</p>
  * <ul>
- *   <li><b>Bytecode hashes:</b> SHA-256 of each method's instrumented bytecode
- *       must match between freeze and restore. Detects code changes that would
- *       cause the replay prologue to dispatch to the wrong invoke index.</li>
+ *   <li><b>Bytecode hashes:</b> SHA-256 of each method's original (pre-instrumentation)
+ *       bytecode must match between freeze and restore. Detects user code changes
+ *       that would cause the replay prologue to dispatch to the wrong invoke index.
+ *       Hashing originals (not instrumented bytes) decouples validation from
+ *       instrumentation changes, allowing library upgrades without invalidating
+ *       frozen snapshots.</li>
  *   <li><b>Class structure hashes:</b> SHA-256 of each heap object's class field
  *       layout (names, types, declaring class) must match. Detects added/removed/
  *       renamed fields or type changes that would cause silent data corruption.</li>
@@ -57,14 +60,14 @@ final class SnapshotValidator {
                 continue;
             }
 
-            byte[] classBytecode = InvokeRegistry.getInstrumentedBytecode(frame.className());
-            if (classBytecode == null) {
+            byte[] originalBytecode = InvokeRegistry.getOriginalBytecode(frame.className());
+            if (originalBytecode == null) {
                 // Class not instrumented — may be a JDK class that was stripped
                 continue;
             }
 
             byte[] currentHash = BytecodeHasher.hash(
-                    classBytecode, frame.methodName(), frame.methodSignature());
+                    originalBytecode, frame.methodName(), frame.methodSignature());
             if (currentHash == null || !Arrays.equals(frame.bytecodeHash(), currentHash)) {
                 mismatched.add(frame.className().replace('/', '.') + "." + frame.methodName());
             }

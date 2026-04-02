@@ -285,16 +285,21 @@ final class ThreadFreezer {
 
                 int bcp = (int) location.codeIndex();
 
-                // Compute bytecode hash
-                byte[] classBytecode = InvokeRegistry.getInstrumentedBytecode(className);
-                byte[] hash = classBytecode != null
-                        ? BytecodeHasher.hash(classBytecode, methodName, methodSig)
+                // Compute bytecode hash from ORIGINAL (pre-instrumentation) bytes.
+                // This decouples hash validation from instrumentation changes,
+                // allowing library upgrades without invalidating frozen snapshots.
+                byte[] originalBytecode = InvokeRegistry.getOriginalBytecode(className);
+                byte[] hash = originalBytecode != null
+                        ? BytecodeHasher.hash(originalBytecode, methodName, methodSig)
                         : new byte[0];
 
-                // Validate operand stack is empty at this call site
-                if (classBytecode != null) {
+                // Validate operand stack is empty at this call site.
+                // Uses INSTRUMENTED bytecode because JDI reports BCPs relative
+                // to the instrumented code.
+                byte[] instrumentedBytecode = InvokeRegistry.getInstrumentedBytecode(className);
+                if (instrumentedBytecode != null) {
                     String stackError = OperandStackChecker.checkStackAtInvoke(
-                            classBytecode, methodName, methodSig, bcp);
+                            instrumentedBytecode, methodName, methodSig, bcp);
                     if (stackError != null) {
                         throw new NonEmptyStackException(stackError);
                     }
