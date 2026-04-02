@@ -324,7 +324,7 @@ Snapshots use standard Java serialization (`ObjectOutputStream`/`ObjectInputStre
 |-----------|------|
 | `AgentNotLoadedException` | `freeze()`/`restore()` called without `-javaagent` |
 | `ThreadFrozenError` (Error) | Internal: terminates the frozen thread |
-| `NonEmptyStackException` | Operand stack non-empty at a frame's call site |
+| `NonEmptyParameterStackException` | Operand stack non-empty at a frame's call site |
 | `BytecodeMismatchException` | Method bytecode or class structure changed between freeze and restore |
 | `UncapturableTypeException` | Object graph contains a type that can't be captured/restored correctly |
 
@@ -351,7 +351,7 @@ ai.jacc.durableThreads/
 ├── exception/
 │   ├── AgentNotLoadedException.java
 │   ├── BytecodeMismatchException.java
-│   ├── NonEmptyStackException.java
+│   ├── NonEmptyParameterStackException.java
 │   ├── ThreadFrozenError.java
 │   └── UncapturableTypeException.java
 ├── internal/

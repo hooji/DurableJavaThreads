@@ -23,11 +23,11 @@ package ai.jacc.durableThreads.exception;
  * int result = a + b;
  * }</pre>
  */
-public class NonEmptyStackException extends RuntimeException {
+public class NonEmptyParameterStackException extends RuntimeException {
 
     private final String frameSummary;
 
-    public NonEmptyStackException(String frameSummary) {
+    public NonEmptyParameterStackException(String frameSummary) {
         super("Cannot freeze: non-empty operand stack detected. " + frameSummary);
         this.frameSummary = frameSummary;
     }

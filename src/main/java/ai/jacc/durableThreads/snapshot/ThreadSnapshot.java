@@ -7,19 +7,33 @@ import java.util.Objects;
 
 public final class ThreadSnapshot implements Serializable {
 
-    private static final long serialVersionUID = 1L;
+    private static final long serialVersionUID = 2L;
 
     private final Instant capturedAt;
     private final String threadName;
     private final List<FrameSnapshot> frames;
     private final List<ObjectSnapshot> heap;
 
+    /** Library version that created this snapshot (nullable for pre-1.4.1 snapshots). */
+    private final String libraryVersion;
+
+    /** Environment metadata (nullable for pre-1.4.1 snapshots). */
+    private final SnapshotEnvironment environment;
+
     public ThreadSnapshot(Instant capturedAt, String threadName,
                           List<FrameSnapshot> frames, List<ObjectSnapshot> heap) {
+        this(capturedAt, threadName, frames, heap, null, null);
+    }
+
+    public ThreadSnapshot(Instant capturedAt, String threadName,
+                          List<FrameSnapshot> frames, List<ObjectSnapshot> heap,
+                          String libraryVersion, SnapshotEnvironment environment) {
         this.capturedAt = capturedAt;
         this.threadName = threadName;
         this.frames = frames;
         this.heap = heap;
+        this.libraryVersion = libraryVersion;
+        this.environment = environment;
     }
 
     public Instant capturedAt() {
@@ -36,6 +50,16 @@ public final class ThreadSnapshot implements Serializable {
 
     public List<ObjectSnapshot> heap() {
         return heap;
+    }
+
+    /** Library version that created this snapshot, or null for pre-1.4.1 snapshots. */
+    public String libraryVersion() {
+        return libraryVersion;
+    }
+
+    /** Environment metadata, or null for pre-1.4.1 snapshots. */
+    public SnapshotEnvironment environment() {
+        return environment;
     }
 
     /** Number of stack frames in this snapshot. */
@@ -61,18 +85,21 @@ public final class ThreadSnapshot implements Serializable {
         return Objects.equals(capturedAt, that.capturedAt)
                 && Objects.equals(threadName, that.threadName)
                 && Objects.equals(frames, that.frames)
-                && Objects.equals(heap, that.heap);
+                && Objects.equals(heap, that.heap)
+                && Objects.equals(libraryVersion, that.libraryVersion)
+                && Objects.equals(environment, that.environment);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(capturedAt, threadName, frames, heap);
+        return Objects.hash(capturedAt, threadName, frames, heap, libraryVersion);
     }
 
     @Override
     public String toString() {
         return "ThreadSnapshot[capturedAt=" + capturedAt
                 + ", threadName=" + threadName
+                + ", libraryVersion=" + libraryVersion
                 + ", frames=" + frames
                 + ", heap=" + heap + "]";
     }
