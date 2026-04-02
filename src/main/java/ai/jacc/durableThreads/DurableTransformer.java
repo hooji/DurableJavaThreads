@@ -67,6 +67,10 @@ public final class DurableTransformer implements ClassFileTransformer {
         }
 
         try {
+            // Cache original (pre-instrumentation) bytecode for hash validation
+            // and future snapshot embedding. Must happen before instrumentation.
+            InvokeRegistry.storeOriginalBytecode(className, classfileBuffer.clone());
+
             // Parse the original class
             ClassReader cr = new ClassReader(classfileBuffer);
 
@@ -85,7 +89,7 @@ public final class DurableTransformer implements ClassFileTransformer {
 
             byte[] instrumented = cw.toByteArray();
 
-            // Store the instrumented bytecode for hash computation
+            // Store the instrumented bytecode for operand stack checking
             InvokeRegistry.storeInstrumentedBytecode(className, instrumented);
 
             // Post-process: analyze the instrumented bytecode to build invoke offset maps.

@@ -16,6 +16,8 @@ import java.util.function.Consumer;
 /**
  * Main API for durable threads — freeze, serialize, and resume thread execution.
  *
+ * <p>The library version is available via {@link #VERSION}.</p>
+ *
  * <h2>Freezing</h2>
  * <pre>{@code
  * Durable.freeze(snapshot -> {
@@ -35,6 +37,9 @@ import java.util.function.Consumer;
 public final class Durable {
 
     private Durable() {}
+
+    /** Library version string. Stored in every snapshot for compatibility tracking. */
+    public static final String VERSION = "1.4.1";
 
     // ===================================================================
     // Freeze

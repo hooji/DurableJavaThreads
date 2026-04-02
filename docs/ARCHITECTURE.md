@@ -131,7 +131,7 @@ ai.jacc.durableThreads.exception
   |-- AgentNotLoadedException   Agent jar not on -javaagent
   |-- ThreadFrozenError         Error thrown to terminate frozen thread
   |-- BytecodeMismatchException Code changed between freeze/restore
-  |-- NonEmptyStackException    Operand stack not empty at freeze site
+  |-- NonEmptyParameterStackException    Operand stack not empty at freeze site
   |-- UncapturableTypeException JDK type that can't be round-tripped
 ```
 
@@ -423,7 +423,7 @@ The library follows a **fail-fast** philosophy:
 |-----------|-----------|------|
 | Agent not loaded | `AgentNotLoadedException` | freeze/restore |
 | Code changed between freeze/restore | `BytecodeMismatchException` | restore |
-| Non-empty operand stack at freeze site | `NonEmptyStackException` | freeze |
+| Non-empty operand stack at freeze site | `NonEmptyParameterStackException` | freeze |
 | Uncapturable JDK type in heap | `UncapturableTypeException` | freeze |
 | Thread termination after freeze | `ThreadFrozenError` (Error) | freeze |
 | 0 user frames captured | `RuntimeException` | freeze |

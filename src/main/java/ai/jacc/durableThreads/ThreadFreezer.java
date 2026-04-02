@@ -1,7 +1,7 @@
 package ai.jacc.durableThreads;
 
 import com.sun.jdi.*;
-import ai.jacc.durableThreads.exception.NonEmptyStackException;
+import ai.jacc.durableThreads.exception.NonEmptyParameterStackException;
 import ai.jacc.durableThreads.exception.ThreadFrozenError;
 import ai.jacc.durableThreads.internal.*;
 import static ai.jacc.durableThreads.internal.FrameFilter.isInfrastructureFrame;
@@ -285,18 +285,23 @@ final class ThreadFreezer {
 
                 int bcp = (int) location.codeIndex();
 
-                // Compute bytecode hash
-                byte[] classBytecode = InvokeRegistry.getInstrumentedBytecode(className);
-                byte[] hash = classBytecode != null
-                        ? BytecodeHasher.hash(classBytecode, methodName, methodSig)
+                // Compute bytecode hash from ORIGINAL (pre-instrumentation) bytes.
+                // This decouples hash validation from instrumentation changes,
+                // allowing library upgrades without invalidating frozen snapshots.
+                byte[] originalBytecode = InvokeRegistry.getOriginalBytecode(className);
+                byte[] hash = originalBytecode != null
+                        ? BytecodeHasher.hash(originalBytecode, methodName, methodSig)
                         : new byte[0];
 
-                // Validate operand stack is empty at this call site
-                if (classBytecode != null) {
+                // Validate operand stack is empty at this call site.
+                // Uses INSTRUMENTED bytecode because JDI reports BCPs relative
+                // to the instrumented code.
+                byte[] instrumentedBytecode = InvokeRegistry.getInstrumentedBytecode(className);
+                if (instrumentedBytecode != null) {
                     String stackError = OperandStackChecker.checkStackAtInvoke(
-                            classBytecode, methodName, methodSig, bcp);
+                            instrumentedBytecode, methodName, methodSig, bcp);
                     if (stackError != null) {
-                        throw new NonEmptyStackException(stackError);
+                        throw new NonEmptyParameterStackException(stackError);
                     }
                 }
 
@@ -334,11 +339,17 @@ final class ThreadFreezer {
                         + "(JDI found a thread whose stack contains only infrastructure frames).");
             }
 
+            // Build environment metadata for portable restoration
+            List<ObjectSnapshot> heapSnapshots = heapWalker.getSnapshots();
+            SnapshotEnvironment environment = buildEnvironment(frameSnapshots, heapSnapshots);
+
             return new ThreadSnapshot(
                     Instant.now(),
                     threadName,
                     frameSnapshots,
-                    heapWalker.getSnapshots());
+                    heapSnapshots,
+                    Durable.VERSION,
+                    environment);
 
         } catch (IncompatibleThreadStateException e) {
             throw new RuntimeException("Thread not properly suspended for capture", e);
@@ -463,6 +474,64 @@ final class ThreadFreezer {
                     ref));
         }
         return result;
+    }
+
+    /**
+     * Build environment metadata from the captured frames and heap objects.
+     * Collects all unique class names, resolves their source locations
+     * (jar path or directory), and computes bytecode hashes from the
+     * original (pre-instrumentation) bytes.
+     */
+    private static SnapshotEnvironment buildEnvironment(
+            List<FrameSnapshot> frames, List<ObjectSnapshot> heapSnapshots) {
+        // Collect all unique class names from frames and heap
+        Set<String> classNames = new LinkedHashSet<>();
+        for (FrameSnapshot frame : frames) {
+            classNames.add(frame.className());
+        }
+        for (ObjectSnapshot obj : heapSnapshots) {
+            String cn = obj.className().replace('.', '/');
+            if (!cn.contains("$$Lambda") && !cn.startsWith("java/")
+                    && !cn.startsWith("javax/") && !cn.startsWith("jdk/")
+                    && !cn.startsWith("sun/") && !cn.startsWith("com/sun/")) {
+                classNames.add(cn);
+            }
+        }
+
+        // Build per-class entries with source location and bytecode hash
+        List<SnapshotEnvironment.ClassEntry> entries = new ArrayList<>();
+        for (String className : classNames) {
+            byte[] originalBytes = InvokeRegistry.getOriginalBytecode(className);
+            byte[] hash = originalBytes != null
+                    ? BytecodeHasher.hashClass(originalBytes)
+                    : new byte[0];
+
+            String sourceLocation = resolveSourceLocation(className);
+            entries.add(new SnapshotEnvironment.ClassEntry(className, sourceLocation, hash));
+        }
+
+        return new SnapshotEnvironment(
+                Durable.VERSION,
+                System.getProperty("java.version", "unknown"),
+                System.getProperty("java.class.path", ""),
+                System.getProperty("os.name", "unknown"),
+                entries);
+    }
+
+    /**
+     * Resolve the source location (jar path or directory) for a class.
+     */
+    private static String resolveSourceLocation(String internalClassName) {
+        try {
+            String dotName = internalClassName.replace('/', '.');
+            Class<?> clazz = Class.forName(dotName);
+            java.security.CodeSource cs = clazz.getProtectionDomain().getCodeSource();
+            if (cs != null && cs.getLocation() != null) {
+                return cs.getLocation().toString();
+            }
+        } catch (Exception ignored) {
+        }
+        return null;
     }
 
     /**

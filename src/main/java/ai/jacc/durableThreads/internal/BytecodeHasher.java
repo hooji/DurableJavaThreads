@@ -17,9 +17,21 @@ public final class BytecodeHasher {
     private BytecodeHasher() {}
 
     /**
-     * Compute the SHA-256 hash of a method's bytecode from the instrumented class bytes.
+     * Compute the SHA-256 hash of an entire class file.
      *
-     * @param classBytecode the full class file bytes (instrumented)
+     * @param classBytecode the full class file bytes
+     * @return SHA-256 hash
+     */
+    public static byte[] hashClass(byte[] classBytecode) {
+        MessageDigest digest = createSha256();
+        digest.update(classBytecode);
+        return digest.digest();
+    }
+
+    /**
+     * Compute the SHA-256 hash of a specific method's bytecode.
+     *
+     * @param classBytecode the full class file bytes
      * @param methodName    the method name
      * @param methodDesc    the method descriptor
      * @return SHA-256 hash, or null if method not found
