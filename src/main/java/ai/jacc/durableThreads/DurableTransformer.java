@@ -15,9 +15,28 @@ import java.util.List;
  */
 public final class DurableTransformer implements ClassFileTransformer {
 
+    /**
+     * Prefix matching unshaded {@code org/objectweb/asm/} classes bundled by
+     * other agents (notably SimpleJavaTemplates, which ships its ASM dependency
+     * unshaded on the app classpath).
+     *
+     * <p>Built from a char array at class-init time so the Maven shade plugin
+     * cannot detect it as a string constant matching its relocation pattern
+     * and rewrite it to our own shaded-asm prefix. Any plain
+     * {@code "org/objectweb/asm/"} literal in this file is transparently
+     * relocated to {@code "ai/jacc/durableThreads/shaded/asm/"} during
+     * packaging, which defeats the purpose of excluding the unshaded package
+     * at runtime.</p>
+     */
+    private static final String UNSHADED_ASM_PREFIX =
+            new String(new char[]{'o','r','g','/','o','b','j','e','c','t','w','e','b','/','a','s','m','/'});
+
     /** Prefixes of classes that must NOT be instrumented. */
     private static final String[] EXCLUDED_PREFIXES = {
-            // Shaded dependencies
+            // Shaded dependencies (the source literal "org/objectweb/asm/" is
+            // relocated to the shaded prefix at packaging time; we also keep
+            // the originally-intended unshaded prefix via UNSHADED_ASM_PREFIX
+            // below so co-loaded agents' unshaded ASM is not instrumented).
             "org/objectweb/asm/",
             "org/objenesis/",
             "ai/jacc/durableThreads/shaded/",
@@ -35,6 +54,12 @@ public final class DurableTransformer implements ClassFileTransformer {
             "com/sun/",
             // IDE runtime classes — not user code, complex bytecode patterns
             "com/intellij/",
+            // SimpleJavaTemplates (agent bundled on the app classpath alongside
+            // us). Excluded so that its own classes are not instrumented.
+            "ai/jacc/simplejavatemplates/",
+            // Re-introduce unshaded "org/objectweb/asm/" via a runtime-built
+            // string; see UNSHADED_ASM_PREFIX javadoc.
+            UNSHADED_ASM_PREFIX,
     };
 
     /** Subpackages under an excluded prefix that SHOULD be instrumented (user test code). */
