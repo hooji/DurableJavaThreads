@@ -343,3 +343,24 @@ src/main/java/ai/jacc/durableThreads/
 ## License
 
 Dual-licensed under [Apache 2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT), at your option. See [NOTICE](NOTICE) for third-party attributions.
+
+## Using DurableJavaThreads with SimpleJavaTemplates
+
+DurableJavaThreads is designed to coexist cleanly with
+[SimpleJavaTemplates](https://github.com/hooji/SimpleJavaTemplates). When
+both libraries are on your application classpath, you only need to specify
+the `durable-threads` agent on the command line:
+
+```bash
+java -javaagent:durable-threads-1.4.1.jar \
+     -agentlib:jdwp=transport=dt_socket,server=y,suspend=n \
+     --add-modules jdk.jdi,java.management \
+     -cp SimpleJavaTemplates.jar:durable-threads-1.4.1.jar:your-app.jar \
+     com.example.Main
+```
+
+`DurableAgent.premain` detects `SimpleJavaTemplates` on the classpath by
+fully-qualified class name and auto-chains its agent before registering
+DurableTransformer, so the two run in the order they need to. No second
+`-javaagent` flag required. Passing one explicitly is also fine — it becomes
+a no-op via `SimpleJavaTemplatesAgent.loaded`.
