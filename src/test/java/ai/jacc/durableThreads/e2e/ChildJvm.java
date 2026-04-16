@@ -88,15 +88,11 @@ public final class ChildJvm {
             cmd.add("-agentlib:jdwp=transport=dt_socket,server=y,suspend=n");
         }
 
-        // Add JDI and management modules (only on JDK 9+, where the module system exists).
-        // jdk.jdi is needed for the JDI self-attach. java.management is needed for
-        // ManagementFactory.getRuntimeMXBean() in JDWP port detection. On some
-        // non-LTS JDK versions (10, 12-14), java.management is not in the default
-        // resolved module set and must be explicitly added.
-        if (javaSpecVersion() >= 9) {
-            cmd.add("--add-modules");
-            cmd.add("jdk.jdi,java.management");
-        }
+        // No --add-modules needed: on JDK 9+, java.management is in java.se's
+        // transitive closure (so in the default root set), and jdk.jdi is
+        // resolved automatically for classpath code on every JDK version we
+        // support. Verified empirically on Java 21 and through CI across
+        // JDK 8–25 on Linux/macOS/Windows.
 
         // Classpath — on Java 8, append tools.jar for com.sun.jdi classes
         cmd.add("-cp");
