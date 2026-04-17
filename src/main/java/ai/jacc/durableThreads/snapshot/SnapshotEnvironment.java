@@ -11,7 +11,7 @@ import java.util.*;
  * environment or provide actionable diagnostics when classes are missing
  * or have changed.</p>
  *
- * <p>Older snapshots (pre-1.4.2) deserialize normally: the additional
+ * <p>Older snapshots (pre-1.5.0) deserialize normally: the additional
  * {@code javaRuntimeVersion}, {@code javaVendor}, {@code javaVmName},
  * {@code javaSpecificationVersion}, {@code osArch}, and
  * {@code archDataModel} fields default to {@code null} via Java's standard

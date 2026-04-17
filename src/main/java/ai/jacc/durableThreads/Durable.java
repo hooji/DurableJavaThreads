@@ -39,7 +39,7 @@ public final class Durable {
     private Durable() {}
 
     /** Library version string. Stored in every snapshot for compatibility tracking. */
-    public static final String VERSION = "1.4.1";
+    public static final String VERSION = "1.5.0";
 
     /**
      * Whether {@link #freeze} should bundle the original class file bytes of
