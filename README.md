@@ -159,6 +159,26 @@ while (true) {
 
 Between freeze and restore, the thread consumes no resources. The snapshot lives in a database, S3, or disk. A framework detects the triggering event and calls `restore()` — the thread picks up exactly where it left off.
 
+### Portable snapshots
+
+Every snapshot carries `SnapshotEnvironment` metadata: the exact JDK runtime version, vendor, VM name (HotSpot / OpenJ9 / GraalVM), OS name and architecture, and the classpath that was in effect at freeze time. A restore-side tool can use this to verify compatibility or to print precise diagnostics when the target JVM differs:
+
+```java
+ThreadSnapshot snapshot = loadSnapshot("checkpoint.dat");
+SnapshotEnvironment env = snapshot.environment();
+System.out.println("Frozen on " + env.javaVendor() + " " + env.javaRuntimeVersion()
+        + " / " + env.javaVmName() + " / " + env.osArch());
+```
+
+For **fully self-contained** restore on a JVM that doesn't have the original classpath available, opt in to bundling user class file bytes inside the snapshot:
+
+```java
+Durable.setEmbedClassBytecodes(true);   // global toggle, default off
+Durable.freeze("checkpoint.dat");
+```
+
+When the embedded bytes are present, restore will install any missing user classes via `Instrumentation.appendToSystemClassLoaderSearch` before wiring the heap. The cost is snapshot size — typically 2–3× larger than bare snapshots — so the feature is **off by default**. Leave it off for normal in-place restore; turn it on when you need a portable checkpoint that can run anywhere with a compatible JDK.
+
 ## API
 
 ### `Durable.freeze(String filePath)` / `Durable.freeze(Path path)`
@@ -191,12 +211,31 @@ Handle to a restored thread. Call `resume()` to release the thread, or `thread()
 
 A `Consumer<ThreadSnapshot>` that serializes the snapshot to a file. Accepts either a `String` or `Path` in its constructor.
 
+### `Durable.setEmbedClassBytecodes(boolean)` / `Durable.isEmbedClassBytecodes()`
+
+Global toggle controlling whether subsequent `freeze()` calls bundle the original user class file bytes inside the snapshot's `SnapshotEnvironment`. Default: **off**. Turn on for portable restore on a JVM without the original classpath; leave off for smaller snapshot files (the typical case). Read lazily at each `freeze`, so callers can flip it per-checkpoint.
+
 ### `ThreadSnapshot`
 
 A `Serializable` record containing:
 - Thread name and timestamp
 - `List<FrameSnapshot>` — the call stack (bottom to top)
 - `List<ObjectSnapshot>` — the heap (objects referenced by locals)
+- `SnapshotEnvironment` — metadata about the freeze JVM (see below)
+
+### `SnapshotEnvironment`
+
+Metadata captured at freeze time so a consumer can reconstruct a compatible JVM or diagnose an incompatible one:
+
+- `libraryVersion()` — Durable Threads version that wrote the snapshot
+- `javaVersion()` / `javaRuntimeVersion()` / `javaSpecificationVersion()` — e.g. `21.0.2`, `21.0.2+13-LTS`, `21`
+- `javaVendor()` — e.g. `Eclipse Adoptium`, `Oracle Corporation`
+- `javaVmName()` — e.g. `OpenJDK 64-Bit Server VM`, `Eclipse OpenJ9 VM`
+- `osName()` / `osArch()` / `archDataModel()` — e.g. `Linux`, `aarch64`, `64`
+- `classpath()` — `java.class.path` as it was at freeze time
+- `classEntries()` — per-class source-location and bytecode-hash entries; each entry optionally carries the original class file bytes when `Durable.setEmbedClassBytecodes(true)` was in effect
+
+Fields added after library v1.4.1 may be `null` when reading older snapshots.
 
 ## How It Works
 
