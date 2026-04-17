@@ -37,12 +37,12 @@ class EmbeddedBytecodeIT {
     }
 
     @Test
-    void freezeEmbedsUserClassBytes() throws Exception {
+    void freezeEmbedsUserClassBytesWhenEnabled() throws Exception {
         Path snapshotFile = Files.createTempFile("embedded-bytes-", ".dat");
         try {
             int port = ChildJvm.findFreePort();
             ChildJvm.Result result = ChildJvm.run(
-                    "ai.jacc.durableThreads.e2e.HeapObjectFreezeProgram",
+                    "ai.jacc.durableThreads.e2e.EmbeddedBytecodeFreezeProgram",
                     classpath, port,
                     new String[]{snapshotFile.toString()}, 60);
 
@@ -91,6 +91,39 @@ class EmbeddedBytecodeIT {
                     && (bytes[2] & 0xFF) == 0xBA
                     && (bytes[3] & 0xFF) == 0xBE,
                     "Embedded bytecode must begin with the 0xCAFEBABE magic");
+        } finally {
+            Files.deleteIfExists(snapshotFile);
+        }
+    }
+
+    @Test
+    void freezeSkipsClassBytesByDefault() throws Exception {
+        Path snapshotFile = Files.createTempFile("no-embedded-bytes-", ".dat");
+        try {
+            int port = ChildJvm.findFreePort();
+            ChildJvm.Result result = ChildJvm.run(
+                    "ai.jacc.durableThreads.e2e.HeapObjectFreezeProgram",
+                    classpath, port,
+                    new String[]{snapshotFile.toString()}, 60);
+
+            assertTrue(result.stdout().contains("FREEZE_COMPLETE"),
+                    "Expected FREEZE_COMPLETE in child stdout; got:\n" + result.stdout()
+                    + "\nstderr:\n" + result.stderr());
+
+            ThreadSnapshot snapshot;
+            try (ObjectInputStream ois = new ObjectInputStream(Files.newInputStream(snapshotFile))) {
+                snapshot = (ThreadSnapshot) ois.readObject();
+            }
+
+            SnapshotEnvironment env = snapshot.environment();
+            assertNotNull(env);
+            for (SnapshotEnvironment.ClassEntry e : env.classEntries()) {
+                if (e.bytecode() != null && e.bytecode().length > 0) {
+                    fail("ClassEntry " + e.className() + " unexpectedly carries "
+                            + e.bytecode().length + " embedded bytes while the "
+                            + "embedClassBytecodes flag was off");
+                }
+            }
         } finally {
             Files.deleteIfExists(snapshotFile);
         }

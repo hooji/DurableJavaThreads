@@ -41,6 +41,33 @@ public final class Durable {
     /** Library version string. Stored in every snapshot for compatibility tracking. */
     public static final String VERSION = "1.4.1";
 
+    /**
+     * Whether {@link #freeze} should bundle the original class file bytes of
+     * user classes inside the snapshot's {@code SnapshotEnvironment}.
+     *
+     * <p>Default: {@code false}. Bundled bytes enable portable restore on a
+     * JVM that does not have the original classes on its classpath, but they
+     * roughly double or triple the snapshot size. Most deployments restore
+     * against the same classpath they froze with and do not need the bytes.</p>
+     *
+     * <p>Read lazily at each {@code freeze} call — toggling at runtime
+     * affects subsequent freezes, not past ones.</p>
+     */
+    private static volatile boolean embedClassBytecodes = false;
+
+    /**
+     * Enable or disable bundling of class file bytes inside frozen snapshots.
+     * See {@link #isEmbedClassBytecodes()} for the rationale.
+     */
+    public static void setEmbedClassBytecodes(boolean enabled) {
+        embedClassBytecodes = enabled;
+    }
+
+    /** @return whether class file bytes are bundled into frozen snapshots. */
+    public static boolean isEmbedClassBytecodes() {
+        return embedClassBytecodes;
+    }
+
     // ===================================================================
     // Freeze
     // ===================================================================

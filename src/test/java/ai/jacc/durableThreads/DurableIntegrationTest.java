@@ -27,6 +27,25 @@ class DurableIntegrationTest {
     }
 
     @Test
+    void embedClassBytecodesFlagDefaultsOffAndIsSettable() {
+        boolean original = Durable.isEmbedClassBytecodes();
+        try {
+            // Reset to the documented default before asserting it
+            Durable.setEmbedClassBytecodes(false);
+            assertFalse(Durable.isEmbedClassBytecodes(),
+                    "Default for embedClassBytecodes must be off");
+
+            Durable.setEmbedClassBytecodes(true);
+            assertTrue(Durable.isEmbedClassBytecodes());
+
+            Durable.setEmbedClassBytecodes(false);
+            assertFalse(Durable.isEmbedClassBytecodes());
+        } finally {
+            Durable.setEmbedClassBytecodes(original);
+        }
+    }
+
+    @Test
     void restoreWithoutAgentThrowsAgentNotLoadedException() {
         ThreadSnapshot snapshot = new ThreadSnapshot(
                 Instant.now(), "test-thread",

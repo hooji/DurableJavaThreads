@@ -498,11 +498,13 @@ final class ThreadFreezer {
             }
         }
 
-        // Build per-class entries with source location, bytecode hash, and
-        // the original (pre-instrumentation) bytes so the snapshot can be
-        // restored on a JVM that does not have the class on its classpath.
-        // Only instrumented (i.e. user) classes have bytes in InvokeRegistry;
-        // JDK classes resolve through the normal loader on restore.
+        // Build per-class entries with source location and bytecode hash.
+        // Optionally bundle the original (pre-instrumentation) class bytes
+        // for portable restore — off by default; opt in via
+        // Durable.setEmbedClassBytecodes(true). Only instrumented (i.e. user)
+        // classes have bytes in InvokeRegistry; JDK classes resolve through
+        // the normal loader on restore regardless.
+        boolean embedBytes = Durable.isEmbedClassBytecodes();
         List<SnapshotEnvironment.ClassEntry> entries = new ArrayList<>();
         for (String className : classNames) {
             byte[] originalBytes = InvokeRegistry.getOriginalBytecode(className);
@@ -511,8 +513,9 @@ final class ThreadFreezer {
                     : new byte[0];
 
             String sourceLocation = resolveSourceLocation(className);
+            byte[] embedded = embedBytes ? originalBytes : null;
             entries.add(new SnapshotEnvironment.ClassEntry(
-                    className, sourceLocation, hash, originalBytes));
+                    className, sourceLocation, hash, embedded));
         }
 
         return new SnapshotEnvironment(
