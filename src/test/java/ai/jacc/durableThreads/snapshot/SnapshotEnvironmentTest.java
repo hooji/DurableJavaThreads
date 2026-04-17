@@ -88,4 +88,60 @@ class SnapshotEnvironmentTest {
                 "v", "j", "cp", "os", Arrays.<SnapshotEnvironment.ClassEntry>asList());
         assertEquals(0, env.classEntries().size());
     }
+
+    @Test
+    void fiveArgCtorLeavesExtendedJvmFieldsNull() {
+        SnapshotEnvironment env = new SnapshotEnvironment(
+                "v", "21.0.2", "cp", "Linux",
+                Collections.<SnapshotEnvironment.ClassEntry>emptyList());
+        assertNull(env.javaRuntimeVersion());
+        assertNull(env.javaVendor());
+        assertNull(env.javaVmName());
+        assertNull(env.javaSpecificationVersion());
+        assertNull(env.osArch());
+        assertNull(env.archDataModel());
+    }
+
+    @Test
+    void elevenArgCtorCarriesExtendedJvmFields() {
+        SnapshotEnvironment env = new SnapshotEnvironment(
+                "v", "21.0.2", "cp", "Linux",
+                Collections.<SnapshotEnvironment.ClassEntry>emptyList(),
+                "21.0.2+13-LTS", "Eclipse Adoptium",
+                "OpenJDK 64-Bit Server VM", "21",
+                "aarch64", "64");
+        assertEquals("21.0.2+13-LTS", env.javaRuntimeVersion());
+        assertEquals("Eclipse Adoptium", env.javaVendor());
+        assertEquals("OpenJDK 64-Bit Server VM", env.javaVmName());
+        assertEquals("21", env.javaSpecificationVersion());
+        assertEquals("aarch64", env.osArch());
+        assertEquals("64", env.archDataModel());
+    }
+
+    @Test
+    void environmentRoundTripsExtendedJvmFields() throws Exception {
+        SnapshotEnvironment env = new SnapshotEnvironment(
+                "1.4.2", "21.0.2", "cp", "Linux",
+                Collections.<SnapshotEnvironment.ClassEntry>emptyList(),
+                "21.0.2+13-LTS", "Eclipse Adoptium",
+                "OpenJDK 64-Bit Server VM", "21",
+                "aarch64", "64");
+
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        try (ObjectOutputStream oos = new ObjectOutputStream(bos)) {
+            oos.writeObject(env);
+        }
+
+        SnapshotEnvironment restored;
+        try (ObjectInputStream ois = new ObjectInputStream(new ByteArrayInputStream(bos.toByteArray()))) {
+            restored = (SnapshotEnvironment) ois.readObject();
+        }
+
+        assertEquals("21.0.2+13-LTS", restored.javaRuntimeVersion());
+        assertEquals("Eclipse Adoptium", restored.javaVendor());
+        assertEquals("OpenJDK 64-Bit Server VM", restored.javaVmName());
+        assertEquals("21", restored.javaSpecificationVersion());
+        assertEquals("aarch64", restored.osArch());
+        assertEquals("64", restored.archDataModel());
+    }
 }

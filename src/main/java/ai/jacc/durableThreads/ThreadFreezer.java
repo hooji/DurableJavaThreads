@@ -523,7 +523,13 @@ final class ThreadFreezer {
                 System.getProperty("java.version", "unknown"),
                 System.getProperty("java.class.path", ""),
                 System.getProperty("os.name", "unknown"),
-                entries);
+                entries,
+                System.getProperty("java.runtime.version"),
+                System.getProperty("java.vendor"),
+                System.getProperty("java.vm.name"),
+                System.getProperty("java.specification.version"),
+                System.getProperty("os.arch"),
+                System.getProperty("sun.arch.data.model"));
     }
 
     /**
