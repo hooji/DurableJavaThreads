@@ -61,6 +61,12 @@ public final class SnapshotEnvironment implements Serializable {
 
     /**
      * Metadata for a single class referenced by the snapshot.
+     *
+     * <p>The optional {@code bytecode} field holds the original (pre-
+     * instrumentation) class file bytes, enabling portable restore: a JVM
+     * that does not have the class on its classpath can still rebuild the
+     * state by installing the embedded bytes. Only user classes carry bytes
+     * — JDK classes are never embedded.</p>
      */
     public static final class ClassEntry implements Serializable {
 
@@ -75,15 +81,33 @@ public final class SnapshotEnvironment implements Serializable {
         /** SHA-256 hash of the original (pre-instrumentation) bytecode. */
         private final byte[] bytecodeHash;
 
+        /**
+         * Original (pre-instrumentation) class file bytes, or {@code null}
+         * when not embedded. Older snapshots deserialize with this null.
+         */
+        private final byte[] bytecode;
+
         public ClassEntry(String className, String sourceLocation, byte[] bytecodeHash) {
+            this(className, sourceLocation, bytecodeHash, null);
+        }
+
+        public ClassEntry(String className, String sourceLocation,
+                          byte[] bytecodeHash, byte[] bytecode) {
             this.className = className;
             this.sourceLocation = sourceLocation;
             this.bytecodeHash = bytecodeHash;
+            this.bytecode = bytecode;
         }
 
         public String className() { return className; }
         public String sourceLocation() { return sourceLocation; }
         public byte[] bytecodeHash() { return bytecodeHash; }
+
+        /**
+         * Original class file bytes, or {@code null} if this snapshot does
+         * not embed them (older format or JDK class).
+         */
+        public byte[] bytecode() { return bytecode; }
 
         @Override
         public String toString() {

@@ -55,7 +55,12 @@ final class ThreadRestorer {
                     + "(see JdiHelper.findThread).");
         }
 
-        // Step 2: Force-load all classes and validate hashes
+        // Step 2a: Install embedded class bytes from the snapshot for any
+        // user class that is not already on this JVM's classpath. Must run
+        // BEFORE the validator's Class.forName walk.
+        EmbeddedClassInstaller.installIfNeeded(snapshot.environment());
+
+        // Step 2b: Force-load all classes and validate hashes
         SnapshotValidator.ensureClassesLoaded(snapshot);
         SnapshotValidator.validateBytecodeHashes(snapshot);
         SnapshotValidator.validateClassStructureHashes(snapshot);

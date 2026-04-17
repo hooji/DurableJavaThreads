@@ -498,7 +498,11 @@ final class ThreadFreezer {
             }
         }
 
-        // Build per-class entries with source location and bytecode hash
+        // Build per-class entries with source location, bytecode hash, and
+        // the original (pre-instrumentation) bytes so the snapshot can be
+        // restored on a JVM that does not have the class on its classpath.
+        // Only instrumented (i.e. user) classes have bytes in InvokeRegistry;
+        // JDK classes resolve through the normal loader on restore.
         List<SnapshotEnvironment.ClassEntry> entries = new ArrayList<>();
         for (String className : classNames) {
             byte[] originalBytes = InvokeRegistry.getOriginalBytecode(className);
@@ -507,7 +511,8 @@ final class ThreadFreezer {
                     : new byte[0];
 
             String sourceLocation = resolveSourceLocation(className);
-            entries.add(new SnapshotEnvironment.ClassEntry(className, sourceLocation, hash));
+            entries.add(new SnapshotEnvironment.ClassEntry(
+                    className, sourceLocation, hash, originalBytes));
         }
 
         return new SnapshotEnvironment(
