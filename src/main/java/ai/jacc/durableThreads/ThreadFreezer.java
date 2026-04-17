@@ -144,7 +144,7 @@ final class ThreadFreezer {
 
     private static void performFreeze(Thread targetThread, Consumer<ThreadSnapshot> handler,
                                        Map<String, Object> namedObjects) {
-        VirtualMachine vm = JdiHelper.getConnection();
+        VirtualMachine vm = SelfConnection.getConnection();
 
         // Find the target thread in JDI
         ThreadReference threadRef = JdiHelper.findThread(vm, targetThread);

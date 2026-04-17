@@ -279,7 +279,7 @@ final class ThreadRestorer {
                                       Map<Long, Object> restoredHeap,
                                       HeapRestorer heapRestorer) {
         try {
-            VirtualMachine vm = JdiHelper.getConnection();
+            VirtualMachine vm = SelfConnection.getConnection();
 
             // Wait for thread to reach awaitGoLatch() inside freeze().
             // The deepest frame's resume stub deactivated replay and jumped

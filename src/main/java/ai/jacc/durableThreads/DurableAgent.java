@@ -184,7 +184,7 @@ public final class DurableAgent {
      */
     private static void eagerlyDetectJdwpPort() {
         try {
-            int port = ai.jacc.durableThreads.internal.JdiHelper.detectJdwpPortNoDefault();
+            int port = ai.jacc.durableThreads.internal.SelfConnection.detectJdwpPortNoDefault();
             if (port > 0) {
                 cachedJdwpPort = port;
             }
